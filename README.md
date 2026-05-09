@@ -39,6 +39,12 @@ docker compose down
 docker compose down -v
 ```
 
+## Design
+
+The single source-of-truth statement of what this project is — vision,
+roles, core loops, features, principles — lives in **[DESIGN.md](DESIGN.md)**.
+Read that first.
+
 ## Architecture
 
 - **All-Node fork.** Director, Narrator, actors, skill checks, RAG, ruleset
@@ -59,6 +65,10 @@ For the system map and per-turn flow:
 
 - [docs/architecture/README.md](docs/architecture/README.md)
 - [docs/architecture/program-flow.md](docs/architecture/program-flow.md)
+
+For the phased plan:
+
+- [docs/phases/README.md](docs/phases/README.md)
 
 ## Reference (not runtime)
 
