@@ -1718,6 +1718,11 @@ export async function sendTextareaMessage() {
     // "Continue on send" is activated when the user hits "send" (or presses enter) on an empty chat box, and the last
     // message was sent from a character (not the user or the system).
     const textareaText = String($('#send_textarea').val());
+    if (document.body.classList.contains('tt-mode-scene')) {
+        // TTRPG Tavern: stash the user's input so Generate's pre-empt can
+        // recover it even if other code clears the textarea first.
+        window.__ttLastUserInput = textareaText;
+    }
     const lastMessage = chat[chat.length - 1];
     if (power_user.continue_on_send &&
         !hasPendingFileAttachment() &&
@@ -4232,6 +4237,38 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     console.log('Generate entered');
     setGenerationProgress(0);
     generation_started = new Date();
+
+    // TTRPG Tavern: when the GM shell is in scene mode, hand the turn off to
+    // our own loop instead of running ST's chat-completion pipeline. The
+    // handler is registered globally by `public/scripts/gm/scene.js`.
+    if (!dryRun && document.body.classList.contains('tt-mode-scene')) {
+        const handler = window.__ttHandleSceneTurn;
+        if (typeof handler === 'function') {
+            // Safety-net path: under normal play scene.js's capture-phase
+            // handlers run first and Generate() is never reached. If some
+            // other ST code path still triggers Generate while in scene
+            // mode (slash command, extension), recover the user input from
+            // the stash sendTextareaMessage placed there, or fall back to
+            // a live read if it hasn't been cleared yet.
+            let userInput = '';
+            try {
+                userInput = String(window.__ttLastUserInput || $('#send_textarea').val() || '').trim();
+            } catch (e) {
+                userInput = '';
+            }
+            window.__ttLastUserInput = '';
+            try {
+                $('#send_textarea').val('').trigger('input');
+            } catch (_) { /* ignore */ }
+            try {
+                await handler(userInput);
+            } catch (err) {
+                console.error('[gm] scene turn handler failed', err);
+            }
+        }
+        unblockGeneration(type);
+        return Promise.resolve();
+    }
 
     // Prevent generation from shallow characters
     await unshallowCharacter(this_chid);

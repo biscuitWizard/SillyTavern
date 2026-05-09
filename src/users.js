@@ -104,6 +104,8 @@ const STORAGE_KEYS = {
  * @property {string} backups - The directory where the backups are stored
  * @property {string} sysprompt - The directory where the system prompt data is stored
  * @property {string} reasoning - The directory where the reasoning templates are stored
+ * @property {string} gm - TTRPG Tavern GM-shell settings (active campaign, role-to-model mapping, ...)
+ * @property {string} campaigns - TTRPG Tavern per-user campaign directory (campaign.json + characters/scenes/lore subdirs)
  */
 
 /**

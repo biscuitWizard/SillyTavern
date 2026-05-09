@@ -4,15 +4,29 @@
 # (currently just Qdrant). Run the Node app on the host with `npm start`.
 #
 # Profile `app` brings up the full stack including the TTRPG Tavern Node app.
+# Profile `llm` brings up a local LLM provider (Ollama) on :11434 with GPU
+# acceleration. The GM core's LLM client speaks Ollama's OpenAI-compatible
+# `/v1/chat/completions` endpoint directly.
 #
 # Usage:
-#   docker compose up qdrant                  # only Qdrant (recommended for dev)
-#   docker compose --profile app up           # full stack
-#   docker compose down -v                    # stop and wipe named volumes
+#   docker compose up qdrant                                    # only Qdrant (recommended for dev)
+#   docker compose --profile llm up -d ollama ollama-init       # local LLM, model auto-pulled
+#   docker compose --profile app up                             # full stack (Node app + Qdrant)
+#   docker compose --profile app --profile llm up               # full stack + local LLM
+#   docker compose down -v                                      # stop and wipe named volumes
+#
+# Notes on the `llm` profile:
+#   - First boot of `ollama-init` pulls TTRPG_OLLAMA_MODEL (default
+#     `llama3.2:3b`, ~2 GB). Subsequent restarts are no-ops because the model
+#     is cached in the `ollama-data` volume.
+#   - GPU is auto-attached via the nvidia runtime when present. If you don't
+#     have a CUDA setup, comment out `runtime: nvidia` and the `deploy` block
+#     and Ollama will fall back to CPU (slow but works for smoke testing).
 #
 # State on disk:
 #   ./data            -- ST/TTRPG user data (campaigns, characters, sheets, ...)
 #   qdrant-data:/...  -- Qdrant collections (character_memory__*, world_fact__*)
+#   ollama-data:/...  -- Pulled Ollama models (persists across `compose down`)
 
 services:
   qdrant:
@@ -31,6 +45,66 @@ services:
       timeout: 5s
       retries: 5
       start_period: 5s
+    networks:
+      - ttrpgtavern
+
+  # Local LLM provider — Ollama, exposing OpenAI-compatible /v1/chat/completions
+  # at http://localhost:11434/v1. Pair with the `ollama-init` service to
+  # auto-pull a default model on first boot.
+  ollama:
+    profiles: ["llm"]
+    image: ollama/ollama:latest
+    container_name: ttrpgtavern-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_KEEP_ALIVE=30m
+    volumes:
+      - ollama-data:/root/.ollama
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    networks:
+      - ttrpgtavern
+
+  # Pulls TTRPG_OLLAMA_MODEL on first boot so the LLM is ready to serve as
+  # soon as `ollama` is healthy. Idempotent: re-running is a no-op once the
+  # model is cached in the `ollama-data` volume.
+  ollama-init:
+    profiles: ["llm"]
+    image: ollama/ollama:latest
+    container_name: ttrpgtavern-ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - TTRPG_OLLAMA_MODEL=${TTRPG_OLLAMA_MODEL:-llama3.2:3b}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        echo "[ollama-init] ensuring model: $${TTRPG_OLLAMA_MODEL}";
+        if ollama list 2>/dev/null | awk 'NR>1{print $$1}' | grep -Fxq "$${TTRPG_OLLAMA_MODEL}"; then
+          echo "[ollama-init] already cached";
+        else
+          echo "[ollama-init] pulling $${TTRPG_OLLAMA_MODEL} ...";
+          ollama pull "$${TTRPG_OLLAMA_MODEL}";
+        fi;
+        echo "[ollama-init] done"
+    restart: "no"
     networks:
       - ttrpgtavern
 
@@ -64,3 +138,4 @@ networks:
 
 volumes:
   qdrant-data:
+  ollama-data:
