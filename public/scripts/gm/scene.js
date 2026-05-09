@@ -12,7 +12,7 @@
 
 import * as api from './api.js';
 import { route } from './router.js';
-import { openSettingsPopup, currentLlmProfile } from './settings-popup.js';
+import { currentLlmProfile, hasUsableLlmProfile, openStApiPanel, ensureStConnected } from './llm-profile.js';
 import {
     enterSceneMode,
     exitSceneMode,
@@ -26,7 +26,15 @@ import {
 let abortCurrentTurn = null;
 
 /**
- * @param {HTMLElement} mount  unused — Scene view takes over ST's #chat
+ * Render the Scene view. The scene fits in the same UI slot as the
+ * Campaign hub: the topbar lives inside `#gm-root` (replacing the
+ * campaign content), and ST's `#chat` + `#form_sheld` (siblings of
+ * `#gm-root` inside `#sheld`) take over the message/input area when
+ * `body.tt-mode-scene` is set. ST's persistent top icon bar and any
+ * drawers remain visible above — the scene no longer overlays the
+ * whole viewport.
+ *
+ * @param {HTMLElement} mount  the GM root container
  * @param {{ campaignId: string, sceneId: string, readOnly?: boolean }} params
  */
 export async function renderScene(mount, { campaignId, sceneId, readOnly = false }) {
@@ -51,41 +59,38 @@ export async function renderScene(mount, { campaignId, sceneId, readOnly = false
         transcript,
     });
 
-    mountSceneTopbar(campaign, scene, { readOnly });
+    // Topbar replaces gm-root's children — keeps the scene chrome inside
+    // sheld's natural flex column instead of floating fixed over the page.
+    mount.replaceChildren(buildSceneTopbar(campaign, scene, { readOnly }));
 
     if (readOnly || scene.status === 'closed') {
         disableInput('Scene closed — read-only.');
     } else {
+        // Set up the input first so our `connected_text` attribute is
+        // already on the textarea by the time ST's `RA_checkOnlineStatus`
+        // reads it after a successful reconnect — otherwise the placeholder
+        // updates to `undefined` and the player sees a blank prompt.
         enableInput();
+        // ST resets `online_status` to 'no_connection' every time a connection
+        // profile is applied (including the implicit re-apply on app boot).
+        // Auto-reconnect once so the player isn't looking at a locked send
+        // button when the GM core is otherwise ready to dispatch. Best-effort:
+        // if the connect button isn't wired (e.g. missing API key for a cloud
+        // provider), the pre-flight on submit surfaces the real error.
+        ensureStConnected();
     }
-
-    // Replace mount contents with a small banner — most of the Scene view
-    // lives in #chat / #form_sheld via st-bridge, but rendering something
-    // here means router error handling does not flash an empty container if
-    // the scene mount races.
-    mount.replaceChildren(buildSceneFallback(scene));
 }
 
-function buildSceneFallback(scene) {
-    const node = document.createElement('div');
-    node.className = 'gm-scene-fallback';
-    node.textContent = `In scene: ${scene.name || scene.id}`;
-    return node;
-}
+/* -------- In-scene topbar (rendered into #gm-root) -------- */
 
-/* -------- In-scene topbar (rendered above #chat) -------- */
-
-function mountSceneTopbar(campaign, scene, { readOnly }) {
-    let bar = document.getElementById('gm-scene-topbar');
-    if (!bar) {
-        bar = document.createElement('div');
-        bar.id = 'gm-scene-topbar';
-        document.body.appendChild(bar);
-    }
-    bar.replaceChildren(
+function buildSceneTopbar(campaign, scene, { readOnly }) {
+    const bar = document.createElement('div');
+    bar.id = 'gm-scene-topbar';
+    bar.append(
         topbarLeft(campaign, scene),
         topbarRight(campaign, scene, readOnly),
     );
+    return bar;
 }
 
 function topbarLeft(campaign, scene) {
@@ -127,9 +132,9 @@ function topbarRight(campaign, scene, readOnly) {
     const settings = document.createElement('button');
     settings.className = 'gm-icon-btn';
     settings.type = 'button';
-    settings.title = 'Settings';
-    settings.innerHTML = '<i class="fa-solid fa-cog"></i>';
-    settings.addEventListener('click', () => openSettingsPopup());
+    settings.title = 'API & connection settings';
+    settings.innerHTML = '<i class="fa-solid fa-plug"></i>';
+    settings.addEventListener('click', () => openStApiPanel());
     right.append(settings);
 
     const endBtn = document.createElement('button');
@@ -168,6 +173,11 @@ async function onEndScene(campaign, scene) {
 function teardownSceneShell() {
     exitSceneMode();
     clearSceneState();
+    // The scene topbar lives inside #gm-root (this view's mount). The
+    // router's next renderer will call mount.replaceChildren(...) so we
+    // don't need to remove the bar here, but explicit cleanup keeps the
+    // body class flip and the DOM consistent if we ever route somewhere
+    // that doesn't repaint #gm-root immediately.
     const bar = document.getElementById('gm-scene-topbar');
     if (bar && bar.parentNode) bar.parentNode.removeChild(bar);
 }
@@ -175,24 +185,35 @@ function teardownSceneShell() {
 /* -------- Input enable / disable + chip helpers -------- */
 
 function enableInput() {
-    const ta = document.getElementById('send_textarea');
-    if (ta instanceof HTMLTextAreaElement) {
-        ta.disabled = false;
-        ta.placeholder = 'Describe what your character does next…';
-        // ST's RA_checkOnlineStatus poll resets the placeholder from the
-        // `no_connection_text` / `connected_text` attributes, so override
-        // both with our scene placeholder while we own the input.
-        ta.setAttribute('no_connection_text', 'Describe what your character does next…');
-        ta.setAttribute('connected_text', 'Describe what your character does next…');
-    }
-    const send = document.getElementById('send_but');
-    if (send) {
-        send.classList.remove('gm-disabled');
-        // ST hides the send button via .displayNone when online_status is
-        // 'no_connection'. Scene mode's CSS overrides the rule, but make
-        // sure the class is gone so other ST handlers don't get confused.
-        send.classList.remove('displayNone');
-    }
+    const SCENE_PLACEHOLDER = 'Describe what your character does next…';
+    // ST occasionally clones #send_textarea / #send_but into hidden template
+    // containers. `getElementById` resolves the first match (which may be
+    // the hidden clone), so update every node carrying the id to keep all
+    // copies in sync — this is what scene-input handler code already does.
+    document.querySelectorAll('#send_textarea').forEach(node => {
+        if (!(node instanceof HTMLTextAreaElement)) return;
+        node.disabled = false;
+        // Drive the placeholder directly. ST's `RA_checkOnlineStatus` will
+        // overwrite the live placeholder from `no_connection_text` /
+        // `connected_text` whenever it runs, so set both attributes (so
+        // any later ST-driven update lands on our string) and seed the
+        // current placeholder.
+        node.setAttribute('no_connection_text', SCENE_PLACEHOLDER);
+        node.setAttribute('connected_text', SCENE_PLACEHOLDER);
+        node.placeholder = SCENE_PLACEHOLDER;
+    });
+    document.querySelectorAll('#send_but').forEach(node => {
+        if (!(node instanceof HTMLElement)) return;
+        node.classList.remove('gm-disabled');
+        // ST adds `.displayNone` when `online_status === 'no_connection'`;
+        // gm.css overrides the CSS rule, but clearing the class avoids a
+        // flicker the next time ST recomputes UI state.
+        node.classList.remove('displayNone');
+    });
+    document.querySelectorAll('#send_form').forEach(node => {
+        if (!(node instanceof HTMLElement)) return;
+        node.classList.remove('no-connection');
+    });
     installSceneInputHandlers();
 }
 
@@ -314,6 +335,24 @@ async function handleSceneTurn(userInput) {
     const { campaign, scene, player, readOnly } = state;
     if (readOnly || scene.status === 'closed') return;
 
+    // Pre-flight: a SillyTavern connection profile must be selected before
+    // the GM core can dispatch. The per-role model overrides on that
+    // profile (`gm-director-model`, `gm-narrator-model`) are what
+    // distinguish Director vs Narrator at request time; the rest of the
+    // profile (provider, URL, secret) is shared.
+    const directorProfile = currentLlmProfile('director');
+    const narratorProfile = currentLlmProfile('narrator');
+    if (!directorProfile || !narratorProfile || !hasUsableLlmProfile()) {
+        appendActorLine({
+            actor: 'system',
+            name: 'System',
+            text: 'No connection profile is selected, or the selected profile is missing a model. Open the API settings (plug icon) to pick or create one before starting a turn.',
+            role: 'system',
+        });
+        openStApiPanel();
+        return;
+    }
+
     appendPlayerLine(input);
     // The `/api/gm/turn` endpoint persists the player line itself before
     // the Director loop runs (so the JSONL is never desynced even when the
@@ -324,14 +363,12 @@ async function handleSceneTurn(userInput) {
     setChip('Director thinking…');
 
     try {
-        const directorProfile = currentLlmProfile('director');
-        const actorProfile = currentLlmProfile('actor');
         const response = await api.startTurn({
             campaign_id: campaign.id,
             scene_id: scene.id,
             user_input: input,
             director_profile: directorProfile,
-            actor_profile: actorProfile,
+            actor_profile: narratorProfile,
         }, controller.signal);
         await consumeTurnStream(response, { player });
     } catch (err) {

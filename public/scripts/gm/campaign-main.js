@@ -8,7 +8,8 @@
 
 import { route } from './router.js';
 import * as api from './api.js';
-import { openSettingsPopup } from './settings-popup.js';
+import { openStApiPanel } from './llm-profile.js';
+import { mountConnectionGate, getConnectionStatus } from './connection-gate.js';
 import { renderPartyPanel } from './party-panel.js';
 import { openCharacterWizard } from './character-wizard.js';
 
@@ -22,6 +23,14 @@ import { openCharacterWizard } from './character-wizard.js';
  * @type {Set<string>}
  */
 const autoWizardOpened = new Set();
+
+/**
+ * Teardown for the connection gate mounted by the most recent render. See
+ * the matching field in `campaign-manager.js` for rationale.
+ *
+ * @type {(() => void) | null}
+ */
+let activeGateTeardown = null;
 
 /**
  * Top-level renderer. Replaces children of `mount` with the Campaign Main
@@ -41,14 +50,27 @@ export async function renderCampaignMain(mount, { campaignId }) {
     const player = characters.find(c => c.is_player) || null;
     const scenes = await api.listScenes(campaignId).catch(() => []);
 
-    mount.replaceChildren(
-        renderTopbar(campaign),
+    const topbar = renderTopbar(campaign);
+    // We dim the hero + body + footer (everything below the topbar) when the
+    // gate is closed. Wrap them in a single container so the gate has one
+    // disable target and so the banner can sit between the topbar and the
+    // disabled content.
+    const gateGroup = el('div', 'gm-campaign-main-gated');
+    gateGroup.append(
         renderHeroBanner(campaign, scenes),
         renderBody(campaign, { player, scenes }),
         renderFooter(),
     );
+    mount.replaceChildren(topbar, gateGroup);
 
-    if (!player && !autoWizardOpened.has(campaign.id)) {
+    if (activeGateTeardown) { activeGateTeardown(); activeGateTeardown = null; }
+    activeGateTeardown = mountConnectionGate({ container: mount, target: gateGroup });
+
+    // The character wizard opens automatically the first time you land on a
+    // campaign without a PC, but we don't want it firing on top of a
+    // "configure a connection profile" banner — surface the connection
+    // requirement first.
+    if (!player && !autoWizardOpened.has(campaign.id) && getConnectionStatus().ok) {
         autoWizardOpened.add(campaign.id);
         openCharacterWizard(campaign.id, () => {
             route({ view: 'campaign', campaignId: campaign.id });
@@ -75,7 +97,7 @@ function renderTopbar(campaign) {
 
     const right = el('div', 'gm-topbar-actions');
     right.append(
-        iconButton('fa-cog', 'Settings', () => openSettingsPopup()),
+        iconButton('fa-plug', 'API & connection settings', () => openStApiPanel()),
         iconButton('fa-trash', 'Delete campaign', () => onDelete(campaign)),
     );
 

@@ -7,8 +7,19 @@
 
 import * as api from './api.js';
 import { route } from './router.js';
-import { openSettingsPopup } from './settings-popup.js';
+import { openStApiPanel } from './llm-profile.js';
+import { mountConnectionGate } from './connection-gate.js';
 import { BANNER_THEMES } from './constants.js';
+
+/**
+ * Per-mount teardown for the previously-rendered connection gate. The
+ * router re-runs `renderCampaignManager` on each navigation; we keep
+ * this at module scope so we can dispose the prior subscription before
+ * mounting a new one.
+ *
+ * @type {(() => void) | null}
+ */
+let activeGateTeardown = null;
 
 /**
  * Render the Campaign Manager into `mount`.
@@ -23,10 +34,12 @@ export async function renderCampaignManager(mount) {
     } catch (err) {
         console.error('[gm] listCampaigns failed', err);
     }
-    mount.replaceChildren(
-        renderTopbar(),
-        renderPage(campaigns),
-    );
+    const topbar = renderTopbar();
+    const page = renderPage(campaigns);
+    mount.replaceChildren(topbar, page);
+
+    if (activeGateTeardown) { activeGateTeardown(); activeGateTeardown = null; }
+    activeGateTeardown = mountConnectionGate({ container: mount, target: page });
 }
 
 /* -------- Topbar -------- */
@@ -43,7 +56,7 @@ function renderTopbar() {
 
     const actions = el('div', 'gm-topbar-actions');
     actions.append(
-        iconButton('fa-cog', 'Settings', () => openSettingsPopup()),
+        iconButton('fa-plug', 'API & connection settings', () => openStApiPanel()),
         iconButton('fa-circle-question', 'Help', () => {
             console.debug('[gm] help click (not implemented)');
         }),

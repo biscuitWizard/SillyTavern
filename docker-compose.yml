@@ -17,8 +17,13 @@
 #
 # Notes on the `llm` profile:
 #   - First boot of `ollama-init` pulls TTRPG_OLLAMA_MODEL (default
-#     `llama3.2:3b`, ~2 GB). Subsequent restarts are no-ops because the model
-#     is cached in the `ollama-data` volume.
+#     `qwen2.5:14b`, ~9 GB). Qwen2.5 14B is currently the best balance of
+#     structured-output / tool-calling reliability vs. VRAM footprint for
+#     our Director loop. Override with `TTRPG_OLLAMA_MODEL=...` in the env
+#     to swap (e.g. `qwen2.5:7b` for fast iteration on smaller GPUs, or
+#     `qwen2.5:32b`/`llama3.1:70b` for higher quality if you have the VRAM).
+#   - Subsequent restarts are no-ops because the model is cached in the
+#     `ollama-data` volume.
 #   - GPU is auto-attached via the nvidia runtime when present. If you don't
 #     have a CUDA setup, comment out `runtime: nvidia` and the `deploy` block
 #     and Ollama will fall back to CPU (slow but works for smoke testing).
@@ -92,7 +97,7 @@ services:
         condition: service_healthy
     environment:
       - OLLAMA_HOST=http://ollama:11434
-      - TTRPG_OLLAMA_MODEL=${TTRPG_OLLAMA_MODEL:-llama3.2:3b}
+      - TTRPG_OLLAMA_MODEL=${TTRPG_OLLAMA_MODEL:-qwen2.5:14b}
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >

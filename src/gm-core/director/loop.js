@@ -17,7 +17,10 @@ import { narratorSystemPrompt, narratorUserPrompt } from '../narrator/prompts.js
 import { directorDecisionJsonSchema, validateDirectorDecision, SUPPORTED_ACTIONS } from './schemas.js';
 import { LlmError } from '../llm/client.js';
 
-const DEFAULT_MAX_STEPS = 8;
+// A well-behaved turn looks like: speak(narrator) -> end_turn. We give the
+// loop a small amount of slack (3) so a Director that mis-classifies a beat
+// can still recover, but we never want to run away into a 5+ beat monologue.
+const DEFAULT_MAX_STEPS = 3;
 
 /**
  * @typedef {object} TurnEvent
@@ -130,14 +133,12 @@ export async function runTurn({ ctx, directorClient, actorClient, emit, signal, 
                 role: 'narrator',
                 text,
             });
-            // Append to the in-memory tail so the next director step can see
-            // what just happened. Bounded — the HTTP wrapper trims the tail.
             appendToTail(ctx, 'Narrator', text);
 
-            // Phase 4 keeps turns short: after one Narrator beat, we instruct
-            // the Director to wrap up by suggesting end_turn. The Director
-            // can still choose otherwise; this is just hinting via context.
-            ctx.user_input = `(${ctx.user_input}) — narrator has answered. End the turn unless another beat is strictly necessary.`;
+            // After a narrator beat the next call should almost always be
+            // `end_turn` — replace user_input with an explicit instruction so
+            // even a weaker Director can't accidentally chain another beat.
+            ctx.user_input = '[The narrator has just spoken. The player has not had a chance to react yet. Emit `end_turn` now to hand control back to them.]';
             continue;
         }
 

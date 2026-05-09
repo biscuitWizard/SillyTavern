@@ -40,6 +40,17 @@
     display: none !important;
 }
 
+/* Hide SillyTavern features that the TTRPG Tavern shell either replaces or
+   intentionally does not surface yet. Persona Management is replaced by
+   the per-campaign character wizard + party panel; World Info / Lorebooks
+   are reserved for a Phase 6+ Lore library; Backgrounds are decorative
+   chrome we don't expose because the GM shell has its own scene styling. */
+#WI-SP-button,
+#backgrounds-button,
+#persona-management-button {
+    display: none !important;
+}
+
 /* Hide stock ST chat content by default; the GM shell drives the view. */
 #chat,
 #form_sheld {
@@ -48,14 +59,17 @@
 
 /* -------- Scene mode flip: Phase 3 turns ST's chat back on ---------- */
 
+/* Scene mode keeps `#gm-root` visible — it now hosts the in-scene topbar
+   instead of being hidden behind a body-positioned overlay. The actual
+   message stream and input bar live in ST's `#chat` / `#form_sheld`,
+   which sit directly below `#gm-root` inside `#sheld` (see index.html).
+   ST's `#top-settings-holder` and the sidebar drawers stay visible
+   regardless — the scene fits in the same UI slot the campaign hub
+   uses. */
 body.tt-mode-scene #gm-root {
-    display: none !important;
-}
-
-/* Hide ST's persistent top icon bar in scene mode so the GM scene topbar
-   sits cleanly above #chat without competing for the same row. */
-body.tt-mode-scene #top-settings-holder {
-    display: none !important;
+    flex: 0 0 auto;
+    height: auto;
+    overflow: visible;
 }
 
 body.tt-mode-scene #chat,
@@ -66,44 +80,38 @@ body.tt-mode-scene #form_sheld {
 body.tt-mode-scene #chat {
     background: radial-gradient(circle at 20% 0%, #1d2533 0%, var(--gm-bg) 50%, var(--gm-bg-2) 100%);
     color: var(--gm-text);
-    padding-top: 64px; /* room for #gm-scene-topbar */
 }
 
 #gm-scene-topbar {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
     height: 56px;
-    z-index: 5000; /* above ST's #top-settings-holder (3005) and drawers (4005) */
     display: flex;
     align-items: center;
     justify-content: space-between;
     padding: 8px 16px;
     background: rgba(15, 18, 24, 0.92);
-    backdrop-filter: blur(8px);
     border-bottom: 1px solid var(--gm-border);
     color: var(--gm-text);
-    pointer-events: auto;
 }
 
 body:not(.tt-mode-scene) #gm-scene-topbar {
     display: none !important;
 }
 
-/* In scene mode, the GM core drives the LLM directly via /api/gm/turn — it
-   doesn't depend on SillyTavern's `online_status` handshake. Override the
-   "no connection" UI lockout so the send button stays visible and the
-   textarea is usable even when ST hasn't connected to its own backend. */
-body.tt-mode-scene #send_but.displayNone,
-body.tt-mode-scene #mes_continue.displayNone,
-body.tt-mode-scene #mes_impersonate.displayNone {
+/* In scene mode, the GM core dispatches direct-to-provider via /api/gm/turn
+   — it doesn't depend on ST's `online_status` handshake. The Scene view's
+   own pre-flight check (a connection profile must be selected) is the
+   gate, so override ST's `RA_checkOnlineStatus` UI lockout: keep the send
+   button visible and the textarea bright even when ST hasn't reconnected
+   itself yet. We always hide the continue/impersonate affordances since
+   the GM doesn't drive them in this phase. */
+body.tt-mode-scene #send_but.displayNone {
     display: flex !important;
 }
-
+body.tt-mode-scene #mes_continue,
+body.tt-mode-scene #mes_impersonate {
+    display: none !important;
+}
 body.tt-mode-scene #send_form.no-connection #send_textarea {
-    /* ST styles `.no-connection` with reduced opacity / muted text; reset
-       so our scene placeholder reads cleanly. */
     opacity: 1 !important;
 }
 
@@ -139,10 +147,6 @@ body.tt-mode-scene #send_form.no-connection #send_textarea {
     text-transform: uppercase;
 }
 
-.gm-scene-fallback {
-    display: none;
-}
-
 /* -------- Root container -------- */
 
 #gm-root {
@@ -174,6 +178,71 @@ body.tt-mode-scene #send_form.no-connection #send_textarea {
     display: flex;
     flex-direction: column;
     gap: 12px;
+}
+
+/* -------- Connection gate -------- */
+
+/* The banner sits below the campaign topbar inside #gm-root. We use the
+   ST accent gradient on the action button (`.gm-primary-btn` already
+   handles that) and a warm amber tone for the banner so it reads as
+   "attention required" without looking like a hard error. */
+.gm-connection-banner {
+    margin: 24px 32px 0;
+    padding: 16px 20px;
+    border-radius: 12px;
+    background: linear-gradient(135deg,
+        rgba(255, 184, 0, 0.10) 0%,
+        rgba(255, 122, 0, 0.10) 100%);
+    border: 1px solid rgba(255, 184, 0, 0.35);
+    color: #ffe6b3;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.gm-connection-banner-icon {
+    flex: 0 0 auto;
+    width: 40px;
+    height: 40px;
+    display: grid;
+    place-items: center;
+    border-radius: 10px;
+    background: rgba(255, 184, 0, 0.16);
+    color: #ffd478;
+    font-size: 18px;
+}
+
+.gm-connection-banner-body {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.gm-connection-banner-title {
+    font-weight: 600;
+    font-size: 14px;
+    color: #ffe6b3;
+    margin-bottom: 2px;
+}
+
+.gm-connection-banner-message {
+    font-size: 13px;
+    color: rgba(255, 230, 179, 0.78);
+    line-height: 1.4;
+}
+
+.gm-connection-banner .gm-primary-btn {
+    flex: 0 0 auto;
+}
+
+/* `gm-gate-disabled` is applied by `mountConnectionGate` to whatever
+   container the view passes as `target`. It dims the content and blocks
+   pointer events; the gate banner sits *outside* the target so its own
+   "Open API settings" button stays clickable. */
+.gm-gate-disabled {
+    opacity: 0.45;
+    pointer-events: none;
+    filter: grayscale(0.25);
+    user-select: none;
 }
 
 /* -------- Top bar -------- */

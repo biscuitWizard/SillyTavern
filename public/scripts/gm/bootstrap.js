@@ -7,7 +7,10 @@
  * docs/adr/0004-cannibalize-st-chat-substrate.md).
  */
 
+import { eventSource, event_types } from '../../script.js';
 import { route } from './router.js';
+import { installGmRoleModelsUi } from './gm-profile-roles.js';
+import { installConnectionGateWatcher } from './connection-gate.js';
 
 const GM_ROOT_ID = 'gm-root';
 
@@ -28,8 +31,31 @@ async function mountGmShell() {
     console.info('[gm] Campaign Manager mounted.');
 }
 
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => { mountGmShell(); }, { once: true });
-} else {
+/**
+ * Install the per-role model overrides UI inside the API Connections
+ * drawer once the connection-manager extension has rendered its block.
+ * The connection-manager renders during ST's `app_ready` event, so we
+ * also run on the first profile-loaded event as a belt-and-suspenders.
+ */
+function setupGmRoleModelsUi() {
+    const tryInstall = () => installGmRoleModelsUi();
+    if (eventSource && event_types?.APP_READY) {
+        eventSource.on(event_types.APP_READY, tryInstall);
+    }
+    if (eventSource && event_types?.CONNECTION_PROFILE_LOADED) {
+        eventSource.on(event_types.CONNECTION_PROFILE_LOADED, tryInstall);
+    }
+    tryInstall();
+}
+
+function bootGmShell() {
     mountGmShell();
+    setupGmRoleModelsUi();
+    installConnectionGateWatcher();
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bootGmShell, { once: true });
+} else {
+    bootGmShell();
 }
