@@ -44,6 +44,7 @@
     <link rel="stylesheet" type="text/css" href="css/mobile-styles.css">
     <link rel="stylesheet" type="text/css" href="css/macros.css">
     <link rel="stylesheet" type="text/css" href="css/user.css">
+    <link rel="stylesheet" type="text/css" href="css/gm.css">
     <link rel="icon" type="image/x-icon" href="favicon.ico">
     <!-- Scripts are loaded at the end of the body to improve page load speed -->
 </head>
@@ -8065,6 +8066,15 @@
     </div>
     <div id="sheld">
         <div id="sheldheader" class="fa-solid fa-grip drag-grabber"></div>
+        <!--
+            TTRPG Tavern: #gm-root is the primary visible content of #sheld and
+            hosts the Campaign Manager / Campaign Main / Scene views.
+            #chat and #form_sheld below are kept in the DOM so SillyTavern's
+            internal references stay live (they will be reused by the Scene
+            view's message renderer), but are hidden by default via gm.css.
+            See docs/adr/0004-cannibalize-st-chat-substrate.md.
+        -->
+        <div id="gm-root"></div>
         <div id="chat">
         </div>
         <div id="form_sheld">
@@ -8202,6 +8212,8 @@
     <script type="module" src="lib/eventemitter.js"></script>
     <script type="module" src="scripts/i18n.js"></script>
     <script type="module" src="script.js"></script>
+    <!-- TTRPG Tavern GM shell (Phase 1 visual POC overlay) -->
+    <script type="module" src="scripts/gm/bootstrap.js"></script>
     <script>
         window.addEventListener('load', (event) => {
             const documentHeight = () => {

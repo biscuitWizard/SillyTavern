@@ -1,0 +1,430 @@
+/*
+ * TTRPG Tavern GM shell styles.
+ *
+ * #gm-root replaces the visible role of SillyTavern's #chat and #form_sheld
+ * as the main content area inside #sheld. It hosts the Campaign Manager,
+ * Campaign Main, and Scene views.
+ *
+ * #chat and #form_sheld stay in the DOM so SillyTavern internals that
+ * reference them (event listeners, chat element selectors, ...) keep
+ * working; they are simply hidden by default. The Scene view (later phases)
+ * may show #chat for in-scene message rendering.
+ */
+
+/* -------- Override sheld width so the Campaign Manager has room ---------- */
+
+:root {
+    /* Stock ST defaults this to 50vw. The TTRPG shell is the primary surface
+     * so we let it use the full viewport. */
+    --sheldWidth: 100vw;
+}
+
+#sheld {
+    /* Stock ST positions #sheld absolutely with a calculated left/right
+     * margin. Force-pin to viewport edges. */
+    left: 0 !important;
+    right: 0 !important;
+    width: 100vw !important;
+    max-width: 100vw !important;
+}
+
+#sheldheader {
+    /* Drag-grabber is meaningless without a movable chat panel. */
+    display: none !important;
+}
+
+/* Hide stock ST chat content by default; the GM shell drives the view.
+ * A future `body.tt-mode-scene` class can flip this to show #chat. */
+#chat,
+#form_sheld {
+    display: none !important;
+}
+
+/* -------- Root container -------- */
+
+#gm-root {
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    background: radial-gradient(circle at 20% 0%, #1d2533 0%, #0f1218 50%, #0a0c12 100%);
+    color: #e6eaf2;
+    font-family: 'Noto Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+/* -------- Top bar -------- */
+
+.gm-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 32px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    backdrop-filter: blur(8px);
+    background: rgba(15, 18, 24, 0.6);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+.gm-brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+
+.gm-brand-mark {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #7c5cff 0%, #4f8dff 100%);
+    display: grid;
+    place-items: center;
+    font-size: 16px;
+    box-shadow: 0 4px 14px rgba(124, 92, 255, 0.4);
+}
+
+.gm-brand-title {
+    font-size: 18px;
+}
+
+.gm-brand-subtitle {
+    color: #8a93a8;
+    font-size: 12px;
+    margin-left: 4px;
+    font-weight: 400;
+}
+
+.gm-topbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.gm-icon-btn {
+    background: rgba(255, 255, 255, 0.04);
+    color: #c9d1e0;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+    font-size: 14px;
+}
+
+.gm-icon-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #ffffff;
+    border-color: rgba(255, 255, 255, 0.12);
+}
+
+/* -------- Page heading -------- */
+
+.gm-page {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 48px 32px 80px;
+}
+
+.gm-page-header {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 24px;
+    margin-bottom: 32px;
+}
+
+.gm-page-title {
+    font-size: 36px;
+    font-weight: 700;
+    margin: 0 0 6px 0;
+    letter-spacing: -0.01em;
+}
+
+.gm-page-subtitle {
+    color: #8a93a8;
+    font-size: 14px;
+    margin: 0;
+    max-width: 640px;
+    line-height: 1.5;
+}
+
+.gm-primary-btn {
+    background: linear-gradient(135deg, #7c5cff 0%, #4f8dff 100%);
+    color: #ffffff;
+    border: none;
+    border-radius: 10px;
+    padding: 12px 18px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    box-shadow: 0 6px 18px rgba(79, 141, 255, 0.28);
+    transition: transform 120ms ease, box-shadow 120ms ease, filter 120ms ease;
+}
+
+.gm-primary-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 10px 22px rgba(79, 141, 255, 0.36);
+    filter: brightness(1.05);
+}
+
+.gm-primary-btn:active {
+    transform: translateY(0);
+}
+
+.gm-primary-btn i {
+    font-size: 12px;
+}
+
+/* -------- Campaign grid -------- */
+
+.gm-campaign-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 20px;
+}
+
+.gm-campaign-card {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 14px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+    cursor: pointer;
+    text-align: left;
+    color: inherit;
+    font: inherit;
+}
+
+.gm-campaign-card:hover {
+    transform: translateY(-2px);
+    border-color: rgba(124, 92, 255, 0.4);
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.gm-campaign-banner {
+    height: 120px;
+    display: flex;
+    align-items: flex-end;
+    padding: 14px;
+    position: relative;
+    overflow: hidden;
+}
+
+.gm-campaign-banner::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.4) 100%);
+    pointer-events: none;
+}
+
+.gm-campaign-banner.theme-shadows {
+    background: linear-gradient(135deg, #4b1e63 0%, #1c1238 100%);
+}
+
+.gm-campaign-banner.theme-frontier {
+    background: linear-gradient(135deg, #6b3a1a 0%, #2a1106 100%);
+}
+
+.gm-campaign-banner.theme-hollow {
+    background: linear-gradient(135deg, #14463a 0%, #0a1f1c 100%);
+}
+
+.gm-campaign-banner.theme-default {
+    background: linear-gradient(135deg, #2a3960 0%, #101727 100%);
+}
+
+.gm-ruleset-chip {
+    position: relative;
+    z-index: 1;
+    background: rgba(0, 0, 0, 0.45);
+    color: #f5f7fc;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    font-weight: 600;
+    backdrop-filter: blur(4px);
+}
+
+.gm-campaign-body {
+    padding: 16px 16px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    flex: 1;
+}
+
+.gm-campaign-name {
+    font-size: 17px;
+    font-weight: 600;
+    margin: 0;
+    color: #ffffff;
+}
+
+.gm-campaign-brief {
+    color: #aab1c2;
+    font-size: 13px;
+    line-height: 1.5;
+    margin: 0;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.gm-campaign-meta {
+    display: flex;
+    gap: 14px;
+    font-size: 12px;
+    color: #8a93a8;
+    margin-top: auto;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.gm-campaign-meta-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.gm-campaign-meta-item i {
+    font-size: 11px;
+    opacity: 0.7;
+}
+
+/* -------- New campaign card -------- */
+
+.gm-new-campaign-card {
+    background: transparent;
+    border: 1px dashed rgba(255, 255, 255, 0.16);
+    border-radius: 14px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 48px 24px;
+    color: #8a93a8;
+    cursor: pointer;
+    transition: border-color 160ms ease, color 160ms ease, background 160ms ease;
+    min-height: 280px;
+    text-align: center;
+    font: inherit;
+}
+
+.gm-new-campaign-card:hover {
+    border-color: rgba(124, 92, 255, 0.6);
+    color: #c9d1e0;
+    background: rgba(124, 92, 255, 0.04);
+}
+
+.gm-new-campaign-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    background: rgba(124, 92, 255, 0.14);
+    color: #b29cff;
+    display: grid;
+    place-items: center;
+    font-size: 18px;
+    margin-bottom: 12px;
+}
+
+.gm-new-campaign-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: #d0d6e3;
+    margin-bottom: 4px;
+}
+
+.gm-new-campaign-hint {
+    font-size: 12px;
+}
+
+/* -------- Empty / placeholder section -------- */
+
+.gm-section {
+    margin-top: 56px;
+}
+
+.gm-section-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #c9d1e0;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin: 0 0 16px 0;
+}
+
+.gm-resource-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px;
+}
+
+.gm-resource-tile {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 10px;
+    padding: 14px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: #c9d1e0;
+    font-size: 13px;
+    transition: background 120ms ease, border-color 120ms ease;
+    cursor: pointer;
+}
+
+.gm-resource-tile:hover {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.1);
+}
+
+.gm-resource-tile i {
+    color: #7c5cff;
+    width: 18px;
+    text-align: center;
+}
+
+/* -------- Footer -------- */
+
+.gm-footer {
+    margin-top: 64px;
+    padding-top: 24px;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+    color: #5a6276;
+    font-size: 11px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.gm-footer .gm-pill {
+    background: rgba(255, 255, 255, 0.04);
+    color: #8a93a8;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    font-size: 10px;
+}

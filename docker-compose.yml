@@ -1,0 +1,66 @@
+# TTRPG Tavern dev compose
+#
+# Default profile (no `--profile` flag) brings up only the supporting services
+# (currently just Qdrant). Run the Node app on the host with `npm start`.
+#
+# Profile `app` brings up the full stack including the TTRPG Tavern Node app.
+#
+# Usage:
+#   docker compose up qdrant                  # only Qdrant (recommended for dev)
+#   docker compose --profile app up           # full stack
+#   docker compose down -v                    # stop and wipe named volumes
+#
+# State on disk:
+#   ./data            -- ST/TTRPG user data (campaigns, characters, sheets, ...)
+#   qdrant-data:/...  -- Qdrant collections (character_memory__*, world_fact__*)
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    container_name: ttrpgtavern-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"   # REST + dashboard
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant-data:/qdrant/storage
+    healthcheck:
+      # Use TCP probe (slim image lacks curl/wget). Verifies REST port is open.
+      test: ["CMD", "sh", "-c", "exec 3<>/dev/tcp/localhost/6333 && echo > /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - ttrpgtavern
+
+  # Full-stack profile. Most dev should run the Node app on the host
+  # (`npm install && npm start`) and just `docker compose up qdrant` separately.
+  ttrpgtavern:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ttrpgtavern-app
+    restart: unless-stopped
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      - NODE_ENV=production
+      - TTRPG_QDRANT_URL=http://qdrant:6333
+    volumes:
+      - ./data:/home/node/app/data
+      - ./plugins:/home/node/app/plugins
+      - ./public/scripts/extensions/third-party:/home/node/app/public/scripts/extensions/third-party
+    networks:
+      - ttrpgtavern
+
+networks:
+  ttrpgtavern:
+    driver: bridge
+
+volumes:
+  qdrant-data:
