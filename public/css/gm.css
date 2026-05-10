@@ -1827,14 +1827,16 @@ body.tt-mode-scene #chat .mes.gm-roll-card::before {
     align-items: center;
     gap: 8px;
     font-size: 11px;
-    font-weight: 600;
+    font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--gm-text-muted);
+    letter-spacing: 0.08em;
+    color: #c8cee0;
+    opacity: 0.85;
 }
 
 .gm-roll-card-body.speaker-actor .gm-roll-card-speaker {
-    color: #cdd5f0;
+    color: #d6def8;
+    opacity: 1;
 }
 
 .gm-roll-card-speaker-avatar {
