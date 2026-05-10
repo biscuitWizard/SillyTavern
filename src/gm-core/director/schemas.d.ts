@@ -1,6 +1,6 @@
 export type DirectorDecision =
     | { action: 'speak'; actor: 'narrator' | string; intent: string; rationale: string }
-    | { action: 'skill_check'; actor: string; intent: string; rationale: string }
+    | { action: 'skill_check'; actor: string; intent: string; voice?: 'narrator' | string; rationale: string }
     | {
           action: 'spawn_character';
           from_source: 'library' | 'new';

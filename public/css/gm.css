@@ -1594,10 +1594,15 @@ body.tt-mode-scene #send_form.no-connection #send_textarea {
      crit-failure    → desaturated grey halo + crack on the d20
 
    The card sits inside ST's `#chat`, so we re-use `.mes` margin / typography
-   defaults while overriding background and grid. */
+   defaults while overriding background and stacking. ST's `.mes` rule sets
+   `display: flex; align-items: flex-start;` (row layout), so we MUST force
+   `flex-direction: column` here — using `display: grid` instead does not
+   reliably win against ST's flex container in the cascade and the head /
+   justification / body get squeezed onto a single horizontal row. */
 body.tt-mode-scene #chat .mes.gm-roll-card {
-    display: grid;
-    grid-template-columns: 1fr;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
     gap: 10px;
     padding: 14px 16px;
     margin: 12px 8px;
@@ -1611,6 +1616,7 @@ body.tt-mode-scene #chat .mes.gm-roll-card {
     box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
     position: relative;
     overflow: hidden;
+    width: 100%;
 }
 
 /* Outcome border tints — applied as a top-edge accent so the card stays
@@ -1798,10 +1804,56 @@ body.tt-mode-scene #chat .mes.gm-roll-card::before {
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid var(--gm-border);
     border-radius: 10px;
-    padding: 12px 14px;
+    padding: 10px 14px 12px;
     color: var(--gm-text);
     font-size: 14px;
     line-height: 1.55;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+/* When the post-roll prose is voiced by an NPC (social check: persuade,
+   intimidate, deceive — the target reacts in their own voice), give the
+   body a subtle accent that matches the actor message styling so it reads
+   as "this is the NPC speaking" rather than a generic narrator paragraph. */
+.gm-roll-card-body.speaker-actor {
+    background: rgba(120, 132, 200, 0.07);
+    border-color: rgba(120, 132, 200, 0.22);
+}
+
+.gm-roll-card-speaker {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--gm-text-muted);
+}
+
+.gm-roll-card-body.speaker-actor .gm-roll-card-speaker {
+    color: #cdd5f0;
+}
+
+.gm-roll-card-speaker-avatar {
+    display: inline-block;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background-size: cover;
+    background-position: center;
+    background-color: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    flex-shrink: 0;
+}
+
+.gm-roll-card-speaker-name {
+    line-height: 1.2;
+}
+
+.gm-roll-card-body-text {
     white-space: pre-wrap;
 }
 

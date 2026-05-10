@@ -52,7 +52,7 @@
 
 import { directorSystemPrompt, directorUserPrompt } from './prompts.js';
 import { narratorSystemPrompt, narratorUserPrompt } from '../narrator/prompts.js';
-import { actorSystemPrompt, actorUserPrompt } from '../actors/prompts.js';
+import { actorSystemPrompt, actorUserPrompt, actorPostRollUserPrompt } from '../actors/prompts.js';
 import { directorDecisionJsonSchema, validateDirectorDecision, SUPPORTED_ACTIONS } from './schemas.js';
 import { LlmError } from '../llm/errors.js';
 import * as skillEngine from '../skillcheck/engine.js';
@@ -899,47 +899,111 @@ async function dispatchSkillCheck({ ctx, decision, ruleset, adjudicatorClient, a
         intent: String(decision.intent || ''),
     });
 
-    // Narrator MEMORIES block for the post-roll beat. Same shape as the
-    // `speak: narrator` branch above.
+    // Decide who voices the post-roll consequence.
+    //
+    // The Director can pick `voice: '<character_id>'` for social checks
+    // (persuade, intimidate, deceive) so the target NPC reacts in their
+    // own first-person voice; otherwise we default to the World Narrator
+    // (environmental / world checks: climb, perceive, sneak, lockpick).
+    //
+    // We degrade gracefully: a hallucinated voice id (not in scene, or
+    // pointing at the actor performing the check, or pointing at the
+    // player character) silently falls back to narrator voice. We never
+    // tool-error out of a successful roll; the prose still has to land.
+    const requestedVoice = typeof decision.voice === 'string' ? decision.voice.trim() : '';
+    /** @type {{ kind: 'narrator' } | { kind: 'actor', character: import('../library/schemas.js').Character }} */
+    let voiceChoice = { kind: 'narrator' };
+    if (requestedVoice && requestedVoice !== 'narrator') {
+        if (requestedVoice === actorId) {
+            console.warn(`[loop.skillcheck] Director picked voice = self ("${requestedVoice}"); falling back to narrator voice.`);
+        } else {
+            const voiceTarget = (ctx.actors || []).find(a => a.id === requestedVoice);
+            if (!voiceTarget) {
+                console.warn(`[loop.skillcheck] Director picked voice = "${requestedVoice}" who is not in scene; falling back to narrator voice.`);
+            } else if (voiceTarget.is_player) {
+                console.warn(`[loop.skillcheck] Director picked voice = player character "${requestedVoice}"; falling back to narrator voice (player drives PC).`);
+            } else {
+                const voiceCharacter = findCharacter ? findCharacter(requestedVoice) : null;
+                if (!voiceCharacter) {
+                    console.warn(`[loop.skillcheck] Director picked voice = "${requestedVoice}" but the character record could not be loaded; falling back to narrator voice.`);
+                } else {
+                    voiceChoice = { kind: 'actor', character: voiceCharacter };
+                }
+            }
+        }
+    }
+
+    // MEMORIES block for the post-roll beat. Per role:
+    //   - narrator voice → world_lore + narrator_memory (same shape as
+    //                      the `speak: narrator` branch).
+    //   - actor voice    → that NPC's own character_memory + a slice of
+    //                      world_lore + player_journal (same as the
+    //                      `speak: <actor>` branch). Crucially: NEVER
+    //                      another character's memory, even though the
+    //                      reactor isn't the one rolling.
     const previousMemoriesBlock = ctx.memories_block;
     if (memoryService && cid) {
         try {
-            const slice = await memoryService.for_narrator({
-                campaignId: cid,
-                queryText: String(decision.intent || character.name),
-            });
-            ctx.memories_block = formatSections([
-                { kind: 'world_lore', hits: slice.world },
-                { kind: 'narrator_memory', hits: slice.narrator, max: 4 },
-            ]);
+            if (voiceChoice.kind === 'actor') {
+                const slice = await memoryService.for_character({
+                    campaignId: cid,
+                    characterId: voiceChoice.character.id,
+                    queryText: String(decision.intent || character.name),
+                });
+                ctx.memories_block = formatSections([
+                    { kind: 'character_memory', label: voiceChoice.character.id, hits: slice.character, max: 4 },
+                    { kind: 'world_lore', hits: slice.world, max: 5 },
+                    { kind: 'player_journal', hits: slice.player_journal, max: 1 },
+                ]);
+            } else {
+                const slice = await memoryService.for_narrator({
+                    campaignId: cid,
+                    queryText: String(decision.intent || character.name),
+                });
+                ctx.memories_block = formatSections([
+                    { kind: 'world_lore', hits: slice.world },
+                    { kind: 'narrator_memory', hits: slice.narrator, max: 4 },
+                ]);
+            }
         } catch (err) {
-            console.warn('[loop.skillcheck.narrator] memory injection failed', err?.message || err);
+            console.warn('[loop.skillcheck.post_roll] memory injection failed', err?.message || err);
             ctx.memories_block = '';
         }
     }
 
     let narration = '';
+    let narrationSpeaker = 'Narrator';
+    let narrationRole = 'narrator';
+    let narrationActorId = null;
     try {
-        const prose = await actorClient.chat({
-            system: narratorSystemPrompt(),
-            user: narratorPostRollUserPrompt(ctx, {
-                actor_name: character.name,
-                skill_name: card.skill_name,
-                ability_name: card.ability_name,
-                dc: card.dc,
-                total: outcome.total,
-                d20: outcome.d20,
-                success: outcome.success,
-                severity: skillDecision.failure_severity,
-                crit: outcome.crit,
-                intent: String(decision.intent || ''),
-            }),
-            signal,
-        });
+        const promptArgs = {
+            actor_name: character.name,
+            skill_name: card.skill_name,
+            ability_name: card.ability_name,
+            dc: card.dc,
+            total: outcome.total,
+            d20: outcome.d20,
+            success: outcome.success,
+            severity: skillDecision.failure_severity,
+            crit: outcome.crit,
+            intent: String(decision.intent || ''),
+        };
+        let system, user;
+        if (voiceChoice.kind === 'actor') {
+            system = actorSystemPrompt(ctx, voiceChoice.character);
+            user = actorPostRollUserPrompt(ctx, voiceChoice.character, promptArgs);
+            narrationSpeaker = voiceChoice.character.name;
+            narrationRole = 'actor';
+            narrationActorId = voiceChoice.character.id;
+        } else {
+            system = narratorSystemPrompt();
+            user = narratorPostRollUserPrompt(ctx, promptArgs);
+        }
+        const prose = await actorClient.chat({ system, user, signal });
         narration = String(prose || '').trim();
     } catch (err) {
         ctx.memories_block = previousMemoriesBlock;
-        await emitError(emit, err, 'narrator:post_roll');
+        await emitError(emit, err, voiceChoice.kind === 'actor' ? `actor:post_roll:${voiceChoice.character.id}` : 'narrator:post_roll');
         return 'end';
     }
     ctx.memories_block = previousMemoriesBlock;
@@ -951,21 +1015,44 @@ async function dispatchSkillCheck({ ctx, decision, ruleset, adjudicatorClient, a
         intent: String(decision.intent || ''),
         card,
         narration,
+        narration_speaker_id: narrationActorId,
+        narration_speaker_name: narrationSpeaker,
+        narration_speaker_role: narrationRole,
     });
 
     if (memoryService && cid) {
-        // Narrator continuity from the post-roll beat as well as a hook so
-        // the actor's character memory captures their own roll outcome.
-        extractAndWriteNarratorContinuity({
-            memoryService,
-            client: actorClient,
-            campaignId: cid,
-            sceneId: ctx.scene?.id || '',
-            sceneName: ctx.scene?.name,
-            location: ctx.scene?.location,
-            sceneIndex,
-            prose: narration,
-        }).catch(() => {});
+        if (narrationRole === 'actor' && narrationActorId) {
+            // The reactor is now the speaker — extract opinion memory for
+            // them, mirroring the `speak: <actor>` branch. Their reaction
+            // prose is what the rest of the scene will remember.
+            extractAndWriteOpinion({
+                memoryService,
+                client: actorClient,
+                campaignId: cid,
+                character: voiceChoice.kind === 'actor' ? voiceChoice.character : null,
+                sceneId: ctx.scene?.id || '',
+                sceneIndex,
+                messageIndex: Date.now(),
+                lastMessage: narration,
+                transcriptTail: ctx.recent_transcript || '',
+            }).then(result => {
+                for (const rec of result.hits || []) {
+                    emit({ kind: 'memory_write', memory_kind: 'character_memory', record_id: rec.id, title: rec.content, character_id: narrationActorId }).catch(() => {});
+                }
+            }).catch(() => {});
+        } else {
+            // Narrator continuity from the post-roll beat (existing path).
+            extractAndWriteNarratorContinuity({
+                memoryService,
+                client: actorClient,
+                campaignId: cid,
+                sceneId: ctx.scene?.id || '',
+                sceneName: ctx.scene?.name,
+                location: ctx.scene?.location,
+                sceneIndex,
+                prose: narration,
+            }).catch(() => {});
+        }
     }
 
     // Synthesise a single recent-transcript line so subsequent Director steps
@@ -974,8 +1061,11 @@ async function dispatchSkillCheck({ ctx, decision, ruleset, adjudicatorClient, a
     // observer at the table would carry forward.
     const verdict = outcome.success ? 'succeeded' : 'failed';
     appendToTail(ctx, 'System', `[${character.name} ${verdict} their ${card.skill_name} check vs DC ${card.dc}]`);
-    appendToTail(ctx, 'Narrator', narration);
-    ctx.last_beat = `${character.name} ${verdict} a ${card.skill_name} check vs DC ${card.dc} (d20=${outcome.d20}, total=${outcome.total}). The Narrator already described the consequence. Default to end_turn — the player\'s next turn drives what happens next.`;
+    appendToTail(ctx, narrationSpeaker, narration);
+    const voiceClause = narrationRole === 'actor'
+        ? `${narrationSpeaker} reacted in their own voice`
+        : 'The Narrator already described the consequence';
+    ctx.last_beat = `${character.name} ${verdict} a ${card.skill_name} check vs DC ${card.dc} (d20=${outcome.d20}, total=${outcome.total}). ${voiceClause}. Default to end_turn — the player\'s next turn drives what happens next.`;
     return;
 }
 

@@ -1007,6 +1007,13 @@ router.post('/turn', async (request, response) => {
                 const speaker = ev.actor_id && charactersById.has(ev.actor_id)
                     ? charactersById.get(ev.actor_id)
                     : null;
+                // The post-roll prose may be voiced by a *different* character
+                // than the actor who rolled (Director picked `voice: <NPC id>`
+                // for a social check). Surface that explicitly so the frontend
+                // can credit the right speaker on top of the card body.
+                const narrationSpeaker = ev.narration_speaker_id && charactersById.has(ev.narration_speaker_id)
+                    ? charactersById.get(ev.narration_speaker_id)
+                    : null;
                 const line = {
                     name: ev.actor_name || speaker?.name || 'System',
                     force_avatar: speaker?.st_card_avatar
@@ -1024,6 +1031,12 @@ router.post('/turn', async (request, response) => {
                         actor_id: ev.actor_id,
                         actor_name: ev.actor_name,
                         intent: ev.intent,
+                        narration_speaker_id: ev.narration_speaker_id || null,
+                        narration_speaker_name: ev.narration_speaker_name || null,
+                        narration_speaker_role: ev.narration_speaker_role || 'narrator',
+                        narration_speaker_avatar: narrationSpeaker?.st_card_avatar
+                            ? `/characters/${encodeURIComponent(narrationSpeaker.st_card_avatar)}`
+                            : null,
                     },
                 };
                 await transcript.appendLine(directories, campaign.id, found.scene.id, line);
@@ -1032,64 +1045,16 @@ router.post('/turn', async (request, response) => {
                 console.error('[gm] persist roll line failed', persistErr);
             }
         }
-        // Persist state events (spawn / remove) as system messages so the
-        // transcript is the single source of truth for scene history. The
-        // sidebar refresh is driven from the live event stream; reload of a
-        // closed scene reads these lines.
-        //
-        // We skip persistence for `ephemeral: true` spawn events — those
-        // are transient characters that will only become real once they
-        // speak (the loop emits a second `state.spawn` event with
-        // `promoted: true` at that point, which IS persisted). This way an
-        // abandoned spawn leaves no trace in the transcript.
-        if (ev && ev.kind === 'state' && !ev.ephemeral) {
-            try {
-                const verb = ev.change === 'spawn' ? 'entered' : 'left';
-                const line = {
-                    name: 'System',
-                    mes: `${ev.character_name || ev.character_id} ${verb} the scene.`,
-                    is_user: false,
-                    is_system: true,
-                    send_date: new Date().toISOString(),
-                    extra: {
-                        role: 'system',
-                        kind: 'state',
-                        change: ev.change,
-                        character_id: ev.character_id,
-                        character_name: ev.character_name,
-                        promoted: ev.promoted || undefined,
-                    },
-                };
-                await transcript.appendLine(directories, campaign.id, found.scene.id, line);
-                sceneStore.refreshMessageCount(directories, campaign.id, found.scene.id);
-            } catch (persistErr) {
-                console.error('[gm] persist state line failed', persistErr);
-            }
-        }
-        // Persist tool_error events as a system note so the player can see
-        // what the Director tried (and what it'll recover from). Marked
-        // distinctly so the frontend can style them less alarmingly than a
-        // hard error.
+        // `state` (spawn / remove) and `tool_error` events are intentionally
+        // NOT persisted to the transcript: they're loop bookkeeping and the
+        // player's reading flow benefits from a clean chat. The roster
+        // sidebar is restored from `scene.json` (which `addParticipant` /
+        // `removeParticipant` already write to), and the actor's first
+        // `speak` after a spawn is plenty of in-fiction signal that they
+        // entered the scene. Tool-error recoveries are even more clearly
+        // internal Director noise — we just log them server-side here.
         if (ev && ev.kind === 'tool_error') {
-            try {
-                const line = {
-                    name: 'System',
-                    mes: `(Director recovered from a tool error: ${ev.message})`,
-                    is_user: false,
-                    is_system: true,
-                    send_date: new Date().toISOString(),
-                    extra: {
-                        role: 'system',
-                        kind: 'tool_error',
-                        tool: ev.tool,
-                        code: ev.code,
-                    },
-                };
-                await transcript.appendLine(directories, campaign.id, found.scene.id, line);
-                sceneStore.refreshMessageCount(directories, campaign.id, found.scene.id);
-            } catch (persistErr) {
-                console.error('[gm] persist tool_error line failed', persistErr);
-            }
+            console.warn('[gm] director tool_error (recovered):', ev.tool, ev.code, ev.message);
         }
     };
 

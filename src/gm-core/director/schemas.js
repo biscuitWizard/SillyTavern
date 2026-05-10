@@ -15,7 +15,7 @@
 /**
  * @typedef {(
  *  | { action: 'speak', actor: 'narrator' | string, intent: string, rationale: string }
- *  | { action: 'skill_check', actor: string, intent: string, rationale: string }
+ *  | { action: 'skill_check', actor: string, intent: string, voice?: 'narrator' | string, rationale: string }
  *  | { action: 'search_library', query: string, rationale: string }
  *  | { action: 'spawn_character', from_source: 'library' | 'new', ref?: string, name?: string, brief?: string, on_join_message?: string, rationale: string }
  *  | { action: 'remove_character', character_id: string, on_leave_message?: string, rationale: string }
@@ -23,6 +23,16 @@
  *  | { action: 'propose_scene', name: string, setting: string, suggested_participants: string[], hooks: string[], rationale: string }
  *  | { action: 'end_turn', rationale: string }
  * )} DirectorDecision
+ *
+ * `skill_check.voice` controls who delivers the post-roll prose:
+ *   - `'narrator'` (default): the World Narrator describes the world's
+ *     reaction. Right for environmental checks (climb, perceive, sneak past
+ *     a hazard, lockpick).
+ *   - `'<character_id>'` of an in-scene NPC: that NPC reacts in their own
+ *     voice via the actor model. Right for social/interactive checks
+ *     directed at a specific person (persuade, deceive, intimidate, charm).
+ *     The id MUST be in the current scene roster and MUST NOT be the
+ *     actor performing the check (you cannot react to your own attempt).
  */
 
 /** Variants the loop dispatcher actually executes. Phase 7 adds `add_lore`,
@@ -77,8 +87,12 @@ export const directorDecisionJsonSchema = {
             type: 'object',
             properties: {
                 action: { type: 'string', const: 'skill_check' },
-                actor: { type: 'string' },
+                actor: { type: 'string', description: 'Character id attempting the action.' },
                 intent: { type: 'string' },
+                voice: {
+                    type: 'string',
+                    description: 'Who delivers the post-roll consequence prose. Use "narrator" for environmental / world checks; use the in-scene character id of the target for social checks (so they react in their own voice). Defaults to "narrator" if omitted.',
+                },
                 rationale: { type: 'string' },
             },
             required: ['action', 'actor', 'intent', 'rationale'],
@@ -206,6 +220,13 @@ export function validateDirectorDecision(value) {
         case 'skill_check':
             if (typeof v.actor !== 'string' || !v.actor) return 'skill_check.actor required';
             if (typeof v.intent !== 'string') return 'skill_check.intent required';
+            // `voice` is optional. If present it must be a non-empty string.
+            // The dispatcher does the semantic check (in-scene, not the same
+            // as `actor`) so it can degrade gracefully to narrator instead
+            // of failing the whole turn over a hallucinated voice id.
+            if (v.voice !== undefined && (typeof v.voice !== 'string' || !v.voice.trim())) {
+                return 'skill_check.voice, when set, must be a non-empty string ("narrator" or an in-scene character id)';
+            }
             return null;
         case 'search_library':
             if (typeof v.query !== 'string' || !v.query.trim()) return 'search_library.query required';

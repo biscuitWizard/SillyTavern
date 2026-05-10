@@ -118,3 +118,82 @@ export function actorUserPrompt(ctx, character, intent) {
     lines.push(`Speak as ${character.name} now. Stay in character.`);
     return lines.join('\n');
 }
+
+/**
+ * Build the user prompt for an actor that is reacting to a skill check
+ * directed at them. The Director picks `skill_check.voice = <this actor>`
+ * for social checks (persuade, intimidate, deceive, charm) so the target
+ * NPC responds in their own first-person voice rather than via a generic
+ * narrator paragraph.
+ *
+ * The actor system prompt (`actorSystemPrompt`) is reused unchanged — the
+ * isolation invariants still hold (only this character's sheet is in the
+ * system prompt). This builder just frames the user-side text as
+ * "someone just rolled X against you; react in character."
+ *
+ * @param {TurnContext} ctx
+ * @param {Character} character   the NPC reacting (the target of the check)
+ * @param {{
+ *   actor_name: string,          who attempted the check (usually the PC)
+ *   skill_name: string,
+ *   ability_name: string,
+ *   dc: number,
+ *   total: number,
+ *   d20: number,
+ *   success: boolean,
+ *   severity: string | null,
+ *   crit: 'natural_20' | 'natural_1' | null,
+ *   intent: string,
+ * }} args
+ * @returns {string}
+ */
+export function actorPostRollUserPrompt(ctx, character, args) {
+    const lines = [];
+    lines.push(`# Campaign: ${ctx.campaign?.name || ''}`);
+    if (ctx.campaign?.brief) {
+        lines.push(String(ctx.campaign.brief).trim());
+    }
+    lines.push('');
+
+    if (ctx.scene) {
+        lines.push('# Scene');
+        const sceneName = ctx.scene.name || ctx.scene.id;
+        lines.push(`- Name: ${sceneName}`);
+        if (ctx.scene.location) lines.push(`- Location: ${ctx.scene.location}`);
+        lines.push('');
+    }
+
+    if (ctx.recent_transcript && String(ctx.recent_transcript).trim()) {
+        lines.push('# Recent transcript');
+        lines.push(String(ctx.recent_transcript).trim());
+        lines.push('');
+    }
+
+    if (ctx.memories_block && ctx.memories_block.trim()) {
+        lines.push(ctx.memories_block.trim());
+        lines.push('');
+    }
+
+    // The result is rendered in pure-fiction terms — no DC numbers, no
+    // success flags. The actor LLM gets a succinct "what happened to you"
+    // brief and reacts in character.
+    lines.push(`# What just happened — ${args.actor_name} attempted: ${args.intent || '(an action against you)'}`);
+    const verdict = args.crit === 'natural_20'
+        ? `${args.actor_name} pulled it off brilliantly — a near-perfect attempt, hard to resist.`
+        : args.crit === 'natural_1'
+            ? `${args.actor_name} fumbled it badly — the attempt landed flat or worse.`
+            : args.success
+                ? `${args.actor_name} succeeded at the attempt.`
+                : args.severity === 'severe' || args.severity === 'lethal'
+                    ? `${args.actor_name} failed badly — you saw right through it (or it backfired hard).`
+                    : `${args.actor_name} failed the attempt — it didn't land the way they hoped.`;
+    lines.push(`- ${verdict}`);
+    lines.push('');
+
+    lines.push(`# Your reaction as ${character.name}`);
+    lines.push('React now, in your own voice — your immediate words, body language, and any short action.');
+    lines.push('Stay in character. Do NOT narrate the dice or mention numbers or DCs.');
+    lines.push('Three or four sentences is plenty; one short paragraph at most.');
+    lines.push(`Speak as ${character.name} now.`);
+    return lines.join('\n');
+}

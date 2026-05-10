@@ -73,6 +73,9 @@ export function enterSceneMode({ campaign: _campaign, scene: _scene, player, tra
                     card: line.extra.card,
                     narration: line.extra.narration || line.mes || '',
                     actorAvatar: line.force_avatar || null,
+                    narrationSpeakerName: line.extra.narration_speaker_name || null,
+                    narrationSpeakerRole: line.extra.narration_speaker_role || 'narrator',
+                    narrationSpeakerAvatar: line.extra.narration_speaker_avatar || null,
                     persistInChat: true,
                 });
                 continue;
@@ -156,6 +159,11 @@ export function appendActorLine({ actor, name, text, role, avatar = null }) {
  * d20 icon, actor + skill header, breakdown line, success/fail badge,
  * severity pill (on failure), and the post-roll narration as the body.
  *
+ * The post-roll prose may be voiced by either the World Narrator (default,
+ * environmental checks) or by an in-scene NPC (social checks: persuade /
+ * intimidate / etc — the target reacts in their own voice). The body is
+ * labelled accordingly via `narrationSpeakerName` / `narrationSpeakerRole`.
+ *
  * We push a placeholder entry into `chat[]` so ST's index-based handlers
  * (delete, swipe, edit) don't desync. The placeholder is `is_system: true`
  * with `extra.kind: 'roll'` so transcript-replay code can recognise it.
@@ -164,10 +172,21 @@ export function appendActorLine({ actor, name, text, role, avatar = null }) {
  *   card: any,
  *   narration: string,
  *   actorAvatar?: string | null,
+ *   narrationSpeakerName?: string | null,
+ *   narrationSpeakerRole?: 'narrator' | 'actor',
+ *   narrationSpeakerAvatar?: string | null,
  *   persistInChat?: boolean,
  * }} args
  */
-export function appendRollCard({ card, narration, actorAvatar = null, persistInChat = true }) {
+export function appendRollCard({
+    card,
+    narration,
+    actorAvatar = null,
+    narrationSpeakerName = null,
+    narrationSpeakerRole = 'narrator',
+    narrationSpeakerAvatar = null,
+    persistInChat = true,
+}) {
     if (!card || typeof card !== 'object') return;
     if (persistInChat) {
         chat.push({
@@ -176,22 +195,51 @@ export function appendRollCard({ card, narration, actorAvatar = null, persistInC
             is_system: true,
             send_date: new Date().toISOString(),
             mes: narration || '',
-            extra: { role: 'roll', kind: 'roll', card, narration },
+            extra: {
+                role: 'roll',
+                kind: 'roll',
+                card,
+                narration,
+                narration_speaker_name: narrationSpeakerName || null,
+                narration_speaker_role: narrationSpeakerRole || 'narrator',
+                narration_speaker_avatar: narrationSpeakerAvatar || null,
+            },
             force_avatar: actorAvatar || undefined,
         });
     }
     document.querySelectorAll('#chat').forEach(chatEl => {
-        const node = buildRollCardElement({ card, narration, actorAvatar });
+        const node = buildRollCardElement({
+            card,
+            narration,
+            actorAvatar,
+            narrationSpeakerName,
+            narrationSpeakerRole,
+            narrationSpeakerAvatar,
+        });
         chatEl.appendChild(node);
     });
     scrollChatToBottom();
 }
 
 /**
- * @param {{ card: any, narration: string, actorAvatar?: string | null }} args
+ * @param {{
+ *   card: any,
+ *   narration: string,
+ *   actorAvatar?: string | null,
+ *   narrationSpeakerName?: string | null,
+ *   narrationSpeakerRole?: 'narrator' | 'actor',
+ *   narrationSpeakerAvatar?: string | null,
+ * }} args
  * @returns {HTMLElement}
  */
-function buildRollCardElement({ card, narration, actorAvatar }) {
+function buildRollCardElement({
+    card,
+    narration,
+    actorAvatar,
+    narrationSpeakerName = null,
+    narrationSpeakerRole = 'narrator',
+    narrationSpeakerAvatar = null,
+}) {
     const outcome = card.outcome === 'success' ? 'success' : 'failure';
     const severity = (card.severity || '').toLowerCase();
     const wrap = document.createElement('div');
@@ -259,10 +307,35 @@ function buildRollCardElement({ card, narration, actorAvatar }) {
         wrap.appendChild(just);
     }
 
-    const body = document.createElement('div');
-    body.className = 'gm-roll-card-body';
-    body.textContent = (narration || '').trim();
-    wrap.appendChild(body);
+    const speakerLabel = (narrationSpeakerName || (narrationSpeakerRole === 'actor' ? 'Actor' : 'Narrator')).trim();
+    const speakerKindClass = narrationSpeakerRole === 'actor' ? 'speaker-actor' : 'speaker-narrator';
+    const bodyWrap = document.createElement('div');
+    bodyWrap.className = `gm-roll-card-body ${speakerKindClass}`;
+
+    // Mini speaker chip above the body so it's clear who voiced the
+    // consequence — matters most when an NPC reacts in their own voice
+    // for a social check (otherwise it would look like a generic narrator
+    // paragraph that puts dialogue in their mouth).
+    const speakerRow = document.createElement('div');
+    speakerRow.className = 'gm-roll-card-speaker';
+    if (narrationSpeakerAvatar) {
+        const av = document.createElement('span');
+        av.className = 'gm-roll-card-speaker-avatar';
+        av.style.backgroundImage = `url("${narrationSpeakerAvatar}")`;
+        speakerRow.appendChild(av);
+    }
+    const speakerName = document.createElement('span');
+    speakerName.className = 'gm-roll-card-speaker-name';
+    speakerName.textContent = speakerLabel;
+    speakerRow.appendChild(speakerName);
+    bodyWrap.appendChild(speakerRow);
+
+    const bodyText = document.createElement('div');
+    bodyText.className = 'gm-roll-card-body-text';
+    bodyText.textContent = (narration || '').trim();
+    bodyWrap.appendChild(bodyText);
+
+    wrap.appendChild(bodyWrap);
 
     if (actorAvatar) {
         wrap.dataset.actorAvatar = String(actorAvatar);

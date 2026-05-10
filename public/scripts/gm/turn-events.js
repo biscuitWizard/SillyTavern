@@ -82,45 +82,53 @@ export function handleTurnEvent(ev, ui) {
         const avatar = speaker?.st_card_avatar
             ? `/characters/${encodeURIComponent(speaker.st_card_avatar)}`
             : null;
+        // Resolve the post-roll voice (may differ from the rolling actor —
+        // for social checks the Director picks the target NPC as the voice
+        // so they react in their own words instead of via the narrator).
+        const narrationSpeakerRole = ev.narration_speaker_role || 'narrator';
+        let narrationSpeakerName = ev.narration_speaker_name || null;
+        let narrationSpeakerAvatar = null;
+        if (narrationSpeakerRole === 'actor' && ev.narration_speaker_id && ui.characters?.get) {
+            const ns = ui.characters.get(ev.narration_speaker_id);
+            if (ns) {
+                narrationSpeakerName = narrationSpeakerName || ns.name;
+                if (ns.st_card_avatar) {
+                    narrationSpeakerAvatar = `/characters/${encodeURIComponent(ns.st_card_avatar)}`;
+                }
+            }
+        } else if (narrationSpeakerRole === 'narrator') {
+            narrationSpeakerName = narrationSpeakerName || 'Narrator';
+        }
         appendRollCard({
             card: ev.card,
             narration: ev.narration || '',
             actorAvatar: avatar,
+            narrationSpeakerName,
+            narrationSpeakerRole,
+            narrationSpeakerAvatar,
         });
         return;
     }
 
     if (ev.kind === 'state') {
-        // Ephemeral spawns (transient new characters that haven't spoken
-        // yet) are not announced in chat — they're held tentatively by the
-        // loop and may vanish at end-of-turn if never used. The companion
-        // `state.spawn` event with `promoted: true` (emitted on first
-        // speak) IS rendered.
-        if (!ev.ephemeral) {
-            const verb = ev.change === 'spawn' ? 'entered' : 'left';
-            const name = ev.character_name || ev.character_id || 'Someone';
-            appendActorLine({
-                actor: 'system',
-                name: 'System',
-                text: `${name} ${verb} the scene.`,
-                role: 'system',
-            });
-        }
+        // `state` events update the right-sidebar roster live, but we
+        // intentionally do NOT inject a "X entered the scene." line into
+        // the chat. The actor's own first speak (e.g. Marle's greeting)
+        // is the in-fiction entrance and the sidebar already shows the
+        // roster delta — a system announcement on top of that is just
+        // duplicate noise and breaks immersion. Backend persistence is
+        // disabled to match (see endpoints/gm.js).
         emitState(ev);
         return;
     }
 
     if (ev.kind === 'tool_error') {
-        // The Director recovers from these on its next step; we surface a
-        // muted system line so the player knows something happened without
-        // the alarming "(error) ..." red flag.
-        console.warn('[gm] director tool error', ev);
-        appendActorLine({
-            actor: 'system',
-            name: 'System',
-            text: `(Director recovered from a tool error: ${ev.message || ev.code || 'unknown'})`,
-            role: 'system',
-        });
+        // Director loop bookkeeping: a recoverable tool failure (unknown
+        // actor id, missing fields, etc.) that the Director will retry on
+        // its next step. The player should never see these — they are
+        // model thrash, not story content. We log to the dev console so
+        // we can still diagnose recurring failures.
+        console.warn('[gm] director tool_error (recovered):', ev.tool, ev.code, ev.message);
         return;
     }
 
