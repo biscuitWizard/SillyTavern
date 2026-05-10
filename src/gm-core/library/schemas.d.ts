@@ -39,7 +39,8 @@ export interface Character {
     voice: string;
     background: string;
     sheet: CharacterSheet;
-    st_card_avatar: string | null;
+    /** Derived: true when a portrait PNG exists on disk beside the JSON. */
+    has_portrait: boolean;
     created_at: string;
     updated_at: string;
 }

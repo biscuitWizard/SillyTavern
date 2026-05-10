@@ -1597,7 +1597,7 @@ async function dispatchSpawnNew({ ctx, decision, emit, transientCharacters }) {
         voice: '',
         background: '',
         sheet: { stats: {}, statuses: {}, items: [], skills: [], notes: '' },
-        st_card_avatar: null,
+        has_portrait: false,
         created_at: now,
         updated_at: now,
     };

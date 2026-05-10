@@ -11,6 +11,7 @@ import { eventSource, event_types } from '../../script.js';
 import { route } from './router.js';
 import { installGmRoleModelsUi } from './gm-profile-roles.js';
 import { installConnectionGateWatcher } from './connection-gate.js';
+import { init as initCharacterDrawer } from './character-drawer.js';
 
 const GM_ROOT_ID = 'gm-root';
 
@@ -52,6 +53,7 @@ function bootGmShell() {
     mountGmShell();
     setupGmRoleModelsUi();
     installConnectionGateWatcher();
+    initCharacterDrawer();
 }
 
 if (document.readyState === 'loading') {

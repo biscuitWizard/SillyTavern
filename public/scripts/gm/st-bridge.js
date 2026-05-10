@@ -8,6 +8,7 @@
  */
 
 import { addOneMessage, chat } from '../../script.js';
+import { getPortraitUrl } from './api.js';
 
 const SCENE_MODE_CLASS = 'tt-mode-scene';
 
@@ -117,8 +118,8 @@ export function appendPlayerLine(text) {
         mes: text,
         extra: { role: 'player' },
     };
-    if (player?.st_card_avatar) {
-        mes.force_avatar = `/characters/${encodeURIComponent(player.st_card_avatar)}`;
+    if (player?.has_portrait !== false && player?.campaign_id) {
+        mes.force_avatar = getPortraitUrl(player);
     }
     chat.push(mes);
     try {
@@ -372,8 +373,8 @@ function normalizeTranscriptLine(line, player) {
     };
     if (line.force_avatar) {
         mes.force_avatar = line.force_avatar;
-    } else if (line.is_user && player?.st_card_avatar) {
-        mes.force_avatar = `/characters/${encodeURIComponent(player.st_card_avatar)}`;
+    } else if (line.is_user && player?.has_portrait !== false && player?.campaign_id) {
+        mes.force_avatar = getPortraitUrl(player);
     }
     return mes;
 }

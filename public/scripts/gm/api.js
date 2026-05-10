@@ -229,6 +229,55 @@ export async function deleteCharacter(characterId) {
 }
 
 /**
+ * @param {string} characterId
+ * @param {Partial<import('../../../src/gm-core/library/schemas.d.ts').Character>} patch
+ */
+export async function patchCharacter(characterId, patch) {
+    const out = await request(`/characters/${encodeURIComponent(characterId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+    });
+    return out?.character ?? null;
+}
+
+/**
+ * Build the portrait URL for a campaign character. The URL includes a
+ * cache-busting `v` parameter derived from `updated_at` so the browser
+ * re-fetches after identity or portrait changes.
+ *
+ * @param {{ id: string, campaign_id: string, has_portrait?: boolean, updated_at?: string }} character
+ * @returns {string}
+ */
+export function getPortraitUrl(character) {
+    if (!character || !character.campaign_id || !character.id) return '/img/gm/portrait-default.png';
+    const base = `${BASE}/campaigns/${encodeURIComponent(character.campaign_id)}/characters/${encodeURIComponent(character.id)}/portrait`;
+    const bust = character.updated_at ? `?v=${encodeURIComponent(character.updated_at)}` : '';
+    return character.has_portrait !== false ? `${base}${bust}` : '/img/gm/portrait-default.png';
+}
+
+/**
+ * Upload a portrait image for a character.
+ *
+ * @param {string} campaignId
+ * @param {string} characterId
+ * @param {Blob | File} imageBlob
+ */
+export async function uploadPortrait(campaignId, characterId, imageBlob) {
+    const url = `${BASE}/campaigns/${encodeURIComponent(campaignId)}/characters/${encodeURIComponent(characterId)}/portrait`;
+    const headers = getRequestHeaders();
+    delete headers['Content-Type'];
+    const contentType = imageBlob.type || 'image/png';
+    headers['Content-Type'] = contentType;
+    const buffer = await imageBlob.arrayBuffer();
+    const response = await fetch(url, { method: 'PUT', headers, body: buffer });
+    if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        throw new GmApiError(response.status, text || `${url} ${response.status}`, text);
+    }
+    return response.json();
+}
+
+/**
  * Atomic setter for a single identity field.
  *
  * @param {string} characterId
@@ -507,6 +556,19 @@ export async function setStat(characterId, key, value) {
     const out = await request(`/sheets/${encodeURIComponent(characterId)}/stats/${encodeURIComponent(key)}`, {
         method: 'PUT',
         body: JSON.stringify({ value }),
+    });
+    return out?.character ?? null;
+}
+
+/**
+ * @param {string} characterId
+ * @param {string} key
+ * @param {number} delta
+ */
+export async function adjustStat(characterId, key, delta) {
+    const out = await request(`/sheets/${encodeURIComponent(characterId)}/stats/${encodeURIComponent(key)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ delta }),
     });
     return out?.character ?? null;
 }

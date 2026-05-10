@@ -63,9 +63,7 @@ export function handleTurnEvent(ev, ui) {
         const speaker = ev.actor && ev.actor !== 'narrator' && ui.characters?.get
             ? ui.characters.get(ev.actor)
             : null;
-        const avatar = speaker?.st_card_avatar
-            ? `/characters/${encodeURIComponent(speaker.st_card_avatar)}`
-            : (ev.avatar || null);
+        const avatar = speaker ? api.getPortraitUrl(speaker) : (ev.avatar || null);
         appendActorLine({
             actor: ev.actor,
             name: ev.name || (ev.actor === 'narrator' ? 'Narrator' : ev.actor),
@@ -80,12 +78,7 @@ export function handleTurnEvent(ev, ui) {
         const speaker = ev.actor_id && ui.characters?.get
             ? ui.characters.get(ev.actor_id)
             : null;
-        const avatar = speaker?.st_card_avatar
-            ? `/characters/${encodeURIComponent(speaker.st_card_avatar)}`
-            : null;
-        // Resolve the post-roll voice (may differ from the rolling actor —
-        // for social checks the Director picks the target NPC as the voice
-        // so they react in their own words instead of via the narrator).
+        const avatar = speaker ? api.getPortraitUrl(speaker) : null;
         const narrationSpeakerRole = ev.narration_speaker_role || 'narrator';
         let narrationSpeakerName = ev.narration_speaker_name || null;
         let narrationSpeakerAvatar = null;
@@ -93,9 +86,7 @@ export function handleTurnEvent(ev, ui) {
             const ns = ui.characters.get(ev.narration_speaker_id);
             if (ns) {
                 narrationSpeakerName = narrationSpeakerName || ns.name;
-                if (ns.st_card_avatar) {
-                    narrationSpeakerAvatar = `/characters/${encodeURIComponent(ns.st_card_avatar)}`;
-                }
+                narrationSpeakerAvatar = api.getPortraitUrl(ns);
             }
         } else if (narrationSpeakerRole === 'narrator') {
             narrationSpeakerName = narrationSpeakerName || 'Narrator';

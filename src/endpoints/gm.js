@@ -8,7 +8,11 @@
  * `/characters/*`, `/sheets/*`, `/scenes/*`, and `/turn`.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+
 import express from 'express';
+import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
 import * as campaignStore from '../gm-core/campaigns/store.js';
 import { validateCampaignInput, buildCurrentSituation } from '../gm-core/campaigns/schemas.js';
@@ -24,8 +28,6 @@ import { validateSceneInput } from '../gm-core/scenes/schemas.js';
 import * as transcript from '../gm-core/scenes/transcript.js';
 import * as summaryStore from '../gm-core/scenes/summary-store.js';
 import { runSceneEndPipeline } from '../gm-core/scenes/end-pipeline.js';
-import { writeStCardForCharacter, removeStCardForCharacter } from '../gm-core/integrations/st-card-mirror.js';
-import { mirrorCharacterToPersona } from '../gm-core/integrations/st-persona-mirror.js';
 import { createLlmClient } from '../gm-core/llm/client.js';
 import { runTurn } from '../gm-core/director/loop.js';
 import { getRuleset, getRulesetFor, listRulesetSummaries } from '../gm-core/rulesets/index.js';
@@ -709,18 +711,6 @@ router.post('/campaigns/:cid/characters', async (request, response) => {
             sheet: seededSheet,
         });
 
-        const stCardAvatar = writeStCardForCharacter(request.user.directories, character);
-        if (stCardAvatar && stCardAvatar !== character.st_card_avatar) {
-            const updated = characterStore.update(request.user.directories, campaign.id, character.id, {
-                st_card_avatar: stCardAvatar,
-            });
-            if (updated) character = updated;
-        }
-
-        if (character.is_player) {
-            mirrorCharacterToPersona(request.user.directories, character);
-        }
-
         campaignStore.touch(request.user.directories, campaign.id);
 
         // Best-effort opening synth: if the wizard sent a director_profile
@@ -799,16 +789,6 @@ router.patch('/characters/:char_id', (request, response) => {
     const updated = characterStore.update(request.user.directories, found.campaign_id, found.character.id, request.body ?? {});
     if (!updated) return response.status(404).json({ error: 'character not found' });
 
-    const stCardAvatar = writeStCardForCharacter(request.user.directories, updated);
-    if (stCardAvatar && stCardAvatar !== updated.st_card_avatar) {
-        const finalUpdate = characterStore.update(request.user.directories, found.campaign_id, updated.id, { st_card_avatar: stCardAvatar });
-        if (finalUpdate) {
-            if (finalUpdate.is_player) mirrorCharacterToPersona(request.user.directories, finalUpdate);
-            return response.json({ character: finalUpdate });
-        }
-    }
-
-    if (updated.is_player) mirrorCharacterToPersona(request.user.directories, updated);
     return response.json({ character: updated });
 });
 
@@ -843,16 +823,6 @@ router.put('/characters/:char_id/identity/:field', (request, response) => {
     const updated = characterStore.update(request.user.directories, found.campaign_id, found.character.id, { [field]: value });
     if (!updated) return response.status(404).json({ error: 'character not found' });
 
-    const stCardAvatar = writeStCardForCharacter(request.user.directories, updated);
-    if (stCardAvatar && stCardAvatar !== updated.st_card_avatar) {
-        const finalUpdate = characterStore.update(request.user.directories, found.campaign_id, updated.id, { st_card_avatar: stCardAvatar });
-        if (finalUpdate) {
-            if (finalUpdate.is_player) mirrorCharacterToPersona(request.user.directories, finalUpdate);
-            return response.json({ character: finalUpdate });
-        }
-    }
-
-    if (updated.is_player) mirrorCharacterToPersona(request.user.directories, updated);
     return response.json({ character: updated });
 });
 
@@ -885,19 +855,102 @@ router.delete('/characters/:char_id', async (request, response) => {
 
     const removed = characterStore.remove(directories, found.campaign_id, found.character.id);
     if (!removed) return response.status(404).json({ error: 'character not found' });
-    removeStCardForCharacter(directories, found.character);
 
     // Remove the disk mirror JSONL too (best-effort).
     try {
-        const fs = await import('node:fs');
-        const path = await import('node:path');
         const mirrorFile = path.join(campaignStore.campaignDir(directories, found.campaign_id), 'characters', `${found.character.id}.memories.jsonl`);
         if (fs.existsSync(mirrorFile)) fs.unlinkSync(mirrorFile);
     } catch (err) {
         console.warn('[gm.cascade] failed to remove character memory mirror', err?.message || err);
     }
 
+    // Also remove the campaign-scoped portrait PNG (best-effort).
+    try {
+        const portraitPath = characterStore.portraitFile(directories, found.campaign_id, found.character.id);
+        if (fs.existsSync(portraitPath)) fs.unlinkSync(portraitPath);
+    } catch (err) {
+        console.warn('[gm.cascade] failed to remove character portrait', err?.message || err);
+    }
+
     return response.status(204).end();
+});
+
+/* -------- Portraits (campaign-scoped) -------- */
+
+/**
+ * GET /api/gm/campaigns/:cid/characters/:char_id/portrait
+ *
+ * Serves the campaign-scoped portrait PNG for a character.
+ */
+router.get('/campaigns/:cid/characters/:char_id/portrait', (request, response) => {
+    const directories = request.user.directories;
+    const campaign = campaignStore.get(directories, request.params.cid);
+    if (!campaign) return response.status(404).json({ error: 'campaign not found' });
+    const character = characterStore.get(directories, campaign.id, request.params.char_id);
+    if (!character) return response.status(404).json({ error: 'character not found' });
+
+    const file = characterStore.portraitFile(directories, campaign.id, character.id);
+    if (!fs.existsSync(file)) return response.status(404).json({ error: 'no portrait on file' });
+
+    return response.sendFile(file);
+});
+
+/**
+ * PUT /api/gm/campaigns/:cid/characters/:char_id/portrait
+ *
+ * Upload a portrait PNG/JPEG. Accepts raw image bytes in the request body
+ * with a Content-Type of image/*. Validates file-type header bytes.
+ */
+router.put('/campaigns/:cid/characters/:char_id/portrait', express.raw({ type: 'image/*', limit: '5mb' }), (request, response) => {
+    const directories = request.user.directories;
+    const campaign = campaignStore.get(directories, request.params.cid);
+    if (!campaign) return response.status(404).json({ error: 'campaign not found' });
+    const character = characterStore.get(directories, campaign.id, request.params.char_id);
+    if (!character) return response.status(404).json({ error: 'character not found' });
+
+    const body = request.body;
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+        return response.status(400).json({ error: 'request body must be a non-empty image' });
+    }
+
+    const isPng = body[0] === 0x89 && body[1] === 0x50;
+    const isJpeg = body[0] === 0xFF && body[1] === 0xD8;
+    if (!isPng && !isJpeg) {
+        return response.status(400).json({ error: 'only PNG and JPEG are supported' });
+    }
+
+    try {
+        const file = characterStore.portraitFile(directories, campaign.id, character.id);
+        writeFileAtomicSync(file, body);
+        characterStore.invalidateCache(directories, campaign.id, character.id);
+        return response.json({ ok: true, has_portrait: true });
+    } catch (err) {
+        console.error('[gm] portrait upload failed', err);
+        return response.status(500).json({ error: 'failed to save portrait' });
+    }
+});
+
+/**
+ * DELETE /api/gm/campaigns/:cid/characters/:char_id/portrait
+ *
+ * Remove a character's portrait.
+ */
+router.delete('/campaigns/:cid/characters/:char_id/portrait', (request, response) => {
+    const directories = request.user.directories;
+    const campaign = campaignStore.get(directories, request.params.cid);
+    if (!campaign) return response.status(404).json({ error: 'campaign not found' });
+    const character = characterStore.get(directories, campaign.id, request.params.char_id);
+    if (!character) return response.status(404).json({ error: 'character not found' });
+
+    try {
+        const file = characterStore.portraitFile(directories, campaign.id, character.id);
+        if (fs.existsSync(file)) fs.unlinkSync(file);
+        characterStore.invalidateCache(directories, campaign.id, character.id);
+        return response.json({ ok: true, has_portrait: false });
+    } catch (err) {
+        console.error('[gm] portrait delete failed', err);
+        return response.status(500).json({ error: 'failed to delete portrait' });
+    }
 });
 
 /* -------- Sheets (Phase 2 — granular mutators) -------- */
@@ -1702,6 +1755,12 @@ async function runStreamingTurn(args) {
     const player = characters.find(c => c.is_player) || null;
     const charactersById = new Map(characters.map(c => [c.id, c]));
 
+    /** Build the campaign-scoped portrait URL for transcript persistence. */
+    const portraitUrl = (char) => {
+        if (!char || !char.has_portrait) return undefined;
+        return `/api/gm/campaigns/${encodeURIComponent(campaign.id)}/characters/${encodeURIComponent(char.id)}/portrait`;
+    };
+
     // Persist the player line FIRST so the transcript is never desynced.
     // The regenerate flow passes `skipPlayerLinePersist: true` because
     // the player line is already on disk from the original turn.
@@ -1709,7 +1768,7 @@ async function runStreamingTurn(args) {
         try {
             const playerLine = {
                 name: player ? player.name : 'Player',
-                force_avatar: player?.st_card_avatar ? `/characters/${encodeURIComponent(player.st_card_avatar)}` : undefined,
+                force_avatar: portraitUrl(player),
                 mes: userInput,
                 is_user: true,
                 is_system: false,
@@ -1789,9 +1848,7 @@ async function runStreamingTurn(args) {
                     : null;
                 const line = {
                     name: ev.name || ev.actor || 'Narrator',
-                    force_avatar: speaker?.st_card_avatar
-                        ? `/characters/${encodeURIComponent(speaker.st_card_avatar)}`
-                        : undefined,
+                    force_avatar: portraitUrl(speaker),
                     mes: ev.text || '',
                     is_user: false,
                     is_system: false,
@@ -1828,9 +1885,7 @@ async function runStreamingTurn(args) {
                     : null;
                 const line = {
                     name: ev.actor_name || speaker?.name || 'System',
-                    force_avatar: speaker?.st_card_avatar
-                        ? `/characters/${encodeURIComponent(speaker.st_card_avatar)}`
-                        : undefined,
+                    force_avatar: portraitUrl(speaker),
                     mes: ev.narration || '',
                     is_user: false,
                     is_system: true,
@@ -1846,9 +1901,7 @@ async function runStreamingTurn(args) {
                         narration_speaker_id: ev.narration_speaker_id || null,
                         narration_speaker_name: ev.narration_speaker_name || null,
                         narration_speaker_role: ev.narration_speaker_role || 'narrator',
-                        narration_speaker_avatar: narrationSpeaker?.st_card_avatar
-                            ? `/characters/${encodeURIComponent(narrationSpeaker.st_card_avatar)}`
-                            : null,
+                        narration_speaker_avatar: portraitUrl(narrationSpeaker) || null,
                     },
                 };
                 await transcript.appendLine(directories, campaign.id, found.scene.id, line);
@@ -2009,8 +2062,6 @@ async function runStreamingTurn(args) {
                 const updated = characterStore.update(directories, campaign.id, characterId, patch);
                 if (updated) {
                     charactersById.set(updated.id, updated);
-                    writeStCardForCharacter(directories, updated);
-                    if (updated.is_player) mirrorCharacterToPersona(directories, updated);
                 }
                 return updated;
             },

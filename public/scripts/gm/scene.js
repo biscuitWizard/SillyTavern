@@ -60,6 +60,11 @@ export async function renderScene(mount, { campaignId, sceneId, readOnly = false
     // opened from the in-scene sidebars resolves the right layout.
     setActiveCampaign(campaign);
 
+    // Notify the right-drawer character drawer about the active campaign.
+    window.dispatchEvent(new CustomEvent('tt:campaign-changed', {
+        detail: { campaign, characters, player },
+    }));
+
     enterSceneMode({
         scene,
         player,

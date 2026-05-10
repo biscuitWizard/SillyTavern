@@ -68,6 +68,11 @@ export async function renderCampaignMain(mount, { campaignId }) {
     const player = characters.find(c => c.is_player) || null;
     const scenes = await api.listScenes(campaignId).catch(() => []);
 
+    // Notify the right-drawer character drawer about the active campaign.
+    window.dispatchEvent(new CustomEvent('tt:campaign-changed', {
+        detail: { campaign, characters, player },
+    }));
+
     const topbar = renderTopbar(campaign);
     // The campaign hub uses a 3-column grid: left sidebar (PC + sheet) |
     // main content (hero / scenes / footer) | (no right sidebar in
@@ -259,10 +264,11 @@ function renderChargenCallout(campaign) {
     wrap.append(elText('div', '', 'Create your player character to start playing.'));
     const cta = el('button', 'gm-primary-btn');
     cta.type = 'button';
-    cta.innerHTML = '<i class="fa-solid fa-user-pen"></i> Create your character';
-    cta.addEventListener('click', () => openCharacterWizard(campaign.id, () => {
-        route({ view: 'campaign', campaignId: campaign.id });
-    }));
+    cta.innerHTML = '<i class="fa-solid fa-address-card"></i> Open Characters';
+    cta.addEventListener('click', () => {
+        const toggle = document.getElementById('rightNavDrawerIcon');
+        if (toggle) toggle.click();
+    });
     wrap.append(cta);
     return wrap;
 }

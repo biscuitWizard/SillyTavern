@@ -34,7 +34,7 @@ const amelia = {
     voice: 'Wry; understated; rare smiles.',
     background: 'Grew up running messages on the Old Roads.',
     sheet: { stats: {}, statuses: {}, items: [], skills: [], notes: '' },
-    st_card_avatar: null,
+    has_portrait: false,
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',
 };

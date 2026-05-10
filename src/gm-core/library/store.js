@@ -69,6 +69,16 @@ export function listIds(directories, campaignId) {
 }
 
 /**
+ * Path to the campaign-scoped portrait PNG for a character.
+ * @param {import('../../users.js').UserDirectoryList} directories
+ * @param {string} campaignId
+ * @param {string} characterId
+ */
+export function portraitFile(directories, campaignId, characterId) {
+    return path.join(charactersDir(directories, campaignId), `${sanitize(characterId)}.png`);
+}
+
+/**
  * @param {import('../../users.js').UserDirectoryList} directories
  * @param {string} campaignId
  * @param {string} characterId
@@ -80,6 +90,31 @@ export function get(directories, campaignId, characterId) {
     const file = characterFile(directories, campaignId, characterId);
     const raw = readJson(file, /** @type {Character | null} */(null));
     if (raw === null) return null;
+
+    // Legacy migration: strip deprecated st_card_avatar field and migrate
+    // the portrait PNG from the old ST characters dir into campaign-scoped
+    // storage on first read.
+    if (raw.st_card_avatar) {
+        try {
+            const oldPath = path.join(directories.characters, sanitize(raw.st_card_avatar));
+            const newPath = portraitFile(directories, campaignId, characterId);
+            if (fs.existsSync(oldPath) && !fs.existsSync(newPath)) {
+                ensureDir(path.dirname(newPath));
+                fs.copyFileSync(oldPath, newPath);
+            }
+        } catch (err) {
+            console.warn('[gm] portrait migration failed for', characterId, err?.message || err);
+        }
+        delete /** @type {any} */(raw).st_card_avatar;
+        raw.has_portrait = fs.existsSync(portraitFile(directories, campaignId, characterId));
+        try {
+            writeJson(file, raw);
+        } catch (err) {
+            console.warn('[gm] could not persist migration for', characterId, err?.message || err);
+        }
+    }
+
+    raw.has_portrait = fs.existsSync(portraitFile(directories, campaignId, characterId));
     cache.set(key, raw);
     return raw;
 }
@@ -161,6 +196,17 @@ export function update(directories, campaignId, characterId, patch) {
     writeJson(characterFile(directories, campaignId, characterId), merged);
     cache.set(cacheKey(directories.root, campaignId, characterId), merged);
     return merged;
+}
+
+/**
+ * Drop the cached Character record so the next `get` re-reads from disk
+ * (and re-derives `has_portrait`). Called after portrait upload/delete.
+ * @param {import('../../users.js').UserDirectoryList} directories
+ * @param {string} campaignId
+ * @param {string} characterId
+ */
+export function invalidateCache(directories, campaignId, characterId) {
+    cache.delete(cacheKey(directories.root, campaignId, characterId));
 }
 
 /**

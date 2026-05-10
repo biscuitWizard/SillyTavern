@@ -191,9 +191,9 @@ function buildCard(character, layout) {
     const card = el('div', 'gm-sidebar-card');
 
     const portrait = el('div', 'gm-sidebar-portrait');
-    if (character.st_card_avatar) {
+    if (character.has_portrait !== false) {
         const img = document.createElement('img');
-        img.src = `/characters/${encodeURIComponent(character.st_card_avatar)}`;
+        img.src = api.getPortraitUrl(character);
         img.alt = character.name;
         img.addEventListener('error', () => {
             portrait.innerHTML = '<i class="fa-solid fa-user-circle"></i>';

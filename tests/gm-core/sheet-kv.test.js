@@ -243,7 +243,7 @@ describe('sheet relationships (M2): per-other-character KV grid', () => {
                 notes: '',
                 // intentionally no `relationships` key
             },
-            st_card_avatar: null,
+            has_portrait: false,
             created_at: '2024-01-01T00:00:00.000Z',
             updated_at: '2024-01-01T00:00:00.000Z',
         };

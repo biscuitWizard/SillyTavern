@@ -50,7 +50,7 @@
  * @property {string} voice
  * @property {string} background
  * @property {CharacterSheet} sheet
- * @property {string | null} st_card_avatar  ST character card filename (e.g. `Jack.png`).
+ * @property {boolean} has_portrait  Derived: true when a portrait PNG exists on disk beside the JSON.
  * @property {string} created_at
  * @property {string} updated_at
  */
@@ -100,7 +100,7 @@ export function buildCharacter(input) {
         voice: String(input.voice ?? '').trim(),
         background: String(input.background ?? '').trim(),
         sheet: defaultSheet(input.sheet),
-        st_card_avatar: input.st_card_avatar ?? null,
+        has_portrait: input.has_portrait ?? false,
         created_at: input.created_at ?? now,
         updated_at: input.updated_at ?? now,
     };

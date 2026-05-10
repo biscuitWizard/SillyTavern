@@ -115,7 +115,7 @@ const STUB_CHARACTER = {
         notes: '',
         relationships: {},
     },
-    st_card_avatar: null,
+    has_portrait: false,
     created_at: '2024-01-01T00:00:00.000Z',
     updated_at: '2024-01-01T00:00:00.000Z',
 };
@@ -137,7 +137,7 @@ const STUB_PC = {
         notes: '',
         relationships: {},
     },
-    st_card_avatar: null,
+    has_portrait: false,
     created_at: '2024-01-01T00:00:00.000Z',
     updated_at: '2024-01-01T00:00:00.000Z',
 };

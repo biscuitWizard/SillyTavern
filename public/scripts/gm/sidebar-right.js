@@ -132,9 +132,9 @@ function buildRow(character, state, refreshList) {
 
     const portrait = document.createElement('div');
     portrait.className = 'gm-sidebar-roster-portrait';
-    if (character.st_card_avatar) {
+    if (character.has_portrait !== false) {
         const img = document.createElement('img');
-        img.src = `/characters/${encodeURIComponent(character.st_card_avatar)}`;
+        img.src = api.getPortraitUrl(character);
         img.alt = character.name;
         img.addEventListener('error', () => {
             portrait.innerHTML = '<i class="fa-solid fa-user-circle"></i>';

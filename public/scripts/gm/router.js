@@ -56,6 +56,9 @@ export async function route(next) {
     try {
         if (next.view === 'manager') {
             document.body.classList.remove('tt-mode-scene');
+            window.dispatchEvent(new CustomEvent('tt:campaign-changed', {
+                detail: { campaign: null, characters: [], player: null },
+            }));
             await renderCampaignManager(root);
             return;
         }

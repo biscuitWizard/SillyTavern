@@ -5987,7 +5987,7 @@
         </div>
         <div id="rightNavHolder" class="drawer">
             <div id="unimportantYes" class="drawer-toggle drawer-header">
-                <div id="rightNavDrawerIcon" class="drawer-icon fa-solid fa-address-card fa-fw closedIcon" title="Character Management" data-i18n="[title]Character Management">
+                <div id="rightNavDrawerIcon" class="drawer-icon fa-solid fa-address-card fa-fw closedIcon" title="Campaign Characters" data-i18n="[title]Campaign Characters">
                 </div>
             </div>
             <nav id="right-nav-panel" class="drawer-content closedDrawer fillRight">
@@ -6036,6 +6036,12 @@
                 <!-- end group peeking cope structure-->
 
                 <div class="scrollableInner">
+                    <!-- TTRPG Tavern: campaign character drawer. ST's original
+                         panels (#rm_ch_create_block, #rm_group_chats_block,
+                         #rm_characters_block) are hidden via gm.css but remain
+                         in the DOM for ST internals that reference them. -->
+                    <div id="gm-character-drawer"></div>
+
                     <div name="Solo Char Create/Edit Panel" id="rm_ch_create_block" class="right_menu flex-container flexFlowColumn" style="display: none;">
                         <form id="form_create" action="javascript:void(null);" method="post" enctype="multipart/form-data">
                             <div id="avatar-and-name-block">
