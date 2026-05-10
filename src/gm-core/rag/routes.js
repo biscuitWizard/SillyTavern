@@ -303,8 +303,44 @@ ragRouter.post('/lore/seed-packs', async (request, response) => {
     if (!result) return response.status(404).json({ error: 'pack not found' });
     try {
         const service = await getService(request);
+
+        // Ingest world lore entries.
         const ingestReport = await ingestCore({ memoryService: service, directories: request.user.directories, campaignId: cid });
-        response.json({ pack_applied: result, ingest: ingestReport });
+
+        // Ingest starter memories for each seeded character.
+        let memories_upserted = 0;
+        const memories_errors = [];
+        const { createHash } = await import('node:crypto');
+        for (const seed of result.character_seeds) {
+            for (let i = 0; i < seed.memories.length; i++) {
+                const content = seed.memories[i];
+                const rawId = `seed_pack:${packId}:${seed.character_id}:${i}`;
+                const id = createHash('sha256').update(rawId).digest('hex').slice(0, 16);
+                const record = buildMemoryRecord({
+                    id,
+                    kind: 'character_memory',
+                    scope_id: `${cid}/${seed.character_id}`,
+                    content,
+                    tags: ['seed_pack', packId],
+                    importance: 0.8,
+                    valence: 0,
+                    temporally_blind: true,
+                    source: `seed_pack:${packId}:${seed.character_id}:${i}`,
+                });
+                try {
+                    await service.write({ campaignId: cid, record, characterId: seed.character_id });
+                    memories_upserted++;
+                } catch (err) {
+                    memories_errors.push({ character_id: seed.character_id, index: i, error: err?.message || String(err) });
+                }
+            }
+        }
+
+        response.json({
+            pack_applied: result,
+            ingest: ingestReport,
+            character_memories: { upserted: memories_upserted, errors: memories_errors },
+        });
     } catch (err) {
         response.status(500).json({ error: err?.message || 'ingest after pack apply failed', pack_applied: result });
     }

@@ -5,6 +5,13 @@
  * authored seed lore that the wizard can copy into a new campaign. The
  * pack file is the canonical YAML; copying it into a campaign places it
  * at `{handle}/campaigns/{cid}/lore/core/{pack-id}.yaml`.
+ *
+ * A pack may also include a `characters` section — structured character
+ * definitions (id, name, appearance, personality, voice, background,
+ * sheet, starter_memories). `applyLorePack` creates one Character JSON
+ * per entry (skipping ids that already exist) and returns the
+ * `character_seeds` list so the caller can ingest starter memories into
+ * Qdrant immediately.
  */
 
 import fs from 'node:fs';
@@ -12,9 +19,11 @@ import path from 'node:path';
 import yaml from 'yaml';
 
 import { writeCoreLoreFile } from './store.js';
+import * as characterStore from '../library/store.js';
 
 /**
  * @typedef {import('./schemas.js').LorePack} LorePack
+ * @typedef {import('./schemas.js').PackCharacter} PackCharacter
  */
 
 const ROOT_GLOBAL = '__ttrpg_lore_packs_root';
@@ -92,18 +101,68 @@ export function loadLorePack(id) {
 }
 
 /**
- * Copy a bundled pack into a campaign's `lore/core/`.
+ * Copy a bundled pack into a campaign's `lore/core/` and instantiate any
+ * characters defined in `pack.characters`.
+ *
+ * Characters are created with `is_player: false`; any character whose id
+ * already exists in the campaign is skipped (idempotent re-application).
+ *
+ * Returns the list of character seeds (id + starter_memories) so the
+ * caller can immediately ingest the memories into Qdrant via
+ * `memoryService.write`.  Memories are NOT written to disk here; the
+ * caller is responsible for both disk-mirror and Qdrant upsert by calling
+ * `memoryService.write` for each entry in `character_seeds[*].memories`.
  *
  * @param {{
  *   directories: import('../../users.js').UserDirectoryList,
  *   campaignId: string,
  *   packId: string,
  * }} args
- * @returns {{ written: string, entry_count: number } | null}
+ * @returns {{
+ *   written: string,
+ *   entry_count: number,
+ *   characters_created: number,
+ *   characters_skipped: number,
+ *   character_seeds: Array<{ character_id: string, memories: string[] }>,
+ * } | null}
  */
 export function applyLorePack({ directories, campaignId, packId }) {
     const pack = loadLorePack(packId);
     if (!pack) return null;
+
     const written = writeCoreLoreFile(directories, campaignId, pack.pack_id, pack.entries || []);
-    return { written, entry_count: (pack.entries || []).length };
+
+    let characters_created = 0;
+    let characters_skipped = 0;
+    /** @type {Array<{ character_id: string, memories: string[] }>} */
+    const character_seeds = [];
+
+    for (const pc of (pack.characters || [])) {
+        if (!pc.id || !pc.name) continue;
+        const existing = characterStore.get(directories, campaignId, pc.id);
+        if (existing) {
+            characters_skipped++;
+            // Still surface memories so callers can re-sync Qdrant if needed.
+            if (Array.isArray(pc.starter_memories) && pc.starter_memories.length > 0) {
+                character_seeds.push({ character_id: pc.id, memories: pc.starter_memories });
+            }
+            continue;
+        }
+        characterStore.create(directories, campaignId, {
+            id: pc.id,
+            name: pc.name,
+            is_player: false,
+            appearance: pc.appearance || '',
+            personality: pc.personality || '',
+            voice: pc.voice || '',
+            background: pc.background || '',
+            sheet: pc.sheet || undefined,
+        });
+        characters_created++;
+        if (Array.isArray(pc.starter_memories) && pc.starter_memories.length > 0) {
+            character_seeds.push({ character_id: pc.id, memories: pc.starter_memories });
+        }
+    }
+
+    return { written, entry_count: (pack.entries || []).length, characters_created, characters_skipped, character_seeds };
 }

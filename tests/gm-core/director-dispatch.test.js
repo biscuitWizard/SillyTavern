@@ -251,14 +251,16 @@ describe('director dispatch: spawn_character', () => {
         expect(events[events.length - 1]).toEqual(expect.objectContaining({ kind: 'end_of_turn', reason: 'director' }));
     });
 
-    test('spawn_character: new without `name` is rejected by the schema validator', async () => {
-        // The full spawn_character: new flow is covered in
-        // director-dynamic-spawn.test.js; here we just lock in that the
-        // schema validator catches missing `name`/`brief` BEFORE the
-        // dispatcher runs, so addParticipant is never called.
+    test('spawn_character: new without `name` is rejected as a recoverable tool_error and the Director can recover', async () => {
+        // Schema validation now feeds back into the Director loop as a
+        // recoverable `tool_error` instead of halting the turn. The
+        // Director sees the validator's complaint in its tool history
+        // and gets to pick a different action — here, end_turn — for a
+        // clean exit. addParticipant is never called.
         const ctx = baseCtx();
         const director = makeDirector([
             { action: 'spawn_character', from_source: 'new', brief: 'a new face', rationale: 'invent' },
+            { action: 'end_turn', rationale: 'recovered after invalid_decision' },
         ]);
         const actor = makeActor(() => 'never');
         const events = [];
@@ -271,12 +273,17 @@ describe('director dispatch: spawn_character', () => {
             findCharacter: () => null,
             addParticipant,
         });
-        const errors = events.filter(e => e.kind === 'error');
-        expect(errors).toHaveLength(1);
-        expect(errors[0].code).toBe('invalid_decision');
-        expect(errors[0].message).toMatch(/spawn_character\.name required/);
+        // No fatal `error` — the loop must recover.
+        expect(events.filter(e => e.kind === 'error')).toHaveLength(0);
+        const toolErrors = events.filter(e => e.kind === 'tool_error');
+        expect(toolErrors).toHaveLength(1);
+        expect(toolErrors[0]).toEqual(expect.objectContaining({
+            tool: 'director_decision',
+            code: 'invalid_decision',
+        }));
+        expect(toolErrors[0].message).toMatch(/spawn_character\.name required/);
         expect(addParticipant).not.toHaveBeenCalled();
-        expect(events[events.length - 1]).toEqual(expect.objectContaining({ kind: 'end_of_turn', reason: 'error' }));
+        expect(events[events.length - 1]).toEqual(expect.objectContaining({ kind: 'end_of_turn', reason: 'director' }));
     });
 
     test('spawn_character: library with already-present id is a no-op', async () => {

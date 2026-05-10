@@ -190,11 +190,17 @@ describe('director dispatch: skill_check', () => {
         expect(events[events.length - 1]).toEqual(expect.objectContaining({ kind: 'end_of_turn', reason: 'director' }));
     });
 
-    test('skill_check on an actor not in the scene rejects with unknown_actor', async () => {
+    test('skill_check on an actor not in the scene emits a recoverable tool_error and the Director can recover', async () => {
+        // Recoverable error semantics: an unknown actor is a fixable
+        // mistake (Director picked the wrong id), not a fatal failure.
+        // The loop emits a `tool_error` event and feeds the same error
+        // back into Director history so its next decision can recover —
+        // here, end_turn.
         const ruleset = loadDnd5e();
         const ctx = baseCtx();
         const director = makeDirector([
             { action: 'skill_check', actor: 'bran', intent: 'sneak', rationale: 'oops' },
+            { action: 'end_turn', rationale: 'recovered after unknown_actor' },
         ]);
         const actor = makeActor(() => 'never');
         const events = [];
@@ -206,9 +212,14 @@ describe('director dispatch: skill_check', () => {
             emit: (e) => events.push(e),
             findCharacter: (id) => ({ jack, amelia })[id] || null,
         });
-        const errors = events.filter(e => e.kind === 'error');
-        expect(errors[0].code).toBe('unknown_actor');
-        expect(events[events.length - 1]).toEqual(expect.objectContaining({ kind: 'end_of_turn', reason: 'error' }));
+        expect(events.filter(e => e.kind === 'error')).toHaveLength(0);
+        const toolErrors = events.filter(e => e.kind === 'tool_error');
+        expect(toolErrors).toHaveLength(1);
+        expect(toolErrors[0]).toEqual(expect.objectContaining({
+            tool: 'skill_check',
+            code: 'unknown_actor',
+        }));
+        expect(events[events.length - 1]).toEqual(expect.objectContaining({ kind: 'end_of_turn', reason: 'director' }));
     });
 
     /**
@@ -445,5 +456,166 @@ describe('director dispatch: skill_check', () => {
         const rolls = events.filter(e => e.kind === 'roll');
         expect(rolls).toHaveLength(1);
         expect(rolls[0].narration_speaker_role).toBe('narrator');
+    });
+});
+
+describe('director loop: skill_check recoverable adjudicator errors', () => {
+    test('adjudicator returns an out-of-ruleset skill_id → tool_error + Director recovers cleanly', async () => {
+        // The adjudicator emits `Religion` (display-name capitalisation),
+        // which the runtime validator rejects (the dnd5e ruleset only
+        // contains lowercase `religion`-less skills like `arcana`,
+        // `history`, `insight`, etc). The loop must NOT halt; it should
+        // surface a `tool_error` carrying the validator's verbatim
+        // message + the valid skill ids as suggestions, and feed it
+        // back into the Director's history so its next decision can
+        // recover via end_turn.
+        const ruleset = loadDnd5e();
+        const ctx = baseCtx();
+        const director = makeDirector([
+            // (1) Director picks skill_check
+            { action: 'skill_check', actor: 'jack', intent: 'recall what this rune means', rationale: 'lore lookup' },
+            // (2) Adjudicator returns a malformed decision (capital R).
+            {
+                required: true,
+                skill_id: 'Religion',
+                ability_id: 'int',
+                dc: 12,
+                failure_severity: 'minor',
+                justification: 'recalling iconography',
+            },
+            // (3) Director recovers and ends the turn.
+            { action: 'end_turn', rationale: 'recovered' },
+        ]);
+        const actor = makeActor(() => 'never');
+
+        const events = [];
+        await runTurn({
+            ctx,
+            directorClient: director,
+            actorClient: actor,
+            ruleset,
+            emit: (e) => events.push(e),
+            findCharacter: (id) => ({ jack, amelia })[id] || null,
+        });
+
+        // The turn must NOT have halted on a fatal error.
+        expect(events.filter(e => e.kind === 'error')).toHaveLength(0);
+        expect(events.filter(e => e.kind === 'roll')).toHaveLength(0);
+
+        const toolErrors = events.filter(e => e.kind === 'tool_error');
+        expect(toolErrors).toHaveLength(1);
+        expect(toolErrors[0]).toEqual(expect.objectContaining({
+            tool: 'skill_check',
+            code: 'invalid_decision',
+        }));
+        // Verbatim validator message — preserved end-to-end so the
+        // Director can read exactly what shape was rejected.
+        expect(toolErrors[0].message).toMatch(/skill_id "Religion" is not in ruleset "dnd5e"/);
+        // Suggestions enumerate the valid skill ids so the Director
+        // doesn't have to guess.
+        expect(Array.isArray(toolErrors[0].suggestions)).toBe(true);
+        expect(toolErrors[0].suggestions.join('\n')).toMatch(/Valid skill_id values for ruleset "dnd5e"/);
+
+        expect(events[events.length - 1]).toEqual(expect.objectContaining({
+            kind: 'end_of_turn', reason: 'director',
+        }));
+    });
+
+    test('the same recoverable tool_error repeated more than 3 times trips the rate-limiter and ends the turn', async () => {
+        // The Director keeps calling skill_check with the same wrong
+        // skill_id and the adjudicator keeps returning the same bad
+        // decision. After 3 retries (4 attempts total) the loop must
+        // give up via a `tool_error_loop` error event so we never burn
+        // the entire step budget on a deterministic schema bug.
+        const ruleset = loadDnd5e();
+        const ctx = baseCtx();
+        // 4× (skill_check + Religion adjudication). The 5th is never
+        // reached because the rate-limiter ends the turn first.
+        const director = makeDirector([
+            { action: 'skill_check', actor: 'jack', intent: 'iconography', rationale: '1' },
+            { required: true, skill_id: 'Religion', ability_id: 'int', dc: 12, failure_severity: 'minor', justification: '1' },
+            { action: 'skill_check', actor: 'jack', intent: 'iconography', rationale: '2' },
+            { required: true, skill_id: 'Religion', ability_id: 'int', dc: 12, failure_severity: 'minor', justification: '2' },
+            { action: 'skill_check', actor: 'jack', intent: 'iconography', rationale: '3' },
+            { required: true, skill_id: 'Religion', ability_id: 'int', dc: 12, failure_severity: 'minor', justification: '3' },
+            { action: 'skill_check', actor: 'jack', intent: 'iconography', rationale: '4' },
+            { required: true, skill_id: 'Religion', ability_id: 'int', dc: 12, failure_severity: 'minor', justification: '4' },
+            // A queued end_turn that should NEVER be consumed because
+            // the rate-limiter terminated the turn already.
+            { action: 'end_turn', rationale: 'should not reach' },
+        ]);
+        const actor = makeActor(() => 'never');
+
+        const events = [];
+        await runTurn({
+            ctx,
+            directorClient: director,
+            actorClient: actor,
+            ruleset,
+            emit: (e) => events.push(e),
+            findCharacter: (id) => ({ jack, amelia })[id] || null,
+        });
+
+        // The cap is 3 consecutive retries — the 4th repeat is when the
+        // rate-limiter trips. The 4th tool_error event still fires (the
+        // dispatch ran before the loop counted it) but the loop refuses
+        // a 5th step and emits the fatal `tool_error_loop` instead.
+        const toolErrors = events.filter(e => e.kind === 'tool_error');
+        expect(toolErrors.length).toBe(4);
+        for (const ev of toolErrors) {
+            expect(ev).toEqual(expect.objectContaining({ tool: 'skill_check', code: 'invalid_decision' }));
+        }
+        const errors = events.filter(e => e.kind === 'error');
+        expect(errors).toHaveLength(1);
+        expect(errors[0]).toEqual(expect.objectContaining({ code: 'tool_error_loop' }));
+        expect(errors[0].message).toMatch(/skill_check:invalid_decision/);
+        expect(events[events.length - 1]).toEqual(expect.objectContaining({
+            kind: 'end_of_turn', reason: 'error',
+        }));
+    });
+
+    test('skill_check with no ruleset is recoverable: tool_error + Director recovers via end_turn', async () => {
+        const ctx = baseCtx();
+        const director = makeDirector([
+            { action: 'skill_check', actor: 'jack', intent: 'jump the ledge', rationale: 'risky leap' },
+            { action: 'end_turn', rationale: 'recovered after no_ruleset' },
+        ]);
+        const actor = makeActor(() => 'never');
+
+        const events = [];
+        await runTurn({
+            ctx,
+            directorClient: director,
+            actorClient: actor,
+            // ruleset omitted → no ruleset loaded.
+            emit: (e) => events.push(e),
+            findCharacter: (id) => ({ jack, amelia })[id] || null,
+        });
+
+        expect(events.filter(e => e.kind === 'error')).toHaveLength(0);
+        const toolErrors = events.filter(e => e.kind === 'tool_error');
+        expect(toolErrors).toHaveLength(1);
+        expect(toolErrors[0]).toEqual(expect.objectContaining({
+            tool: 'skill_check',
+            code: 'no_ruleset',
+        }));
+        expect(events[events.length - 1]).toEqual(expect.objectContaining({
+            kind: 'end_of_turn', reason: 'director',
+        }));
+    });
+
+    test('decideUserPrompt restates valid skill_id and failure_severity values when given a ruleset', async () => {
+        // Defence in depth for text-mode JSON fallbacks that bypass
+        // the JSON-schema enum constraint. The user-facing reminder
+        // must list the valid ids so the model has the correct
+        // spellings on hand.
+        const { decideUserPrompt } = await import('../../src/gm-core/skillcheck/prompts.js');
+        const ruleset = loadDnd5e();
+        const prompt = decideUserPrompt('jump the ledge', 'Jack', ruleset);
+        expect(prompt).toMatch(/STRICT FORMAT/);
+        expect(prompt).toMatch(/skill_id`\s*MUST/);
+        expect(prompt).toMatch(/athletics/);
+        // The user-prompt warns the model NOT to use display-name spellings.
+        expect(prompt).toMatch(/Religion/);
     });
 });

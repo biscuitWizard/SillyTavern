@@ -251,6 +251,60 @@ export async function runTurn({
     ];
     let lastPromptTokens = 0;
 
+    // Recoverable-error rate limiter. The Director can recover from a tool
+    // failure on the next step IF it picks a different action. If it keeps
+    // emitting decisions that produce the same error code, we eventually
+    // give up rather than burn the entire step budget on the same bug.
+    // Keyed by a short string ("validate_decision", "unsupported_action",
+    // `${tool}:${code}` for dispatch tool_errors). Reset on any successful
+    // continue.
+    /** @type {Map<string, number>} */
+    const toolErrorCounts = new Map();
+    /** @type {string | null} */
+    let lastToolErrorKey = null;
+    const MAX_SAME_TOOL_ERROR = 3;
+
+    /**
+     * Record a recoverable tool/validation error for rate-limiting purposes.
+     * Returns true when we've hit the cap and should bail out of the loop.
+     *
+     * @param {string} key
+     */
+    const noteToolError = (key) => {
+        const next = (toolErrorCounts.get(key) || 0) + 1;
+        toolErrorCounts.set(key, next);
+        lastToolErrorKey = key;
+        return next > MAX_SAME_TOOL_ERROR;
+    };
+
+    /** Reset rate-limit counters when something succeeds. */
+    const resetToolErrorCounts = () => {
+        if (toolErrorCounts.size === 0) return;
+        toolErrorCounts.clear();
+        lastToolErrorKey = null;
+    };
+
+    /**
+     * Append a synthetic tool-result user message describing a recoverable
+     * error AND emit a `tool_error` event. The Director sees the error on
+     * its next step and gets a chance to pick a different action.
+     *
+     * @param {{ tool: string, code: string, message: string, suggestions?: string[] }} err
+     */
+    const recordRecoverableToolError = async (err) => {
+        await emit({
+            kind: 'tool_error',
+            tool: err.tool,
+            code: err.code,
+            message: err.message,
+            suggestions: err.suggestions,
+        });
+        directorHistory.push({
+            role: 'user',
+            content: formatToolError(err),
+        });
+    };
+
     while (step < maxSteps) {
         if (signal?.aborted) {
             await emit({ kind: 'end_of_turn', reason: 'aborted' });
@@ -270,6 +324,14 @@ export async function runTurn({
                 signal,
             });
         } catch (err) {
+            // Network / timeout / HTTP failures are infrastructure issues
+            // — there's nothing the Director can do about them, so end the
+            // turn. Logical / parse / schema-validation failures (which
+            // come back as LlmError with retryable=true from the parser)
+            // we still treat as fatal here since we can't get a fresh
+            // decision back without another call anyway; the rate limit
+            // below catches the case where we DO get a decision but
+            // dispatch can't act on it.
             await emitError(emit, err, 'director');
             await emit({ kind: 'end_of_turn', reason: 'error' });
             return;
@@ -277,20 +339,57 @@ export async function runTurn({
 
         const validationErr = validateDirectorDecision(decision);
         if (validationErr) {
-            await emit({ kind: 'error', code: 'invalid_decision', message: validationErr, retryable: false });
-            await emit({ kind: 'end_of_turn', reason: 'error' });
-            return;
+            const key = 'validate_decision';
+            const exhausted = noteToolError(key);
+            if (exhausted) {
+                await emit({
+                    kind: 'error',
+                    code: 'invalid_decision',
+                    message: `${validationErr} (gave up after ${MAX_SAME_TOOL_ERROR} retries)`,
+                    retryable: false,
+                });
+                await emit({ kind: 'end_of_turn', reason: 'error' });
+                return;
+            }
+            // Record the (failed) decision so the Director sees what it
+            // sent, then surface a tool_error and let it try again.
+            directorHistory.push({ role: 'assistant', content: JSON.stringify(decision) });
+            await recordRecoverableToolError({
+                tool: 'director_decision',
+                code: 'invalid_decision',
+                message: validationErr,
+                suggestions: [
+                    'Re-emit a decision matching the DirectorDecision schema EXACTLY (action, plus the action-specific fields).',
+                    'If you are unsure, pick `end_turn` with a short rationale.',
+                ],
+            });
+            continue;
         }
 
         if (!SUPPORTED_ACTIONS.has(decision.action)) {
-            await emit({
-                kind: 'error',
+            const key = `unsupported_action:${decision.action}`;
+            const exhausted = noteToolError(key);
+            if (exhausted) {
+                await emit({
+                    kind: 'error',
+                    code: 'unsupported_action',
+                    message: `Action "${decision.action}" is not yet implemented in this phase (gave up after ${MAX_SAME_TOOL_ERROR} retries).`,
+                    retryable: false,
+                });
+                await emit({ kind: 'end_of_turn', reason: 'error' });
+                return;
+            }
+            directorHistory.push({ role: 'assistant', content: JSON.stringify(decision) });
+            await recordRecoverableToolError({
+                tool: 'director_decision',
                 code: 'unsupported_action',
                 message: `Action "${decision.action}" is not yet implemented in this phase.`,
-                retryable: false,
+                suggestions: [
+                    `Supported actions: ${[...SUPPORTED_ACTIONS].join(', ')}.`,
+                    'Pick one of those — or `end_turn` if no further beat is needed.',
+                ],
             });
-            await emit({ kind: 'end_of_turn', reason: 'error' });
-            return;
+            continue;
         }
 
         // Record the Director's decision in history before we dispatch.
@@ -387,6 +486,29 @@ export async function runTurn({
         if (outcome.kind === 'end') {
             await emit({ kind: 'end_of_turn', reason: 'error' });
             return;
+        }
+
+        // If the dispatcher emitted a recoverable tool_error, count it
+        // against the consecutive-same-error cap. The Director is welcome
+        // to keep using the tool — just not to keep emitting the SAME
+        // failing call shape over and over. If it picks any other action
+        // (or any other code), counters reset.
+        if (outcome.tool_error_key) {
+            const exhausted = noteToolError(outcome.tool_error_key);
+            if (exhausted) {
+                await emit({
+                    kind: 'error',
+                    code: 'tool_error_loop',
+                    message: `Director repeated the same recoverable error (${outcome.tool_error_key}) more than ${MAX_SAME_TOOL_ERROR} times; ending turn.`,
+                    retryable: false,
+                });
+                await emit({ kind: 'end_of_turn', reason: 'error' });
+                return;
+            }
+        } else if (lastToolErrorKey) {
+            // Reset rate-limit counters on any successful (non-tool-error)
+            // step so a recovered Director gets a clean slate.
+            resetToolErrorCounts();
         }
 
         directorHistory.push({
@@ -616,6 +738,7 @@ async function dispatchSpeak({
         });
         return {
             kind: 'continue',
+            tool_error_key: 'speak:unknown_actor',
             summary: formatToolError({ tool: 'speak', code: 'unknown_actor', message, suggestions }),
         };
     }
@@ -632,6 +755,7 @@ async function dispatchSpeak({
         });
         return {
             kind: 'continue',
+            tool_error_key: 'speak:character_not_found',
             summary: formatToolError({ tool: 'speak', code: 'character_not_found', message, suggestions }),
         };
     }
@@ -644,6 +768,7 @@ async function dispatchSpeak({
         });
         return {
             kind: 'continue',
+            tool_error_key: 'speak:cannot_speak_for_player',
             summary: formatToolError({
                 tool: 'speak',
                 code: 'cannot_speak_for_player',
@@ -906,35 +1031,59 @@ function formatToolError({ tool, code, message, suggestions }) {
  */
 async function dispatchSkillCheck({ ctx, decision, ruleset, adjudicatorClient, actorClient, rng, emit, signal, findCharacter, memoryService, cid, sceneIndex }) {
     if (!ruleset) {
+        const message = 'skill_check: no ruleset is loaded for this campaign. Pick a non-roll beat (speak / narrator) or end_turn.';
         await emit({
-            kind: 'error',
+            kind: 'tool_error',
+            tool: 'skill_check',
             code: 'no_ruleset',
-            message: 'skill_check: no ruleset is loaded for this campaign.',
-            retryable: false,
+            message,
         });
-        return { kind: 'end' };
+        return {
+            kind: 'continue',
+            tool_error_key: 'skill_check:no_ruleset',
+            summary: formatToolError({
+                tool: 'skill_check',
+                code: 'no_ruleset',
+                message,
+                suggestions: ['Pick `speak` (narrator or actor) or `end_turn` instead — no rolls are possible without a ruleset.'],
+            }),
+        };
     }
 
     const actorId = decision.actor;
     const inScene = (ctx.actors || []).some(a => a.id === actorId);
     if (!actorId || !inScene) {
+        const suggestions = buildUnknownActorSuggestions(ctx, actorId || '');
+        const message = `skill_check: actor "${actorId}" is not in the current scene roster.`;
         await emit({
-            kind: 'error',
+            kind: 'tool_error',
+            tool: 'skill_check',
             code: 'unknown_actor',
-            message: `skill_check: actor "${actorId}" is not in the current scene roster.`,
-            retryable: false,
+            message,
+            suggestions,
         });
-        return { kind: 'end' };
+        return {
+            kind: 'continue',
+            tool_error_key: 'skill_check:unknown_actor',
+            summary: formatToolError({ tool: 'skill_check', code: 'unknown_actor', message, suggestions }),
+        };
     }
     const character = findCharacter ? findCharacter(actorId) : null;
     if (!character) {
+        const message = `skill_check: could not load character "${actorId}".`;
+        const suggestions = buildUnknownActorSuggestions(ctx, actorId);
         await emit({
-            kind: 'error',
+            kind: 'tool_error',
+            tool: 'skill_check',
             code: 'character_not_found',
-            message: `skill_check: could not load character "${actorId}".`,
-            retryable: false,
+            message,
+            suggestions,
         });
-        return { kind: 'end' };
+        return {
+            kind: 'continue',
+            tool_error_key: 'skill_check:character_not_found',
+            summary: formatToolError({ tool: 'skill_check', code: 'character_not_found', message, suggestions }),
+        };
     }
 
     await emit({ kind: 'status', phase: 'rolling' });
@@ -949,8 +1098,35 @@ async function dispatchSkillCheck({ ctx, decision, ruleset, adjudicatorClient, a
             signal,
         });
     } catch (err) {
-        await emitError(emit, err, 'adjudicator');
-        return { kind: 'end' };
+        // Recoverable: the adjudicator returned a malformed / out-of-ruleset
+        // decision (most commonly a wrong-cased skill_id). Surface as a
+        // tool_error and let the Director pick a different beat — a
+        // different skill, narrator prose, or end_turn — rather than
+        // halting the whole turn. The validation error message itself
+        // (e.g. `decision.skill_id "Religion" is not in ruleset "dnd5e"`)
+        // is preserved verbatim so the Director can see exactly what
+        // shape was rejected.
+        const errCode = (err && /** @type {any} */(err).code) || 'adjudicator_failed';
+        const errMsg = (err && /** @type {any} */(err).message) || String(err);
+        const validSkills = (ruleset.skills || []).map(s => s.id);
+        const validSeverities = (ruleset.severities || []).map(s => s.id);
+        const suggestions = [
+            `Valid skill_id values for ruleset "${ruleset.id}": ${validSkills.join(', ') || '(none)'}.`,
+            `Valid failure_severity values: ${validSeverities.join(', ') || '(none)'}.`,
+            'If no skill fits, set required=false (no roll) or pick `speak` / `end_turn` instead.',
+        ];
+        await emit({
+            kind: 'tool_error',
+            tool: 'skill_check',
+            code: errCode,
+            message: errMsg,
+            suggestions,
+        });
+        return {
+            kind: 'continue',
+            tool_error_key: `skill_check:${errCode}`,
+            summary: formatToolError({ tool: 'skill_check', code: errCode, message: errMsg, suggestions }),
+        };
     }
 
     if (!skillDecision.required) {
@@ -974,13 +1150,22 @@ async function dispatchSkillCheck({ ctx, decision, ruleset, adjudicatorClient, a
     try {
         outcome = skillEngine.roll({ ruleset, character, decision: skillDecision, rng });
     } catch (err) {
+        const message = `skill_check roll: ${err?.message || err}`;
+        const suggestions = [
+            'The roll function rejected the decision shape. Pick a different skill, set required=false on the next adjudication, or pick a non-roll beat.',
+        ];
         await emit({
-            kind: 'error',
+            kind: 'tool_error',
+            tool: 'skill_check',
             code: 'roll_failed',
-            message: `skill_check roll: ${err?.message || err}`,
-            retryable: false,
+            message,
+            suggestions,
         });
-        return { kind: 'end' };
+        return {
+            kind: 'continue',
+            tool_error_key: 'skill_check:roll_failed',
+            summary: formatToolError({ tool: 'skill_check', code: 'roll_failed', message, suggestions }),
+        };
     }
 
     // Build the chat-side card before we kick off the narrator so we can
@@ -1180,6 +1365,7 @@ async function dispatchSearchLibrary({ ctx, decision }) {
     if (!query) {
         return {
             kind: 'continue',
+            tool_error_key: 'search_library:empty_query',
             summary: formatToolError({
                 tool: 'search_library',
                 code: 'empty_query',
@@ -1258,6 +1444,7 @@ async function dispatchSpawn({ ctx, decision, emit, addParticipant, resolveChara
         });
         return {
             kind: 'continue',
+            tool_error_key: 'spawn_character:invalid_source',
             summary: formatToolError({ tool: 'spawn_character', code: 'invalid_source', message, suggestions }),
         };
     }
@@ -1273,6 +1460,7 @@ async function dispatchSpawn({ ctx, decision, emit, addParticipant, resolveChara
         });
         return {
             kind: 'continue',
+            tool_error_key: 'spawn_character:missing_ref',
             summary: formatToolError({ tool: 'spawn_character', code: 'missing_ref', message, suggestions }),
         };
     }
@@ -1289,6 +1477,7 @@ async function dispatchSpawn({ ctx, decision, emit, addParticipant, resolveChara
         });
         return {
             kind: 'continue',
+            tool_error_key: 'spawn_character:character_not_found',
             summary: formatToolError({ tool: 'spawn_character', code: 'character_not_found', message, suggestions }),
         };
     }
@@ -1377,6 +1566,7 @@ async function dispatchSpawnNew({ ctx, decision, emit, transientCharacters }) {
         });
         return {
             kind: 'continue',
+            tool_error_key: 'spawn_character:missing_fields',
             summary: formatToolError({ tool: 'spawn_character', code: 'missing_fields', message, suggestions }),
         };
     }
@@ -1474,6 +1664,7 @@ async function dispatchRemove({ ctx, decision, emit, removeParticipant, findChar
         });
         return {
             kind: 'continue',
+            tool_error_key: 'remove_character:missing_character_id',
             summary: formatToolError({ tool: 'remove_character', code: 'missing_character_id', message }),
         };
     }
@@ -1488,6 +1679,7 @@ async function dispatchRemove({ ctx, decision, emit, removeParticipant, findChar
         });
         return {
             kind: 'continue',
+            tool_error_key: 'remove_character:character_not_found',
             summary: formatToolError({ tool: 'remove_character', code: 'character_not_found', message }),
         };
     }
@@ -1501,6 +1693,7 @@ async function dispatchRemove({ ctx, decision, emit, removeParticipant, findChar
         });
         return {
             kind: 'continue',
+            tool_error_key: 'remove_character:cannot_remove_player',
             summary: formatToolError({ tool: 'remove_character', code: 'cannot_remove_player', message }),
         };
     }
@@ -1614,6 +1807,7 @@ async function dispatchMutateSheet({ ctx, decision, emit, findCharacter, mutateS
         await emit({ kind: 'tool_error', tool: 'mutate_sheet', code: 'missing_character_id', message });
         return {
             kind: 'continue',
+            tool_error_key: 'mutate_sheet:missing_character_id',
             summary: formatToolError({ tool: 'mutate_sheet', code: 'missing_character_id', message }),
         };
     }
@@ -1625,6 +1819,7 @@ async function dispatchMutateSheet({ ctx, decision, emit, findCharacter, mutateS
         await emit({ kind: 'tool_error', tool: 'mutate_sheet', code: 'unknown_character', message, suggestions });
         return {
             kind: 'continue',
+            tool_error_key: 'mutate_sheet:unknown_character',
             summary: formatToolError({ tool: 'mutate_sheet', code: 'unknown_character', message, suggestions }),
         };
     }
@@ -1635,6 +1830,7 @@ async function dispatchMutateSheet({ ctx, decision, emit, findCharacter, mutateS
         await emit({ kind: 'tool_error', tool: 'mutate_sheet', code: 'character_not_found', message });
         return {
             kind: 'continue',
+            tool_error_key: 'mutate_sheet:character_not_found',
             summary: formatToolError({ tool: 'mutate_sheet', code: 'character_not_found', message }),
         };
     }
@@ -1783,6 +1979,7 @@ async function dispatchMutateIdentity({ ctx, decision, emit, findCharacter, upda
         await emit({ kind: 'tool_error', tool: 'mutate_identity', code: 'missing_character_id', message });
         return {
             kind: 'continue',
+            tool_error_key: 'mutate_identity:missing_character_id',
             summary: formatToolError({ tool: 'mutate_identity', code: 'missing_character_id', message }),
         };
     }
@@ -1794,6 +1991,7 @@ async function dispatchMutateIdentity({ ctx, decision, emit, findCharacter, upda
         await emit({ kind: 'tool_error', tool: 'mutate_identity', code: 'unknown_character', message, suggestions });
         return {
             kind: 'continue',
+            tool_error_key: 'mutate_identity:unknown_character',
             summary: formatToolError({ tool: 'mutate_identity', code: 'unknown_character', message, suggestions }),
         };
     }
@@ -1804,6 +2002,7 @@ async function dispatchMutateIdentity({ ctx, decision, emit, findCharacter, upda
         await emit({ kind: 'tool_error', tool: 'mutate_identity', code: 'invalid_field', message });
         return {
             kind: 'continue',
+            tool_error_key: 'mutate_identity:invalid_field',
             summary: formatToolError({ tool: 'mutate_identity', code: 'invalid_field', message }),
         };
     }
@@ -1815,6 +2014,7 @@ async function dispatchMutateIdentity({ ctx, decision, emit, findCharacter, upda
         await emit({ kind: 'tool_error', tool: 'mutate_identity', code: 'character_not_found', message });
         return {
             kind: 'continue',
+            tool_error_key: 'mutate_identity:character_not_found',
             summary: formatToolError({ tool: 'mutate_identity', code: 'character_not_found', message }),
         };
     }

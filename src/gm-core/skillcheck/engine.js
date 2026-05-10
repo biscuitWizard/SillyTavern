@@ -49,7 +49,7 @@ import { decideSystemPrompt, decideUserPrompt } from './prompts.js';
 export async function decide({ ruleset, intent, actorName, client, signal }) {
     const schema = buildSkillCheckDecisionSchema(ruleset);
     const system = decideSystemPrompt(ruleset);
-    const user = decideUserPrompt(intent, actorName);
+    const user = decideUserPrompt(intent, actorName, ruleset);
 
     let raw;
     try {

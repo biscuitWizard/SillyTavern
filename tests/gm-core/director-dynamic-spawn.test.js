@@ -238,14 +238,16 @@ describe('spawn_character: from_source = "new" (transient, promote-on-speak)', (
         }));
     });
 
-    test('spawn-new without name or brief is caught by the schema validator', async () => {
-        // The validator gates the dispatcher and emits a hard `error` with
-        // `code: invalid_decision` (this preserves the invariant that the
-        // Director's structured output must be schema-valid). The full
-        // recovery flow is exercised in the unknown-actor test elsewhere.
+    test('spawn-new without name or brief surfaces a recoverable tool_error and lets the Director recover', async () => {
+        // The validator gates the dispatcher and surfaces `invalid_decision`
+        // as a `tool_error` event so the Director can pick a different
+        // action on its next step (here, end_turn) instead of halting the
+        // turn. This preserves the invariant that the Director's structured
+        // output must be schema-valid while keeping the surface forgiving.
         const ctx = baseCtx();
         const director = makeDirector([
             { action: 'spawn_character', from_source: 'new', rationale: 'forgot fields' },
+            { action: 'end_turn', rationale: 'recovered after invalid_decision' },
         ]);
         const actor = makeActor(() => 'never');
         const events = [];
@@ -258,11 +260,15 @@ describe('spawn_character: from_source = "new" (transient, promote-on-speak)', (
             createCharacter: jest.fn(),
             addParticipant: jest.fn(),
         });
-        const errors = events.filter(e => e.kind === 'error');
-        expect(errors).toHaveLength(1);
-        expect(errors[0].code).toBe('invalid_decision');
+        expect(events.filter(e => e.kind === 'error')).toHaveLength(0);
+        const toolErrors = events.filter(e => e.kind === 'tool_error');
+        expect(toolErrors).toHaveLength(1);
+        expect(toolErrors[0]).toEqual(expect.objectContaining({
+            tool: 'director_decision',
+            code: 'invalid_decision',
+        }));
         expect(events[events.length - 1]).toEqual(expect.objectContaining({
-            kind: 'end_of_turn', reason: 'error',
+            kind: 'end_of_turn', reason: 'director',
         }));
     });
 });

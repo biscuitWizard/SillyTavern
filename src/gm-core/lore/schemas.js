@@ -22,11 +22,31 @@ import { WORLD_LORE_ENTRY_KINDS, WORLD_LORE_SOURCE_TYPES } from '../rag/schemas.
  */
 
 /**
+ * A character definition bundled inside a lore pack.
+ *
+ * When a pack is applied to a campaign, `applyLorePack` creates one
+ * `Character` JSON file per entry (skipping any that already exist) and
+ * returns the `starter_memories` list so the caller can ingest them into
+ * Qdrant immediately via `memoryService.write`.
+ *
+ * @typedef {Object} PackCharacter
+ * @property {string} id                slug used as the character id
+ * @property {string} name
+ * @property {string} [appearance]
+ * @property {string} [personality]
+ * @property {string} [voice]
+ * @property {string} [background]
+ * @property {import('../library/schemas.js').CharacterSheet} [sheet]
+ * @property {string[]} [starter_memories]   first-person memory strings
+ */
+
+/**
  * @typedef {Object} LorePack
  * @property {string} pack_id
  * @property {string} pack_name
  * @property {string} [description]
  * @property {LoreEntry[]} entries
+ * @property {PackCharacter[]} [characters]   optional: characters to instantiate when the pack is applied
  */
 
 /**

@@ -17,6 +17,9 @@
  * returns raw cosines.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+
 import { collectionNameFor, DEFAULT_DECAY, buildMemoryRecord } from './schemas.js';
 import { applyDecayToHits } from './decay.js';
 import { buildFilter } from './qdrant.js';
@@ -305,6 +308,71 @@ export function createMemoryService(deps) {
     }
 
     /**
+     * Delete every memory record whose `source` field starts with the
+     * given prefix. Used by the scene-message DELETE endpoint to cascade
+     * a transcript line removal into derived memories:
+     *
+     *   - `opinion-extractor:{sceneId}:msg-{messageIndex}` (character_memory)
+     *   - `narrator-continuity:{sceneId}` (narrator_memory)
+     *
+     * Sweeps every plausible mirror file:
+     *   - `narrator_memory`, `director_memory`, `world_lore`, `player_journal`
+     *   - all per-character `character_memory` files in `characters/`.
+     *
+     * Each match is deleted via the standard `remove` helper so the
+     * Qdrant point is removed too. Failures are best-effort and logged;
+     * the caller treats this as an opportunistic cascade and does not
+     * abort the transcript edit if a memory cleanup fails.
+     *
+     * @param {{ campaignId: string, sourcePrefix: string }} args
+     * @returns {Promise<{ removed: number, errors: string[] }>}
+     */
+    async function deleteRecordsBySource({ campaignId, sourcePrefix }) {
+        if (!sourcePrefix) return { removed: 0, errors: [] };
+        let removed = 0;
+        const errors = [];
+
+        /**
+         * @param {MemoryKind} kind
+         * @param {string} [characterId]
+         */
+        const sweepKind = async (kind, characterId) => {
+            const file = mirror.mirrorPath(directories, campaignId, kind, characterId);
+            const all = mirror.readMirrorJsonl(file);
+            const targets = all.filter(r => typeof r.source === 'string' && r.source.startsWith(sourcePrefix));
+            for (const r of targets) {
+                try {
+                    const result = await remove({ campaignId, id: r.id, kind, characterId });
+                    if (result.removed_disk || result.removed_qdrant) removed++;
+                    if (result.error) errors.push(`${kind}:${r.id}: ${result.error}`);
+                } catch (err) {
+                    errors.push(`${kind}:${r.id}: ${err?.message || String(err)}`);
+                }
+            }
+        };
+
+        await sweepKind('narrator_memory');
+        await sweepKind('director_memory');
+        await sweepKind('world_lore');
+        await sweepKind('player_journal');
+
+        // character_memory: enumerate per-character JSONLs in characters/.
+        const charDir = path.dirname(mirror.mirrorPath(directories, campaignId, 'character_memory', '__placeholder__'));
+        try {
+            const entries = fs.existsSync(charDir) ? fs.readdirSync(charDir) : [];
+            for (const ent of entries) {
+                if (!ent.endsWith('.memories.jsonl')) continue;
+                const cid = ent.replace(/\.memories\.jsonl$/, '');
+                if (!cid) continue;
+                await sweepKind('character_memory', cid);
+            }
+        } catch (err) {
+            errors.push(`character_memory enumerate: ${err?.message || String(err)}`);
+        }
+        return { removed, errors };
+    }
+
+    /**
      * List records in a collection. Used by the Explorer.
      *
      * @param {{
@@ -396,6 +464,7 @@ export function createMemoryService(deps) {
         search,
         write,
         remove,
+        deleteRecordsBySource,
         list,
         patch,
         embedder,

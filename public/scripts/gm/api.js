@@ -297,6 +297,68 @@ export async function appendSceneMessage(sceneId, line) {
 }
 
 /**
+ * Edit the body text of a single transcript line by 0-based index. The
+ * server treats the same index as `mesid` because scene mode replays
+ * the JSONL into ST's `chat[]` array 1:1.
+ *
+ * @param {string} sceneId
+ * @param {number} lineIndex
+ * @param {string} mes
+ * @returns {Promise<{ line: any, scene: any }>}
+ */
+export async function editSceneMessage(sceneId, lineIndex, mes) {
+    return request(`/scenes/${encodeURIComponent(sceneId)}/messages/${encodeURIComponent(String(lineIndex))}`, {
+        method: 'PUT',
+        body: JSON.stringify({ mes: typeof mes === 'string' ? mes : '' }),
+    });
+}
+
+/**
+ * Delete a single transcript line. The server best-effort cascades any
+ * RAG records derived from that line (opinion-extractor character
+ * memories + narrator-continuity); the response carries a
+ * `cascade.removed` count + any per-record errors.
+ *
+ * @param {string} sceneId
+ * @param {number} lineIndex
+ * @returns {Promise<{ removed: any, scene: any, cascade: { attempted: boolean, removed: number, errors: string[] } }>}
+ */
+export async function deleteSceneMessage(sceneId, lineIndex) {
+    return request(`/scenes/${encodeURIComponent(sceneId)}/messages/${encodeURIComponent(String(lineIndex))}`, {
+        method: 'DELETE',
+    });
+}
+
+/**
+ * Regenerate the AI-side beats following the most-recent player input
+ * at-or-before `lineIndex`. The transcript is truncated to that player
+ * line (everything after is dropped) and a fresh Director turn is run
+ * with the same player input. Returns the raw `Response` so callers can
+ * stream the NDJSON body via `consumeTurnStream` exactly like
+ * `startTurn`.
+ *
+ * @param {string} sceneId
+ * @param {number} lineIndex
+ * @param {{ director_profile: object, actor_profile: object, summarizer_profile?: object | null }} body
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<Response>}
+ */
+export async function regenerateSceneMessage(sceneId, lineIndex, body, signal) {
+    const url = `${BASE}/scenes/${encodeURIComponent(sceneId)}/messages/${encodeURIComponent(String(lineIndex))}/regenerate`;
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify(body),
+        signal,
+    });
+    if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        throw new GmApiError(response.status, text || `${url} ${response.status}`, text);
+    }
+    return response;
+}
+
+/**
  * Phase 8: triggers the scene-end pipeline. Returns the full payload so
  * the caller can render `memories_extracted` / `summary.headline` in
  * the toast or detail view.

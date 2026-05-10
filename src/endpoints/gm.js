@@ -1195,6 +1195,229 @@ router.get('/scenes/:id/transcript', (request, response) => {
 });
 
 /**
+ * PUT /api/gm/scenes/:id/messages/:line_index
+ *
+ * Patch the text of a single transcript line. Body: `{ mes: string }`.
+ *
+ * The line index is the 0-based index into the scene's JSONL — exactly
+ * the value the frontend uses for `mesid` (because `enterSceneMode`
+ * replays lines 1:1). Roll cards are intentionally not editable; the
+ * pencil icon is hidden in scene mode.
+ *
+ * For roll cards we still mirror `mes` into `extra.narration` so the
+ * frontend's roll-card renderer (which reads from `extra`) stays in
+ * sync.
+ */
+router.put('/scenes/:id/messages/:line_index', async (request, response) => {
+    const found = sceneStore.findById(request.user.directories, request.params.id);
+    if (!found) return response.status(404).json({ error: 'scene not found' });
+    if (found.scene.status === 'closed') return response.status(409).json({ error: 'scene is closed' });
+
+    const idx = Number(request.params.line_index);
+    if (!Number.isInteger(idx) || idx < 0) {
+        return response.status(400).json({ error: 'line_index must be a non-negative integer' });
+    }
+
+    const { mes } = request.body ?? {};
+    if (typeof mes !== 'string') {
+        return response.status(400).json({ error: 'mes must be a string' });
+    }
+
+    try {
+        const lines = transcript.readLines(request.user.directories, found.campaign_id, found.scene.id, 0);
+        if (idx >= lines.length) {
+            return response.status(404).json({ error: 'line not found' });
+        }
+        const target = lines[idx];
+        if (target?.extra?.kind === 'roll') {
+            // Roll cards: edit the narration body, not the `mes` body
+            // alone — the renderer prefers `extra.narration` and the
+            // raw `mes` is what surfaces if metadata is stripped.
+            const updated = await transcript.updateLine(
+                request.user.directories,
+                found.campaign_id,
+                found.scene.id,
+                idx,
+                { mes, extra: { narration: mes } },
+            );
+            const scene = sceneStore.refreshMessageCount(request.user.directories, found.campaign_id, found.scene.id);
+            return response.json({ line: updated, scene });
+        }
+        const updated = await transcript.updateLine(
+            request.user.directories,
+            found.campaign_id,
+            found.scene.id,
+            idx,
+            { mes },
+        );
+        const scene = sceneStore.refreshMessageCount(request.user.directories, found.campaign_id, found.scene.id);
+        return response.json({ line: updated, scene });
+    } catch (err) {
+        if (err && /** @type {any} */(err).code === 'out_of_range') {
+            return response.status(404).json({ error: err.message });
+        }
+        console.error('[gm] edit transcript line failed', err);
+        return response.status(500).json({ error: 'failed to edit message' });
+    }
+});
+
+/**
+ * DELETE /api/gm/scenes/:id/messages/:line_index
+ *
+ * Drop a single transcript line and best-effort cascade-delete any RAG
+ * records that were derived from it (opinion-extractor character
+ * memories stamped with `opinion-extractor:{sceneId}:msg-{messageIndex}`,
+ * and narrator-continuity memories stamped with
+ * `narrator-continuity:{sceneId}`).
+ *
+ * The cascade is opportunistic: failures don't abort the transcript
+ * delete. Sheet-mutation audits and add_lore writes are intentionally
+ * left in place — those record state changes that may still be
+ * meaningful even if the originating message goes away.
+ */
+router.delete('/scenes/:id/messages/:line_index', async (request, response) => {
+    const directories = request.user.directories;
+    const found = sceneStore.findById(directories, request.params.id);
+    if (!found) return response.status(404).json({ error: 'scene not found' });
+    if (found.scene.status === 'closed') return response.status(409).json({ error: 'scene is closed' });
+
+    const idx = Number(request.params.line_index);
+    if (!Number.isInteger(idx) || idx < 0) {
+        return response.status(400).json({ error: 'line_index must be a non-negative integer' });
+    }
+
+    try {
+        const removed = await transcript.deleteLine(directories, found.campaign_id, found.scene.id, idx);
+        const scene = sceneStore.refreshMessageCount(directories, found.campaign_id, found.scene.id);
+
+        // Best-effort RAG cascade. Only worth running when the deleted
+        // line was an in-fiction beat (actor / narrator / roll); player
+        // lines and system markers don't carry derived memory records.
+        const cascade = { attempted: false, removed: 0, errors: /** @type {string[]} */ ([]) };
+        const role = removed?.extra?.role;
+        const isBeat = role === 'actor' || role === 'narrator' || role === 'roll' || removed?.extra?.kind === 'roll';
+        if (isBeat) {
+            cascade.attempted = true;
+            try {
+                const svc = await getMemoryService(directories);
+                if (svc && typeof svc.deleteRecordsBySource === 'function') {
+                    // 1. opinion-extractor records (stamped per message index).
+                    const opinionPrefix = `opinion-extractor:${found.scene.id}:msg-${idx}`;
+                    const opinionResult = await svc.deleteRecordsBySource({
+                        campaignId: found.campaign_id,
+                        sourcePrefix: opinionPrefix,
+                    });
+                    cascade.removed += opinionResult.removed;
+                    cascade.errors.push(...opinionResult.errors);
+
+                    // 2. narrator-continuity (scene-scoped — only purge if
+                    //    we deleted a narrator beat, since those memories
+                    //    summarise the whole scene's narration).
+                    if (role === 'narrator' || removed?.extra?.kind === 'roll') {
+                        const narratorPrefix = `narrator-continuity:${found.scene.id}`;
+                        const narratorResult = await svc.deleteRecordsBySource({
+                            campaignId: found.campaign_id,
+                            sourcePrefix: narratorPrefix,
+                        });
+                        cascade.removed += narratorResult.removed;
+                        cascade.errors.push(...narratorResult.errors);
+                    }
+                }
+            } catch (cascadeErr) {
+                cascade.errors.push(`cascade: ${cascadeErr?.message || String(cascadeErr)}`);
+                console.warn('[gm] delete-line cascade failed', cascadeErr?.message || cascadeErr);
+            }
+        }
+
+        return response.json({ removed, scene, cascade });
+    } catch (err) {
+        if (err && /** @type {any} */(err).code === 'out_of_range') {
+            return response.status(404).json({ error: err.message });
+        }
+        console.error('[gm] delete transcript line failed', err);
+        return response.status(500).json({ error: 'failed to delete message' });
+    }
+});
+
+/**
+ * POST /api/gm/scenes/:id/messages/:line_index/regenerate
+ *
+ * Truncate the transcript so that everything strictly AFTER the most
+ * recent player input at-or-before `line_index` is dropped, then run a
+ * fresh Director turn with that player input as `user_input`. The
+ * stream shape is identical to `POST /api/gm/turn` (NDJSON of
+ * TurnEvents), so the frontend's `consumeTurnStream` handler doesn't
+ * need a new branch.
+ *
+ * Body must include `director_profile` and `actor_profile` (and may
+ * include `summarizer_profile`) so we can build LLM clients identically
+ * to /turn — we don't carry these in scene state.
+ */
+router.post('/scenes/:id/messages/:line_index/regenerate', async (request, response) => {
+    const directories = request.user.directories;
+    const found = sceneStore.findById(directories, request.params.id);
+    if (!found) return response.status(404).json({ error: 'scene not found' });
+    if (found.scene.status === 'closed') return response.status(409).json({ error: 'scene is closed' });
+
+    const idx = Number(request.params.line_index);
+    if (!Number.isInteger(idx) || idx < 0) {
+        return response.status(400).json({ error: 'line_index must be a non-negative integer' });
+    }
+
+    const body = request.body ?? {};
+    const { director_profile, actor_profile, summarizer_profile } = body;
+    if (!director_profile || !actor_profile) {
+        return response.status(400).json({ error: 'director_profile and actor_profile are required' });
+    }
+
+    const campaign = campaignStore.get(directories, found.campaign_id);
+    if (!campaign) return response.status(404).json({ error: 'campaign not found' });
+
+    // Find the most-recent player input at or before idx. The regenerate
+    // semantics are: "redo the AI side of the most recent player turn".
+    // We truncate everything strictly after that player line so the
+    // freshly-run loop sees the same context as the original turn.
+    const allLines = transcript.readLines(directories, campaign.id, found.scene.id, 0);
+    if (idx >= allLines.length) {
+        return response.status(404).json({ error: 'line not found' });
+    }
+    let playerIdx = -1;
+    for (let i = Math.min(idx, allLines.length - 1); i >= 0; i--) {
+        if (allLines[i]?.is_user) { playerIdx = i; break; }
+    }
+    if (playerIdx === -1) {
+        return response.status(409).json({
+            error: 'no preceding player input found — nothing to regenerate from',
+        });
+    }
+    const userInput = String(allLines[playerIdx].mes || '').trim();
+
+    // Truncate inclusive: keep [0..playerIdx], drop everything after.
+    try {
+        await transcript.truncateAfter(directories, campaign.id, found.scene.id, playerIdx);
+        sceneStore.refreshMessageCount(directories, campaign.id, found.scene.id);
+    } catch (err) {
+        console.error('[gm] regenerate truncate failed', err);
+        return response.status(500).json({ error: 'failed to truncate transcript' });
+    }
+
+    return runStreamingTurn({
+        request,
+        response,
+        directories,
+        campaign,
+        scene: found.scene,
+        userInput,
+        director_profile,
+        actor_profile,
+        summarizer_profile,
+        // Player line is already on disk from the original turn — don't
+        // re-append it in `runStreamingTurn`.
+        skipPlayerLinePersist: true,
+    });
+});
+
+/**
  * POST /api/gm/scenes/:id/messages
  *
  * Append a transcript line. Phase 3 the frontend uses this for player input;
@@ -1434,12 +1657,55 @@ router.post('/turn', async (request, response) => {
         return response.status(409).json({ error: 'scene is closed' });
     }
 
+    return runStreamingTurn({
+        request,
+        response,
+        directories,
+        campaign,
+        scene: found.scene,
+        userInput,
+        director_profile,
+        actor_profile,
+        summarizer_profile,
+    });
+});
+
+/**
+ * Shared body for /turn and /scenes/:id/messages/:line_index/regenerate.
+ *
+ * Persists the player input (unless `skipPlayerLinePersist` is true, used
+ * by the regenerate flow where the player line is already on disk),
+ * builds a TurnContext from the on-disk state, streams TurnEvents as
+ * NDJSON, and persists `message` / `roll` events back into the
+ * transcript as they arrive.
+ *
+ * @param {{
+ *   request: import('express').Request,
+ *   response: import('express').Response,
+ *   directories: import('../users.js').UserDirectoryList,
+ *   campaign: any,
+ *   scene: any,
+ *   userInput: string,
+ *   director_profile: any,
+ *   actor_profile: any,
+ *   summarizer_profile?: any,
+ *   skipPlayerLinePersist?: boolean,
+ * }} args
+ */
+async function runStreamingTurn(args) {
+    const { request, response, directories, campaign, scene, userInput,
+        director_profile, actor_profile, summarizer_profile,
+        skipPlayerLinePersist = false } = args;
+    const found = { scene, campaign_id: campaign.id };
+
     const characters = characterStore.listAll(directories, campaign.id);
     const player = characters.find(c => c.is_player) || null;
     const charactersById = new Map(characters.map(c => [c.id, c]));
 
     // Persist the player line FIRST so the transcript is never desynced.
-    if (userInput) {
+    // The regenerate flow passes `skipPlayerLinePersist: true` because
+    // the player line is already on disk from the original turn.
+    if (userInput && !skipPlayerLinePersist) {
         try {
             const playerLine = {
                 name: player ? player.name : 'Player',
@@ -1765,7 +2031,7 @@ router.post('/turn', async (request, response) => {
     } finally {
         if (!response.writableEnded) response.end();
     }
-});
+}
 
 /**
  * Compute a monotonically increasing scene_index used by the decay model

@@ -80,14 +80,35 @@ export function decideSystemPrompt(ruleset) {
 /**
  * @param {string} intent
  * @param {string} actorName
+ * @param {import('../rulesets/schemas.d.ts').Ruleset} [ruleset]
+ *   Optional. When provided, the user prompt repeats the valid `skill_id`
+ *   and `failure_severity` enums verbatim so that text-mode JSON fallbacks
+ *   (which bypass JSON-schema enum enforcement) still produce values that
+ *   the engine validator will accept. The system prompt already lists
+ *   them once; restating them in the user message makes the reminder the
+ *   last thing the model reads.
  */
-export function decideUserPrompt(intent, actorName) {
-    return [
+export function decideUserPrompt(intent, actorName, ruleset) {
+    const lines = [
         `${actorName} attempts: ${intent || '(no intent given)'}`,
         '',
         'Decide: does the action need a check? If so, which skill, what DC, and',
         'what is at stake on failure?',
-    ].join('\n');
+    ];
+    if (ruleset) {
+        const skills = (ruleset.skills || []).map((s) => s.id).join(', ');
+        const severities = (ruleset.severities || []).map((s) => s.id).join(', ');
+        lines.push('');
+        lines.push('STRICT FORMAT — non-negotiable:');
+        if (skills) {
+            lines.push(`- \`skill_id\` MUST be one of: ${skills}. Lowercase, exact id. NEVER use display-name spellings like "Religion" or "Sleight of Hand" — those will be rejected.`);
+        }
+        if (severities) {
+            lines.push(`- \`failure_severity\` MUST be one of: ${severities}.`);
+        }
+        lines.push('- If no skill in the list fits, set `required: false` instead of inventing one.');
+    }
+    return lines.join('\n');
 }
 
 /**

@@ -26,6 +26,7 @@ import { handleTurnEvent as dispatchTurnEvent } from './turn-events.js';
 import { renderLeftSidebar, teardownLeftSidebar } from './sidebar-left.js';
 import { renderRightSidebar, teardownRightSidebar } from './sidebar-right.js';
 import { setActiveCampaign } from './sheet-panel.js';
+import { installSceneMessageActions } from './scene-message-actions.js';
 
 let abortCurrentTurn = null;
 
@@ -334,6 +335,9 @@ function installSceneInputHandlers() {
     // event time rather than by element identity at install time.
     document.addEventListener('click', sceneDocClickHandler, { capture: true });
     document.addEventListener('keydown', sceneDocKeydownHandler, { capture: true });
+    // Per-message edit/delete/swipe + hamburger actions live in their own
+    // module (also idempotent install).
+    installSceneMessageActions();
 }
 
 /** @param {MouseEvent} ev */

@@ -94,6 +94,12 @@ export function findById(directories, sceneId) {
     for (const cid of fs.readdirSync(directories.campaigns)) {
         const cdir = path.join(directories.campaigns, cid);
         if (!fs.statSync(cdir).isDirectory()) continue;
+        // Skip campaigns that don't actually have a scene file with this id
+        // on disk. The `get(...)` cache is keyed by (handle, sceneId) only
+        // — without this guard, a cache hit from a different campaign would
+        // be wrongly attributed to `cid`, which then breaks transcript paths
+        // built off `findById(...)` results.
+        if (!fs.existsSync(sceneFile(directories, cid, sceneId))) continue;
         const scene = get(directories, cid, sceneId);
         if (scene) return { campaign_id: cid, scene };
     }

@@ -135,6 +135,61 @@ body.tt-mode-scene #send_form.no-connection #send_textarea {
     opacity: 1 !important;
 }
 
+/* Hide ST extensions wand in scene mode — extensions are not part of the
+   scene model and the wand menu offers nothing the GM core wires through.
+*/
+body.tt-mode-scene #extensionsMenuButton {
+    display: none !important;
+}
+
+/* Trim the input-bar hamburger (#options) menu to only the entries the
+   scene model actually understands. The remaining items (Continue,
+   Regenerate, Delete) are wired up in scene-message-actions.js to call
+   the GM core API directly instead of ST's character-chat machinery. */
+body.tt-mode-scene #option_close_chat,
+body.tt-mode-scene #option_settings,
+body.tt-mode-scene #option_toggle_AN,
+body.tt-mode-scene #option_toggle_CFG,
+body.tt-mode-scene #option_toggle_logprobs,
+body.tt-mode-scene #option_back_to_main,
+body.tt-mode-scene #option_new_bookmark,
+body.tt-mode-scene #option_convert_to_group,
+body.tt-mode-scene #option_start_new_chat,
+body.tt-mode-scene #option_select_chat,
+body.tt-mode-scene #option_impersonate {
+    display: none !important;
+}
+
+/* Trim ST per-message action buttons that don't fit the scene model.
+   Kept: .mes_edit (pencil), .mes_copy, .mes_edit_delete, .swipe_left/right
+   (last_mes only — scene regenerate). Hidden: extensions / branching /
+   bookmark / media-gen affordances that target ST's character-chat
+   substrate, not our JSONL transcript. */
+body.tt-mode-scene .mes_translate,
+body.tt-mode-scene .sd_message_gen,
+body.tt-mode-scene .mes_narrate,
+body.tt-mode-scene .mes_prompt,
+body.tt-mode-scene .mes_hide,
+body.tt-mode-scene .mes_unhide,
+body.tt-mode-scene .mes_media_gallery,
+body.tt-mode-scene .mes_media_list,
+body.tt-mode-scene .mes_embed,
+body.tt-mode-scene .mes_swipe_picker,
+body.tt-mode-scene .mes_create_bookmark,
+body.tt-mode-scene .mes_create_branch,
+body.tt-mode-scene .mes_bookmark {
+    display: none !important;
+}
+
+/* Roll cards aren't standard ST `mes` bubbles — they're rendered by
+   buildRollCardElement and only contain a card body. Hide their pencil
+   icon since "edit" on a roll outcome doesn't have a sensible meaning;
+   delete still routes through the JSONL-by-index endpoint to keep
+   mesid/line indices aligned. */
+body.tt-mode-scene #chat .mes.gm-roll-card .mes_edit {
+    display: none !important;
+}
+
 .gm-scene-topbar-left,
 .gm-scene-topbar-right {
     display: flex;
