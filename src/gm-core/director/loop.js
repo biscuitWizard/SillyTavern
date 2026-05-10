@@ -34,6 +34,11 @@ import { directorDecisionJsonSchema, validateDirectorDecision, SUPPORTED_ACTIONS
 import { LlmError } from '../llm/errors.js';
 import * as skillEngine from '../skillcheck/engine.js';
 import { narratorPostRollUserPrompt } from '../skillcheck/prompts.js';
+import { formatSections } from '../rag/injection.js';
+import { writeAddLore } from '../rag/writers/lore-add.js';
+import { writeDirectorPacing } from '../rag/writers/director-pacing.js';
+import { extractAndWriteOpinion } from '../rag/writers/opinion.js';
+import { extractAndWriteNarratorContinuity } from '../rag/writers/narrator-continuity.js';
 
 // A well-behaved turn looks like: speak(narrator) -> end_turn. We give the
 // loop a small amount of slack so a Director that mis-classifies a beat can
@@ -80,6 +85,8 @@ const DEFAULT_MAX_STEPS = 8;
  *   findCharacter?: (characterId: string) => import('../library/schemas.js').Character | null,
  *   signal?: AbortSignal,
  *   maxSteps?: number,
+ *   memoryService?: import('../rag/service.d.ts').MemoryService | null,
+ *   sceneIndex?: number,
  * }} args
  */
 export async function runTurn({
@@ -95,12 +102,16 @@ export async function runTurn({
     findCharacter,
     signal,
     maxSteps = DEFAULT_MAX_STEPS,
+    memoryService = null,
+    sceneIndex = 0,
 }) {
     // Adjudicator defaults to the Director's own client — both are
     // structured-output-only and operate without RAG, per DESIGN.md's memory
     // injection rules.
     const adjudicator = adjudicatorClient || directorClient;
+    const cid = ctx.campaign?.id;
     let step = 0;
+    let lastMemoryWriteId = 0;
     while (step < maxSteps) {
         if (signal?.aborted) {
             await emit({ kind: 'end_of_turn', reason: 'aborted' });
@@ -109,6 +120,23 @@ export async function runTurn({
         step++;
 
         await emit({ kind: 'status', phase: 'directing' });
+
+        // Build the Director MEMORIES block — top 6 from world_lore + top 2
+        // from director_memory. Disk-canonical store; if Qdrant is down the
+        // service returns empty hits and the loop continues.
+        if (memoryService && cid) {
+            try {
+                const queryText = pickQueryText(ctx);
+                const slice = await memoryService.for_director({ campaignId: cid, queryText });
+                ctx.memories_block = formatSections([
+                    { kind: 'world_lore', hits: slice.world },
+                    { kind: 'director_memory', hits: slice.director, max: 4 },
+                ]);
+            } catch (err) {
+                console.warn('[director-loop] memory injection failed', err?.message || err);
+                ctx.memories_block = '';
+            }
+        }
 
         let decision;
         try {
@@ -144,13 +172,60 @@ export async function runTurn({
         }
 
         if (decision.action === 'end_turn') {
+            // Phase 7: persist a director pacing note to director_memory if
+            // the Director provided one via the optional `pacing_note` field.
+            if (memoryService && cid && typeof decision.pacing_note === 'string') {
+                writeDirectorPacing({
+                    memoryService,
+                    campaignId: cid,
+                    sceneId: ctx.scene?.id || '',
+                    sceneIndex,
+                    pacingNote: decision.pacing_note,
+                }).catch(() => {});
+            }
             await emit({ kind: 'end_of_turn', reason: 'director' });
             return;
+        }
+
+        if (decision.action === 'add_lore') {
+            if (memoryService && cid) {
+                const result = await writeAddLore({
+                    memoryService,
+                    campaignId: cid,
+                    sceneId: ctx.scene?.id || '',
+                    sceneIndex,
+                    directorStepIndex: step,
+                    decision,
+                });
+                if (result.wrote && result.id) {
+                    await emit({
+                        kind: 'memory_write',
+                        memory_kind: 'world_lore',
+                        record_id: result.id,
+                        title: decision.title,
+                    });
+                    appendToTail(ctx, 'System', `[lore added: ${decision.title}]`);
+                } else {
+                    await emit({
+                        kind: 'status',
+                        phase: 'directing',
+                        message: 'add_lore: no memory service available; recording skipped.',
+                    });
+                }
+            } else {
+                await emit({
+                    kind: 'status',
+                    phase: 'directing',
+                    message: 'add_lore: no memory service available; recording skipped.',
+                });
+            }
+            continue;
         }
 
         if (decision.action === 'speak') {
             const speakResult = await dispatchSpeak({
                 ctx, decision, actorClient, emit, signal, findCharacter,
+                memoryService, cid, sceneIndex,
             });
             if (speakResult === 'end') {
                 await emit({ kind: 'end_of_turn', reason: 'error' });
@@ -170,6 +245,9 @@ export async function runTurn({
                 emit,
                 signal,
                 findCharacter,
+                memoryService,
+                cid,
+                sceneIndex,
             });
             if (result === 'end') {
                 await emit({ kind: 'end_of_turn', reason: 'error' });
@@ -206,7 +284,24 @@ export async function runTurn({
         return;
     }
 
+    void lastMemoryWriteId; // reserved for future debug hooks
     await emit({ kind: 'end_of_turn', reason: 'cap' });
+}
+
+/**
+ * Pick a query string for retrieval. Prefer the player's latest input;
+ * fall back to the recent transcript tail's last line if input is
+ * silent.
+ *
+ * @param {import('./prompts.js').TurnContext} ctx
+ */
+function pickQueryText(ctx) {
+    const ui = String(ctx.user_input || '').trim();
+    if (ui) return ui;
+    const tail = String(ctx.recent_transcript || '').trim();
+    if (!tail) return '';
+    const lines = tail.split('\n').filter(Boolean);
+    return lines[lines.length - 1] || '';
 }
 
 /**
@@ -222,11 +317,28 @@ export async function runTurn({
  *   findCharacter?: (characterId: string) => import('../library/schemas.js').Character | null,
  * }} args
  */
-async function dispatchSpeak({ ctx, decision, actorClient, emit, signal, findCharacter }) {
+async function dispatchSpeak({ ctx, decision, actorClient, emit, signal, findCharacter, memoryService, cid, sceneIndex }) {
     await emit({ kind: 'status', phase: 'awaiting_actor' });
 
     const isNarrator = decision.actor === 'narrator';
     if (isNarrator) {
+        // Narrator MEMORIES block: world_lore + own narrator_memory.
+        const previousMemoriesBlock = ctx.memories_block;
+        if (memoryService && cid) {
+            try {
+                const slice = await memoryService.for_narrator({
+                    campaignId: cid,
+                    queryText: decision.intent || pickQueryText(ctx),
+                });
+                ctx.memories_block = formatSections([
+                    { kind: 'world_lore', hits: slice.world },
+                    { kind: 'narrator_memory', hits: slice.narrator, max: 4 },
+                ]);
+            } catch (err) {
+                console.warn('[loop.narrator] memory injection failed', err?.message || err);
+                ctx.memories_block = '';
+            }
+        }
         let prose;
         try {
             prose = await actorClient.chat({
@@ -235,9 +347,12 @@ async function dispatchSpeak({ ctx, decision, actorClient, emit, signal, findCha
                 signal,
             });
         } catch (err) {
+            ctx.memories_block = previousMemoriesBlock;
             await emitError(emit, err, 'narrator');
             return 'end';
         }
+        // Restore the Director-side memories block for subsequent steps.
+        ctx.memories_block = previousMemoriesBlock;
         const text = (prose || '').trim();
         await emit({
             kind: 'message',
@@ -248,6 +363,25 @@ async function dispatchSpeak({ ctx, decision, actorClient, emit, signal, findCha
         });
         appendToTail(ctx, 'Narrator', text);
         ctx.user_input = '[The narrator has just spoken. Decide whether another beat is needed; if not, emit `end_turn`.]';
+
+        if (memoryService && cid) {
+            // Fire-and-forget continuity extractor. Its writes emit their own
+            // memory_write events through the service path.
+            extractAndWriteNarratorContinuity({
+                memoryService,
+                client: actorClient,
+                campaignId: cid,
+                sceneId: ctx.scene?.id || '',
+                sceneName: ctx.scene?.name,
+                location: ctx.scene?.location,
+                sceneIndex,
+                prose: text,
+            }).then(result => {
+                for (const rec of result.hits || []) {
+                    emit({ kind: 'memory_write', memory_kind: 'narrator_memory', record_id: rec.id, title: rec.content }).catch(() => {});
+                }
+            }).catch(() => {});
+        }
         return;
     }
 
@@ -285,6 +419,27 @@ async function dispatchSpeak({ ctx, decision, actorClient, emit, signal, findCha
         return 'end';
     }
 
+    // Per-actor MEMORIES block. Built per-call so the prior Director-side
+    // block doesn't leak into the actor prompt.
+    const previousMemoriesBlock = ctx.memories_block;
+    if (memoryService && cid) {
+        try {
+            const slice = await memoryService.for_character({
+                campaignId: cid,
+                characterId: character.id,
+                queryText: decision.intent || pickQueryText(ctx),
+            });
+            ctx.memories_block = formatSections([
+                { kind: 'character_memory', label: character.id, hits: slice.character, max: 4 },
+                { kind: 'world_lore', hits: slice.world, max: 5 },
+                { kind: 'player_journal', hits: slice.player_journal, max: 1 },
+            ]);
+        } catch (err) {
+            console.warn('[loop.actor] memory injection failed', err?.message || err);
+            ctx.memories_block = '';
+        }
+    }
+
     let prose;
     try {
         prose = await actorClient.chat({
@@ -293,9 +448,11 @@ async function dispatchSpeak({ ctx, decision, actorClient, emit, signal, findCha
             signal,
         });
     } catch (err) {
+        ctx.memories_block = previousMemoriesBlock;
         await emitError(emit, err, `actor:${character.id}`);
         return 'end';
     }
+    ctx.memories_block = previousMemoriesBlock;
     const text = (prose || '').trim();
     await emit({
         kind: 'message',
@@ -306,6 +463,26 @@ async function dispatchSpeak({ ctx, decision, actorClient, emit, signal, findCha
         text,
     });
     appendToTail(ctx, character.name, text);
+
+    if (memoryService && cid) {
+        // Fire-and-forget opinion extractor. Bounded by the schema (max 2
+        // memories) and the false-positive guard `is_significant`.
+        extractAndWriteOpinion({
+            memoryService,
+            client: actorClient,
+            campaignId: cid,
+            character,
+            sceneId: ctx.scene?.id || '',
+            sceneIndex,
+            messageIndex: Date.now(),
+            lastMessage: text,
+            transcriptTail: ctx.recent_transcript || '',
+        }).then(result => {
+            for (const rec of result.hits || []) {
+                emit({ kind: 'memory_write', memory_kind: 'character_memory', record_id: rec.id, title: rec.content, character_id: character.id }).catch(() => {});
+            }
+        }).catch(() => {});
+    }
     return;
 }
 
@@ -334,7 +511,7 @@ async function dispatchSpeak({ ctx, decision, actorClient, emit, signal, findCha
  *   findCharacter?: (characterId: string) => import('../library/schemas.js').Character | null,
  * }} args
  */
-async function dispatchSkillCheck({ ctx, decision, ruleset, adjudicatorClient, actorClient, rng, emit, signal, findCharacter }) {
+async function dispatchSkillCheck({ ctx, decision, ruleset, adjudicatorClient, actorClient, rng, emit, signal, findCharacter, memoryService, cid, sceneIndex }) {
     if (!ruleset) {
         await emit({
             kind: 'error',
@@ -420,6 +597,25 @@ async function dispatchSkillCheck({ ctx, decision, ruleset, adjudicatorClient, a
         intent: String(decision.intent || ''),
     });
 
+    // Narrator MEMORIES block for the post-roll beat. Same shape as the
+    // `speak: narrator` branch above.
+    const previousMemoriesBlock = ctx.memories_block;
+    if (memoryService && cid) {
+        try {
+            const slice = await memoryService.for_narrator({
+                campaignId: cid,
+                queryText: String(decision.intent || character.name),
+            });
+            ctx.memories_block = formatSections([
+                { kind: 'world_lore', hits: slice.world },
+                { kind: 'narrator_memory', hits: slice.narrator, max: 4 },
+            ]);
+        } catch (err) {
+            console.warn('[loop.skillcheck.narrator] memory injection failed', err?.message || err);
+            ctx.memories_block = '';
+        }
+    }
+
     let narration = '';
     try {
         const prose = await actorClient.chat({
@@ -440,9 +636,11 @@ async function dispatchSkillCheck({ ctx, decision, ruleset, adjudicatorClient, a
         });
         narration = String(prose || '').trim();
     } catch (err) {
+        ctx.memories_block = previousMemoriesBlock;
         await emitError(emit, err, 'narrator:post_roll');
         return 'end';
     }
+    ctx.memories_block = previousMemoriesBlock;
 
     await emit({
         kind: 'roll',
@@ -452,6 +650,21 @@ async function dispatchSkillCheck({ ctx, decision, ruleset, adjudicatorClient, a
         card,
         narration,
     });
+
+    if (memoryService && cid) {
+        // Narrator continuity from the post-roll beat as well as a hook so
+        // the actor's character memory captures their own roll outcome.
+        extractAndWriteNarratorContinuity({
+            memoryService,
+            client: actorClient,
+            campaignId: cid,
+            sceneId: ctx.scene?.id || '',
+            sceneName: ctx.scene?.name,
+            location: ctx.scene?.location,
+            sceneIndex,
+            prose: narration,
+        }).catch(() => {});
+    }
 
     // Synthesise a single recent-transcript line so subsequent Director steps
     // in the same turn can reason about what happened. We do NOT echo the

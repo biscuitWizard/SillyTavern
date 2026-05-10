@@ -14,12 +14,13 @@
 import { renderCampaignManager } from './campaign-manager.js';
 import { renderCampaignMain } from './campaign-main.js';
 import { renderScene } from './scene.js';
+import { renderMemoryExplorer } from './memory-explorer/index.js';
 
 const GM_ROOT_ID = 'gm-root';
 
 /**
  * @typedef {Object} RouteState
- * @property {'manager' | 'campaign' | 'scene'} view
+ * @property {'manager' | 'campaign' | 'scene' | 'memory'} view
  * @property {string} [campaignId]
  * @property {string} [sceneId]
  * @property {boolean} [readOnly]
@@ -73,6 +74,12 @@ export async function route(next) {
                 sceneId: next.sceneId,
                 readOnly: !!next.readOnly,
             });
+            return;
+        }
+        if (next.view === 'memory') {
+            document.body.classList.remove('tt-mode-scene');
+            if (!next.campaignId) throw new Error('memory view requires campaignId');
+            await renderMemoryExplorer(root, { campaignId: next.campaignId });
             return;
         }
         throw new Error(`unknown route view: ${(next).view}`);

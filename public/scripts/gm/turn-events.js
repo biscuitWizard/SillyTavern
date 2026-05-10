@@ -13,6 +13,7 @@
  */
 
 import { appendActorLine, appendRollCard } from './st-bridge.js';
+import { emit as emitGmEvent } from './events.js';
 
 /** @type {Set<(ev: any) => void>} */
 const stateListeners = new Set();
@@ -115,6 +116,13 @@ export function handleTurnEvent(ev, ui) {
 
     if (ev.kind === 'end_of_turn') {
         ui.setChip('');
+        return;
+    }
+
+    if (ev.kind === 'memory_write') {
+        // Memory writes have no in-scene UI surface; they are observed
+        // by the Memory Explorer's live feed via the global event bus.
+        emitGmEvent('memory_write', ev);
         return;
     }
 }

@@ -1,18 +1,22 @@
 /**
  * Director prompts.
  *
- * The Director is a structured-output-only LLM. It does NOT see RAG /
- * world-knowledge fragments — only the `TurnContext` (campaign brief, scene
- * frame, party, recent transcript). Phase 5 widens the dispatched action
- * surface to include `speak: <character_id>`, `spawn_character` (library),
- * and `remove_character`. Phase 6 adds `skill_check`: the Director picks
- * who attempts and what they're trying to do; the engine adjudicates the
- * skill, DC, and severity, rolls the dice, and forces a post-roll narrator
- * beat — all in one dispatch step.
+ * Phase 7 relaxes the original RAG-free invariant for the Director: the
+ * Director now sees a small slice of `world_lore__{cid}` plus its own
+ * `director_memory__{cid}` continuity log, spliced into the user prompt
+ * inside `--- BEGIN MEMORIES ({kind}) ---` blocks. The skill-check
+ * adjudicator stays clean — its prompt builder lives in
+ * `skillcheck/prompts.js` and never imports `MemoryService`.
  *
- * Other variants exist in the schema but are not yet dispatched:
- * `add_lore` and `propose_scene` (Phase 7+). The dispatcher rejects them
- * with a structured `error` event.
+ * The Director still emits structured output only — RAG is in the user
+ * prompt, not in the schema. The `search_memory` tool is exposed via the
+ * standard tool-call channel; the loop runs a bounded tool-using wrapper
+ * around `directorClient.structured(...)`.
+ *
+ * Phase 5 widens the dispatched action surface to include
+ * `speak: <character_id>`, `spawn_character` (library), and
+ * `remove_character`. Phase 6 adds `skill_check`. Phase 7 dispatches
+ * `add_lore` (writes through `writers/lore-add.js`).
  */
 
 /**
@@ -22,6 +26,9 @@
  * @property {Array<{ id: string, name: string, is_player: boolean, appearance?: string, personality?: string, voice?: string, background?: string }>} actors
  * @property {string} recent_transcript    a tail of the JSONL, formatted for the LLM
  * @property {string} user_input
+ * @property {string} [memories_block]     pre-rendered MEMORIES block from MemoryService (Phase 7).
+ *                                          The HTTP wrapper builds it before dispatch and the
+ *                                          prompt builder splices it; do NOT pass raw MemoryService.
  */
 
 /**
@@ -106,6 +113,11 @@ export function directorUserPrompt(ctx) {
     if (ctx.recent_transcript && ctx.recent_transcript.trim()) {
         lines.push('# Recent transcript');
         lines.push(ctx.recent_transcript.trim());
+        lines.push('');
+    }
+
+    if (ctx.memories_block && ctx.memories_block.trim()) {
+        lines.push(ctx.memories_block.trim());
         lines.push('');
     }
 

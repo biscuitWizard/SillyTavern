@@ -5,9 +5,10 @@
  * `intent` (a one-sentence direction) plus the full TurnContext, and the
  * Narrator returns prose to render directly into the scene transcript.
  *
- * Phase 4 keeps the narrator deliberately minimal: no RAG retrieval, no
- * world-fact injection — just the campaign brief, scene frame, party, and
- * recent transcript tail.
+ * Phase 7 wires RAG into the Narrator: the user prompt now carries a
+ * MEMORIES block built from `world_lore__{cid}` + `narrator_memory__{cid}`.
+ * The HTTP wrapper builds the block before dispatch and passes it via
+ * `ctx.memories_block`; this builder just splices it.
  */
 
 export function narratorSystemPrompt() {
@@ -56,6 +57,11 @@ export function narratorUserPrompt(ctx, intent) {
     if (ctx.recent_transcript && ctx.recent_transcript.trim()) {
         lines.push('# Recent transcript');
         lines.push(ctx.recent_transcript.trim());
+        lines.push('');
+    }
+
+    if (ctx.memories_block && ctx.memories_block.trim()) {
+        lines.push(ctx.memories_block.trim());
         lines.push('');
     }
 

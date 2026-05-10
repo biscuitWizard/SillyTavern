@@ -331,4 +331,196 @@ export async function startTurn(body, signal) {
     return response;
 }
 
+/* -------- RAG / Memory Explorer (Phase 7) -------- */
+
+/**
+ * Build a `?key=value&key=value` query string from a flat object. Skips
+ * `null`, `undefined`, and empty strings; turns arrays into repeated
+ * `key=v1&key=v2`. The leading `?` is included when there is at least
+ * one parameter.
+ *
+ * @param {Record<string, string | number | boolean | string[] | null | undefined>} params
+ * @returns {string}
+ */
+function qs(params) {
+    const parts = [];
+    for (const [key, raw] of Object.entries(params || {})) {
+        if (raw === null || raw === undefined || raw === '') continue;
+        if (Array.isArray(raw)) {
+            for (const item of raw) {
+                if (item === null || item === undefined || item === '') continue;
+                parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(item))}`);
+            }
+        } else {
+            parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(raw))}`);
+        }
+    }
+    return parts.length ? `?${parts.join('&')}` : '';
+}
+
+/**
+ * @returns {Promise<{ ok: boolean, url?: string, version?: string, error?: string, collections?: string[], embedder?: { provider: string, dim: number } }>}
+ */
+export async function getRagHealth() {
+    return request('/rag/health');
+}
+
+/**
+ * @param {string} cid
+ * @returns {Promise<Array<{ name: string, kind: string, campaign_id: string, character_id?: string }>>}
+ */
+export async function listRagCollections(cid) {
+    const out = await request(`/rag/collections${qs({ cid })}`);
+    return out?.collections ?? [];
+}
+
+/**
+ * List records in a collection. Filters mirror the server's
+ * `MemoryService.list` payload filters; only the fields you set are
+ * sent.
+ *
+ * @param {{
+ *   cid: string,
+ *   kind: string,
+ *   characterId?: string,
+ *   filters?: { tags?: string[], origin?: string, entry_kind?: string, scene_id?: string, source_type?: string },
+ *   limit?: number,
+ *   offset?: string | number | null,
+ * }} args
+ * @returns {Promise<{ records: any[], next_offset: string | number | null }>}
+ */
+export async function listRagRecords(args) {
+    const { cid, kind, characterId, filters = {}, limit, offset } = args;
+    if (!cid) throw new GmApiError(400, 'listRagRecords: cid required', null);
+    if (!kind) throw new GmApiError(400, 'listRagRecords: kind required', null);
+    const params = {
+        limit: typeof limit === 'number' ? limit : undefined,
+        offset: offset === null || offset === undefined ? undefined : offset,
+        tags: Array.isArray(filters.tags) && filters.tags.length ? filters.tags.join(',') : undefined,
+        origin: filters.origin || undefined,
+        entry_kind: filters.entry_kind || undefined,
+        scene_id: filters.scene_id || undefined,
+        source_type: filters.source_type || undefined,
+    };
+    const path = kind === 'character_memory'
+        ? `/rag/collections/character_memory/${encodeURIComponent(cid)}/${encodeURIComponent(characterId || '')}`
+        : `/rag/collections/${encodeURIComponent(kind)}/${encodeURIComponent(cid)}`;
+    const out = await request(`${path}${qs(params)}`);
+    return {
+        records: out?.records ?? [],
+        next_offset: out?.next_offset ?? null,
+    };
+}
+
+/**
+ * @param {{
+ *   cid: string,
+ *   kind: string,
+ *   characterId?: string,
+ *   query: string,
+ *   top_k?: number,
+ *   filters?: object,
+ * }} args
+ * @returns {Promise<{ hits: Array<{ record: any, raw_score: number, score: number, decay_multiplier: number }> }>}
+ */
+export async function searchRag(args) {
+    const body = {
+        campaign_id: args.cid,
+        kind: args.kind,
+        character_id: args.characterId,
+        query: args.query,
+        top_k: args.top_k,
+        filters: args.filters,
+    };
+    return request('/rag/search', {
+        method: 'POST',
+        body: JSON.stringify(body),
+    });
+}
+
+/**
+ * @param {{
+ *   campaignId: string,
+ *   kind: string,
+ *   characterId?: string,
+ *   record: object,
+ * }} args
+ */
+export async function writeMemory(args) {
+    const body = {
+        campaign_id: args.campaignId,
+        kind: args.kind,
+        character_id: args.characterId,
+        record: args.record,
+    };
+    return request('/rag/memories', {
+        method: 'POST',
+        body: JSON.stringify(body),
+    });
+}
+
+/**
+ * @param {{
+ *   campaignId: string,
+ *   kind: string,
+ *   characterId?: string,
+ *   id: string,
+ *   patch: object,
+ * }} args
+ */
+export async function patchMemory(args) {
+    const body = {
+        campaign_id: args.campaignId,
+        kind: args.kind,
+        character_id: args.characterId,
+        patch: args.patch,
+    };
+    const out = await request(`/rag/memories/${encodeURIComponent(args.id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+    });
+    return out?.record ?? null;
+}
+
+/**
+ * @param {{
+ *   campaignId: string,
+ *   kind: string,
+ *   characterId?: string,
+ *   id: string,
+ * }} args
+ */
+export async function deleteMemory(args) {
+    const params = {
+        cid: args.campaignId,
+        kind: args.kind,
+        character_id: args.characterId,
+    };
+    return request(`/rag/memories/${encodeURIComponent(args.id)}${qs(params)}`, {
+        method: 'DELETE',
+    });
+}
+
+/** @param {string} cid */
+export async function reconcileRag(cid) {
+    return request(`/rag/reconcile${qs({ cid })}`, { method: 'POST' });
+}
+
+/** @returns {Promise<Array<{ id: string, name: string, summary?: string, count?: number }>>} */
+export async function listLorePacks() {
+    const out = await request('/rag/lore/seed-packs');
+    return out?.packs ?? [];
+}
+
+/**
+ * @param {{ cid: string, pack_id: string }} args
+ */
+export async function applyLorePack(args) {
+    const body = { campaign_id: args.cid, pack_id: args.pack_id };
+    return request('/rag/lore/seed-packs', {
+        method: 'POST',
+        body: JSON.stringify(body),
+    });
+}
+
 export { GmApiError };

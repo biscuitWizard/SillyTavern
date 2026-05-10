@@ -24,12 +24,15 @@
  * )} DirectorDecision
  */
 
-/** Variants the loop dispatcher actually executes (Phase 6 adds skill_check). */
+/** Variants the loop dispatcher actually executes. Phase 7 adds `add_lore`,
+ * which records a generated world-lore entry into the campaign-scoped
+ * `world_lore__{cid}` collection (origin: 'generated'). */
 export const SUPPORTED_ACTIONS = new Set([
     'speak',
     'skill_check',
     'spawn_character',
     'remove_character',
+    'add_lore',
     'end_turn',
 ]);
 
@@ -110,6 +113,11 @@ export const directorDecisionJsonSchema = {
                 title: { type: 'string' },
                 body: { type: 'string' },
                 tags: { type: 'array', items: { type: 'string' } },
+                entry_kind: {
+                    type: 'string',
+                    description: 'Optional categorical tag: faction | place | event | item | concept | npc-fact | misc.',
+                },
+                importance: { type: 'number' },
                 rationale: { type: 'string' },
             },
             required: ['action', 'title', 'body', 'tags', 'rationale'],
@@ -135,6 +143,10 @@ export const directorDecisionJsonSchema = {
             properties: {
                 action: { type: 'string', const: 'end_turn' },
                 rationale: { type: 'string' },
+                pacing_note: {
+                    type: 'string',
+                    description: 'Optional one-line pacing note recorded into director_memory for future turns.',
+                },
             },
             required: ['action', 'rationale'],
             additionalProperties: false,

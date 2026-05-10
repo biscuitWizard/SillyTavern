@@ -7,6 +7,13 @@
  * sidecar). The adjudicator NEVER sees character memories or world facts —
  * structured-output only. See DESIGN.md "Memory injection rules".
  *
+ * Phase 7 invariant: this module MUST NOT import from `../rag/`. The
+ * `rag-isolation.test.js` suite reads this file's text and fails the
+ * build if the import line ever sneaks in. The only exception in the
+ * skillcheck dir is the post-roll narrator helper (`narratorPostRollUserPrompt`)
+ * which intentionally does receive the narrator-side MEMORIES block — but
+ * that block is built by the caller, not imported here.
+ *
  * `narratorPostRollUserPrompt(ctx, outcome)` frames the prose as the direct
  * consequence of the roll. The system prompt re-uses the standard
  * `narratorSystemPrompt()`; we just give the user prompt extra context about

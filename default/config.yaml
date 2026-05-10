@@ -392,3 +392,20 @@ gemini:
 enableServerPlugins: false
 # Attempt to automatically update server plugins on startup
 enableServerPluginsAutoUpdate: true
+
+# -- TTRPG TAVERN: PHASE 7 RAG (Qdrant) --
+# Optional block. The runtime reads it via globalThis.getConfigValue('rag', {}).
+# Disk under ./data is the canonical store; Qdrant is a rebuildable index.
+rag:
+  # 'deterministic' | 'ollama' | 'st-transformers'
+  embedder_provider: deterministic
+  # Required when embedder_provider == 'ollama' (e.g. 'nomic-embed-text').
+  embedder_model: ''
+  # Vector dimension. Must match the embedder. 384 for the deterministic embedder.
+  embedder_dim: 384
+  # Override base URL for Ollama (defaults to http://localhost:11434 / 'TTRPG_OLLAMA_URL' env).
+  ollama_url: ''
+  # Disk-first WAL mirror (always enabled in v1; flag retained for future flexibility).
+  mirror_enabled: true
+  # Per-role retrieval caps. Defaults: world=6 character=4 director=2 narrator=2 player_journal=1.
+  top_k_overrides: {}

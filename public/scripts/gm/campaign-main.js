@@ -104,12 +104,42 @@ function renderTopbar(campaign) {
 
     const right = el('div', 'gm-topbar-actions');
     right.append(
+        renderTabSwitcher('hub', campaign),
         iconButton('fa-plug', 'API & connection settings', () => openStApiPanel()),
         iconButton('fa-trash', 'Delete campaign', () => onDelete(campaign)),
     );
 
     topbar.append(left, right);
     return topbar;
+}
+
+/**
+ * Render the Hub / Memory tab switcher used in the campaign topbar. The
+ * Memory Explorer view re-uses the same helper so the two surfaces stay
+ * visually aligned.
+ *
+ * @param {'hub' | 'memory'} active
+ * @param {{ id: string }} campaign
+ * @returns {HTMLElement}
+ */
+export function renderTabSwitcher(active, campaign) {
+    const wrap = el('div', 'gm-topbar-tabs');
+    const hub = el('button', `gm-topbar-tab${active === 'hub' ? ' is-active' : ''}`);
+    hub.type = 'button';
+    hub.textContent = 'Hub';
+    hub.addEventListener('click', () => {
+        if (active === 'hub') return;
+        route({ view: 'campaign', campaignId: campaign.id });
+    });
+    const mem = el('button', `gm-topbar-tab${active === 'memory' ? ' is-active' : ''}`);
+    mem.type = 'button';
+    mem.textContent = 'Memory';
+    mem.addEventListener('click', () => {
+        if (active === 'memory') return;
+        route({ view: 'memory', campaignId: campaign.id });
+    });
+    wrap.append(hub, mem);
+    return wrap;
 }
 
 /* -------- Hero banner -------- */

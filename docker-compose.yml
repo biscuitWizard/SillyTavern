@@ -29,20 +29,45 @@
 #     and Ollama will fall back to CPU (slow but works for smoke testing).
 #
 # State on disk:
-#   ./data            -- ST/TTRPG user data (campaigns, characters, sheets, ...)
-#   qdrant-data:/...  -- Qdrant collections (character_memory__*, world_fact__*)
-#   ollama-data:/...  -- Pulled Ollama models (persists across `compose down`)
+#   ./data                  -- ST/TTRPG user data (campaigns, characters, sheets, lore/, *.jsonl mirrors)
+#   qdrant-data:/...        -- Qdrant collections (Phase 7 schema):
+#                              world_lore__{cid}, character_memory__{cid}__{char_id},
+#                              director_memory__{cid}, narrator_memory__{cid},
+#                              player_journal__{cid}.
+#                              Disk under ./data is canonical; this volume is a
+#                              rebuildable index. `POST /api/gm/rag/reconcile`
+#                              replays disk JSONL → Qdrant if this volume is wiped.
+#   qdrant-snapshots:/...   -- Qdrant snapshot exports (`POST /collections/.../snapshots`).
+#   ollama-data:/...        -- Pulled Ollama models (persists across `compose down`)
+#
+# Qdrant URL config:
+#   - Host (Node app via `npm start`): http://localhost:6333  (the default
+#     when TTRPG_QDRANT_URL is unset).
+#   - Inside the `app` profile container: http://qdrant:6333  (set via
+#     `TTRPG_QDRANT_URL` env in the `ttrpgtavern` service below).
+#   - To force a different URL on the host, export TTRPG_QDRANT_URL before
+#     `npm start`. The RAG service falls back to the deterministic embedder
+#     and skips Qdrant writes if the URL is unreachable, so dev without
+#     Qdrant is supported (memory mirrors still write to disk).
 
 services:
   qdrant:
     image: qdrant/qdrant:v1.12.4
     container_name: ttrpgtavern-qdrant
     restart: unless-stopped
+    # Bump nofile so test suites that churn dozens of collections per run
+    # don't trip Qdrant's segment flush on the 1024 default. 65k matches
+    # the limits Qdrant's docs recommend for production deployments.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     ports:
       - "6333:6333"   # REST + dashboard
       - "6334:6334"   # gRPC
     volumes:
       - qdrant-data:/qdrant/storage
+      - qdrant-snapshots:/qdrant/snapshots
     healthcheck:
       # The qdrant image's `sh` does not support /dev/tcp redirection and
       # the slim image has no curl/wget/nc. Walk /proc looking for the
@@ -155,4 +180,5 @@ networks:
 
 volumes:
   qdrant-data:
+  qdrant-snapshots:
   ollama-data:

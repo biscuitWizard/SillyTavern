@@ -24,8 +24,96 @@ import { createLlmClient } from '../gm-core/llm/client.js';
 import { runTurn } from '../gm-core/director/loop.js';
 import { getRuleset, getRulesetFor, listRulesetSummaries } from '../gm-core/rulesets/index.js';
 import * as participants from '../gm-core/scenes/participants.js';
+import { ragRouter } from '../gm-core/rag/routes.js';
+import { createQdrant } from '../gm-core/rag/qdrant.js';
+import { resolveEmbedder } from '../gm-core/rag/embedders.js';
+import { createMemoryService } from '../gm-core/rag/service.js';
+import { reconcile, readPendingDeletes, writePendingDeletes, readRootPendingDeletes, writeRootPendingDeletes } from '../gm-core/rag/reconcile.js';
+import { ingestCore } from '../gm-core/lore/ingest.js';
+import { collectionNameFor, parseCollectionName } from '../gm-core/rag/schemas.js';
 
 export const router = express.Router();
+router.use('/rag', ragRouter);
+
+/**
+ * Lazy per-handle MemoryService cache. The /turn route uses this to inject
+ * RAG into prompt builders + run the writers; cascade deletes use it too.
+ *
+ * @type {Map<string, { qdrant: any, embedder: any, service: any }>}
+ */
+const memoryServiceCache = new Map();
+
+/**
+ * Debounce reconcile-on-load to one run per campaign per session. Worst
+ * case the LLM-driven extractors fall behind for a turn or two before the
+ * service catches up; that's far better than triggering reconcile on
+ * every campaign GET.
+ *
+ * @type {Map<string, number>}
+ */
+const reconcileOnceCache = new Map();
+
+/**
+ * Read the optional `rag:` block from config.yaml. Errors are non-fatal —
+ * if config.yaml has no `rag` section we ship sensible defaults.
+ */
+let ragConfigCache = null;
+function readRagConfig() {
+    if (ragConfigCache) return ragConfigCache;
+    try {
+        // The server-time `getConfig` is registered globally as
+        // `globalThis.getConfigValue` by `src/server-startup.js`; if it's
+        // not yet available we fall back to env vars.
+        /** @type {any} */
+        const g = globalThis;
+        const fromConfig = g.getConfigValue?.('rag', {}) || {};
+        ragConfigCache = {
+            embedder_provider: fromConfig.embedder_provider || process.env.TTRPG_RAG_EMBEDDER || 'deterministic',
+            embedder_model: fromConfig.embedder_model,
+            embedder_dim: fromConfig.embedder_dim,
+            ollama_url: fromConfig.ollama_url || process.env.TTRPG_OLLAMA_URL,
+            mirror_enabled: fromConfig.mirror_enabled !== false,
+            top_k_overrides: fromConfig.top_k_overrides || {},
+        };
+    } catch (_) {
+        ragConfigCache = {
+            embedder_provider: process.env.TTRPG_RAG_EMBEDDER || 'deterministic',
+            mirror_enabled: true,
+            top_k_overrides: {},
+        };
+    }
+    return ragConfigCache;
+}
+
+/**
+ * @param {import('../users.js').UserDirectoryList} directories
+ */
+async function getMemoryService(directories) {
+    const cached = memoryServiceCache.get(directories.root);
+    if (cached) return cached.service;
+    const cfg = readRagConfig();
+    const qdrant = createQdrant({ url: process.env.TTRPG_QDRANT_URL });
+    const embedder = await resolveEmbedder(cfg);
+    const service = createMemoryService({
+        directories,
+        qdrant,
+        embedder,
+        topK: cfg.top_k_overrides,
+        getCurrentSceneIndex: (cid) => {
+            try {
+                const camp = campaignStore.get(directories, cid);
+                if (!camp || !camp.current_scene_id) return 0;
+                const found = sceneStore.findById(directories, camp.current_scene_id);
+                if (!found) return 0;
+                return computeSceneIndex(found.scene);
+            } catch (_) {
+                return 0;
+            }
+        },
+    });
+    memoryServiceCache.set(directories.root, { qdrant, embedder, service });
+    return service;
+}
 
 /* -------- Rulesets (Phase 6: YAML-backed) -------- */
 
@@ -79,11 +167,37 @@ router.get('/campaigns', (request, response) => {
 /**
  * GET /api/gm/campaigns/:id
  *
- * Returns the full `Campaign` record.
+ * Returns the full `Campaign` record. Phase 7 also fires a one-shot
+ * background reconcile on first load: if Qdrant lost state since the
+ * last process boot, the disk mirror is replayed transparently. Errors
+ * are swallowed because reconcile is best-effort.
  */
 router.get('/campaigns/:id', (request, response) => {
-    const campaign = campaignStore.get(request.user.directories, request.params.id);
+    const directories = request.user.directories;
+    const campaign = campaignStore.get(directories, request.params.id);
     if (!campaign) return response.status(404).json({ error: 'campaign not found' });
+
+    const reconcileKey = `${directories.root}::${campaign.id}`;
+    if (!reconcileOnceCache.has(reconcileKey)) {
+        reconcileOnceCache.set(reconcileKey, Date.now());
+        getMemoryService(directories)
+            .then(service => reconcile({
+                memoryService: service,
+                directories,
+                campaignId: campaign.id,
+                loreIngest: { ingestCore },
+            }))
+            .then(report => {
+                if (report?.qdrant_ok && (report.core_lore_upserted || report.mirror_records_replayed || report.pending_deletes_drained || report.pending_upserts_drained)) {
+                    console.log(`[gm.reconcile] ${campaign.id}: core+${report.core_lore_upserted} replayed=${report.mirror_records_replayed} pd=${report.pending_deletes_drained} pu=${report.pending_upserts_drained}`);
+                }
+            })
+            .catch(err => {
+                console.warn('[gm.reconcile] background reconcile failed', err?.message || err);
+                reconcileOnceCache.delete(reconcileKey);
+            });
+    }
+
     return response.json({ campaign });
 });
 
@@ -125,12 +239,63 @@ router.patch('/campaigns/:id', (request, response) => {
 /**
  * DELETE /api/gm/campaigns/:id
  *
- * Recursively remove the campaign directory.
+ * Recursively remove the campaign directory **and** its Qdrant
+ * collections (`*__{cid}` and `*__{cid}__*`). Disk is canonical, so
+ * Qdrant cascade comes first; if any drop fails we queue the remaining
+ * collection names to a *root-level* pending-deletes file (the
+ * campaign dir is about to vanish) so the next boot reconcile can
+ * finish the cleanup.
  */
-router.delete('/campaigns/:id', (request, response) => {
-    const removed = campaignStore.remove(request.user.directories, request.params.id);
+router.delete('/campaigns/:id', async (request, response) => {
+    const directories = request.user.directories;
+    const cid = request.params.id;
+    const campaign = campaignStore.get(directories, cid);
+    if (!campaign) return response.status(404).json({ error: 'campaign not found' });
+
+    let qdrantCollectionsDropped = 0;
+    /** @type {Array<{ collection: string }>} */
+    const queued = [];
+    try {
+        const service = await getMemoryService(directories);
+        const all = await service.qdrant.listCollections().catch(() => []);
+        const matches = all.filter(name => {
+            const parsed = parseCollectionName(name);
+            return parsed && parsed.campaign_id === cid;
+        });
+        for (const name of matches) {
+            try {
+                await service.qdrant.dropCollection(name);
+                qdrantCollectionsDropped++;
+            } catch (err) {
+                console.warn('[gm.cascade] drop failed', name, err?.message || err);
+                queued.push({ collection: name });
+            }
+        }
+    } catch (err) {
+        console.warn('[gm.cascade] qdrant cascade failed; queuing all', err?.message || err);
+        queued.push({ collection: collectionNameFor('world_lore', cid) });
+        queued.push({ collection: collectionNameFor('director_memory', cid) });
+        queued.push({ collection: collectionNameFor('narrator_memory', cid) });
+        queued.push({ collection: collectionNameFor('player_journal', cid) });
+    }
+
+    if (queued.length) {
+        const existing = readRootPendingDeletes(directories);
+        for (const item of queued) {
+            if (!existing.some(e => e.collection === item.collection)) {
+                existing.push(item);
+            }
+        }
+        writeRootPendingDeletes(directories, existing);
+    }
+
+    const removed = campaignStore.remove(directories, cid);
     if (!removed) return response.status(404).json({ error: 'campaign not found' });
-    return response.status(204).end();
+    return response.json({
+        removed: true,
+        qdrant_collections_dropped: qdrantCollectionsDropped,
+        qdrant_collections_queued: queued.length,
+    });
 });
 
 /* -------- Characters (Phase 2) -------- */
@@ -263,14 +428,45 @@ router.patch('/characters/:char_id', (request, response) => {
 
 /**
  * DELETE /api/gm/characters/:char_id
+ *
+ * Drop `character_memory__{cid}__{char_id}` from Qdrant before deleting
+ * the disk record. On Qdrant failure we queue the drop to the campaign's
+ * pending-deletes file; the JSON character file is still removed because
+ * the disk is canonical and a stale Qdrant collection is harmless until
+ * the next boot reconcile picks up the queue.
  */
-router.delete('/characters/:char_id', (request, response) => {
-    const found = characterStore.findById(request.user.directories, request.params.char_id);
+router.delete('/characters/:char_id', async (request, response) => {
+    const directories = request.user.directories;
+    const found = characterStore.findById(directories, request.params.char_id);
     if (!found) return response.status(404).json({ error: 'character not found' });
 
-    const removed = characterStore.remove(request.user.directories, found.campaign_id, found.character.id);
+    const collection = collectionNameFor('character_memory', found.campaign_id, found.character.id);
+    try {
+        const service = await getMemoryService(directories);
+        await service.qdrant.dropCollection(collection);
+    } catch (err) {
+        console.warn('[gm.cascade] character qdrant drop failed; queuing', err?.message || err);
+        const queue = readPendingDeletes(directories, found.campaign_id);
+        if (!queue.some(q => q.collection === collection)) {
+            queue.push({ collection });
+            writePendingDeletes(directories, found.campaign_id, queue);
+        }
+    }
+
+    const removed = characterStore.remove(directories, found.campaign_id, found.character.id);
     if (!removed) return response.status(404).json({ error: 'character not found' });
-    removeStCardForCharacter(request.user.directories, found.character);
+    removeStCardForCharacter(directories, found.character);
+
+    // Remove the disk mirror JSONL too (best-effort).
+    try {
+        const fs = await import('node:fs');
+        const path = await import('node:path');
+        const mirrorFile = path.join(campaignStore.campaignDir(directories, found.campaign_id), 'characters', `${found.character.id}.memories.jsonl`);
+        if (fs.existsSync(mirrorFile)) fs.unlinkSync(mirrorFile);
+    } catch (err) {
+        console.warn('[gm.cascade] failed to remove character memory mirror', err?.message || err);
+    }
+
     return response.status(204).end();
 });
 
@@ -796,6 +992,20 @@ router.post('/turn', async (request, response) => {
     // dedicated `gm-adjudicator-model` profile slot is a Phase 10 concern.
     const ruleset = getRulesetFor(directories, campaign.ruleset_id);
 
+    // Phase 7: resolve a MemoryService and a monotonic scene_index. Failure
+    // here is non-fatal — the loop will run with `memoryService = null` and
+    // skip retrieval + writers, preserving Phase 4-6 behaviour.
+    /** @type {import('../gm-core/rag/service.d.ts').MemoryService | null} */
+    let memoryService = null;
+    let sceneIndex = 0;
+    try {
+        memoryService = await getMemoryService(directories);
+        sceneIndex = computeSceneIndex(found.scene);
+    } catch (err) {
+        console.warn('[gm] /turn: memory service unavailable; running RAG-free', err?.message || err);
+        memoryService = null;
+    }
+
     try {
         await runTurn({
             ctx,
@@ -814,6 +1024,8 @@ router.post('/turn', async (request, response) => {
                 const updated = participants.removeParticipant(directories, campaign.id, found.scene.id, id);
                 return updated ? charactersById.get(id) || null : null;
             },
+            memoryService,
+            sceneIndex,
         });
     } catch (err) {
         console.error('[gm] turn loop crashed', err);
@@ -830,6 +1042,25 @@ router.post('/turn', async (request, response) => {
         if (!response.writableEnded) response.end();
     }
 });
+
+/**
+ * Compute a monotonically increasing scene_index used by the decay model
+ * to estimate "scenes elapsed". For now we approximate with the scene's
+ * `started_at` epoch shifted into days; the absolute number doesn't
+ * matter — only the ordering does.
+ *
+ * @param {{ started_at?: string, message_count?: number }} scene
+ */
+function computeSceneIndex(scene) {
+    if (!scene) return 0;
+    const started = Date.parse(scene.started_at || '') || 0;
+    if (!started) return Math.max(0, Number(scene.message_count) || 0);
+    // Days since 2025-01-01 — keeps numbers small but monotonic across
+    // calendar months. Fractional values are fine.
+    const epoch = Date.parse('2025-01-01T00:00:00Z');
+    const days = (started - epoch) / (1000 * 60 * 60 * 24);
+    return Math.max(0, days + (Number(scene.message_count) || 0) * 0.01);
+}
 
 /**
  * Format the last N chars of a transcript for prompt context. Each line

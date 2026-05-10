@@ -4,7 +4,12 @@
  * Layout:
  *   {handle}/campaigns/{cid}/characters/{char_id}.json
  *
- * Reads cache per (handle, char_id). Writes invalidate the cache.
+ * Character ids are only unique within a campaign. Two different campaigns
+ * can each have a `jack`. The cache key must therefore include the
+ * campaign id; without it the cache would return campaign A's Jack when
+ * asked for campaign B's Jack.
+ *
+ * Reads cache per (handle, cid, char_id). Writes invalidate the cache.
  */
 
 import fs from 'node:fs';
@@ -28,8 +33,8 @@ import {
 /** @type {Map<string, Character>} */
 const cache = new Map();
 
-function cacheKey(handle, id) {
-    return `${handle}::${id}`;
+function cacheKey(handle, campaignId, id) {
+    return `${handle}::${campaignId}::${id}`;
 }
 
 /**
@@ -70,7 +75,7 @@ export function listIds(directories, campaignId) {
  * @returns {Character | null}
  */
 export function get(directories, campaignId, characterId) {
-    const key = cacheKey(directories.root, characterId);
+    const key = cacheKey(directories.root, campaignId, characterId);
     if (cache.has(key)) return cache.get(key) ?? null;
     const file = characterFile(directories, campaignId, characterId);
     const raw = readJson(file, /** @type {Character | null} */(null));
@@ -123,7 +128,7 @@ export function create(directories, campaignId, input) {
     const id = uniqueId(input.name, listIds(directories, campaignId));
     const character = buildCharacter({ ...input, id, campaign_id: campaignId });
     writeJson(characterFile(directories, campaignId, character.id), character);
-    cache.set(cacheKey(directories.root, character.id), character);
+    cache.set(cacheKey(directories.root, campaignId, character.id), character);
     return character;
 }
 
@@ -150,7 +155,7 @@ export function update(directories, campaignId, characterId, patch) {
         updated_at: nowIso(),
     };
     writeJson(characterFile(directories, campaignId, characterId), merged);
-    cache.set(cacheKey(directories.root, characterId), merged);
+    cache.set(cacheKey(directories.root, campaignId, characterId), merged);
     return merged;
 }
 
@@ -163,6 +168,6 @@ export function remove(directories, campaignId, characterId) {
     const file = characterFile(directories, campaignId, characterId);
     if (!fs.existsSync(file)) return false;
     fs.unlinkSync(file);
-    cache.delete(cacheKey(directories.root, characterId));
+    cache.delete(cacheKey(directories.root, campaignId, characterId));
     return true;
 }

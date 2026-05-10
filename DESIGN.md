@@ -71,8 +71,8 @@ strict, separate prompts.
 
 - **World Narrator** — an LLM that writes **prose** for the world:
   setting description, what physically happens, the consequences of a
-  roll. Sees campaign-scoped world facts (RAG); does not see
-  character memories.
+  roll. Sees campaign-scoped world facts (RAG) and its own continuity
+  notes (`narrator_memory`); never sees character memories.
 
 - **Actor (AI character)** — an LLM persona for any non-player
   character in the scene. Sees its own sheet (rendered as YAML), its
@@ -155,19 +155,33 @@ Two storage layers:
 
 - **Authoritative state** lives as JSON files on disk (campaigns,
   characters, sheets, lore, scene metadata, transcripts). Human-
-  readable, easy to back up.
-- **Long-term memory** lives in **Qdrant**. Two collection kinds:
-  `character_memory__{character_id}` and `world_fact__{campaign_id}`.
+  readable, easy to back up. **Disk is canonical.**
+- **Long-term memory** lives in **Qdrant** as a derived index that we
+  rebuild from disk on boot. Five collection kinds, all
+  campaign-scoped:
+  - `world_lore__{cid}` — unified seed + generated world facts
+    (origin tag in payload).
+  - `character_memory__{cid}__{character_id}` — per-character
+    first-person memories.
+  - `director_memory__{cid}` — Director pacing log.
+  - `narrator_memory__{cid}` — Narrator continuity notes.
+  - `player_journal__{cid}` — out-of-fiction player notes.
+
+  Every write hits an append-only disk JSONL mirror first, then
+  Qdrant. On boot, a reconcile pass replays missing records into
+  Qdrant; wiping the Qdrant volume is a recoverable operation.
 
 Memory injection rules — these are properties of the system,
-enforced in code:
+enforced in code (Phase 7 relaxes the original Director-RAG-free rule;
+the adjudicator stays strictly clean):
 
-| Caller        | Character memories                  | World facts        | Notes                          |
-|---------------|--------------------------------------|--------------------|--------------------------------|
-| Director      | **never**                            | **never**          | structured output only         |
-| Skill-check adjudicator | **never**                  | **never**          | structured output only         |
-| World Narrator | **never**                           | top 3              | also for post-roll narration   |
-| Actor X       | top 4 for X (X's own only)           | top 3              | never sees Y's memories        |
+| Caller        | character_memory                | world_lore                        | director_memory     | narrator_memory     | player_journal     |
+|---------------|---------------------------------|-----------------------------------|---------------------|---------------------|--------------------|
+| Director      | **never**                       | top 6 + `search_memory` tool      | own, top 2          | **never**           | top 1              |
+| World Narrator | **never**                      | top 6 + `search_memory` tool      | **never**           | own, top 2          | top 1              |
+| Actor X       | own, top 4 (X's only)           | top 5 + `search_memory` tool       | **never**           | **never**           | top 1 (read-only)  |
+| Skill-check adjudicator | **never**             | **never**                          | **never**           | **never**           | **never**          |
+| Post-roll Narrator | **never**                  | top 6                              | **never**           | own, top 2          | top 1              |
 
 When a character is called, the latest authoritative version of their
 sheet is rendered as YAML and included in their prompt. Sheets are
@@ -278,8 +292,9 @@ when the provider supports JSON-schema strict mode.
 4. **Strict context isolation.** Per-actor prompts are rebuilt from
    authoritative state every call. The transcript shown to the
    player is not the prompt sent to any LLM. Other actors' sheets and
-   memories are not in actor X's prompt. The Director never sees RAG
-   snippets. These are tested as system properties.
+   memories are not in actor X's prompt. The skill-check adjudicator
+   never sees RAG snippets — it does not even import `MemoryService`.
+   These are tested as system properties.
 5. **Structured output is non-negotiable for the Director.** The
    Director's only output channel is a discriminated-union schema.
    Adding a Director capability is adding a variant to the union; the

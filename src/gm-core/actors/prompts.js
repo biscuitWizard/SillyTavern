@@ -10,9 +10,13 @@
  *   1. Actor X's prompt sees only X's sheet. Other characters' sheets,
  *      descriptions, voice notes, etc. never appear here.
  *   2. Director rationale is never echoed.
- *   3. RAG snippets (Phase 7) are not yet wired; in Phase 5 the actor sees
- *      only its own sheet, the campaign brief, the scene frame, the recent
- *      transcript, and the Director's `intent` directive.
+ *   3. Phase 7 wires RAG: the user prompt carries a MEMORIES block built
+ *      from this actor's `character_memory__{cid}__{X}` collection plus a
+ *      slice of `world_lore__{cid}` and `player_journal__{cid}`. The HTTP
+ *      wrapper builds the block per-actor before dispatch and passes it
+ *      via `ctx.memories_block`; this builder splices it. Other actors'
+ *      memory collections are physically inaccessible — the leak invariant
+ *      is enforced by collection name, not by remembering to pass a filter.
  *   4. The Narrator's prompt is built separately in `narrator/prompts.js`;
  *      this module is character-only.
  *
@@ -100,6 +104,11 @@ export function actorUserPrompt(ctx, character, intent) {
     if (ctx.user_input && String(ctx.user_input).trim()) {
         lines.push('# Player just said / did');
         lines.push(String(ctx.user_input).trim());
+        lines.push('');
+    }
+
+    if (ctx.memories_block && ctx.memories_block.trim()) {
+        lines.push(ctx.memories_block.trim());
         lines.push('');
     }
 

@@ -1797,3 +1797,685 @@ body.tt-mode-scene #chat .mes.gm-roll-card::before {
     }
 }
 
+/* -------- Phase 7: Memory Explorer ---------- */
+
+/* Topbar tab switcher (Hub / Memory) — used by both the campaign hub and
+   the memory explorer surface. The active state is just a colour tint. */
+.gm-topbar-tabs {
+    display: inline-flex;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--gm-border);
+    border-radius: 8px;
+    padding: 2px;
+    gap: 2px;
+    margin-right: 4px;
+}
+
+.gm-topbar-tab {
+    background: transparent;
+    color: var(--gm-text-soft);
+    border: none;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 120ms ease, color 120ms ease;
+}
+
+.gm-topbar-tab:hover {
+    color: var(--gm-text);
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.gm-topbar-tab.is-active {
+    color: #fff;
+    background: linear-gradient(135deg, var(--gm-accent) 0%, var(--gm-accent-2) 100%);
+    box-shadow: 0 4px 12px rgba(124, 92, 255, 0.28);
+}
+
+/* Three-column grid: rail · centre · editor. The grid lives directly
+   under the topbar; on narrow viewports it collapses to a single column
+   stack so each pane stays usable. */
+.gm-memex {
+    display: grid;
+    grid-template-columns: 240px minmax(0, 1fr) 360px;
+    gap: 16px;
+    padding: 16px 24px 80px;
+    align-items: start;
+    min-height: calc(100vh - 80px);
+}
+
+@media (max-width: 1100px) {
+    .gm-memex {
+        grid-template-columns: 200px minmax(0, 1fr);
+    }
+    .gm-memex-editor-host {
+        grid-column: 1 / -1;
+    }
+}
+
+@media (max-width: 700px) {
+    .gm-memex {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* Health banner (Qdrant unreachable, etc.) sits between the topbar and
+   the grid. Reuses the connection banner palette for consistency. */
+.gm-memex-health {
+    margin: 16px 24px 0;
+    padding: 10px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+    line-height: 1.4;
+}
+
+.gm-memex-health.is-warn {
+    background: rgba(255, 184, 0, 0.10);
+    border: 1px solid rgba(255, 184, 0, 0.32);
+    color: #ffe6b3;
+}
+
+/* Left rail */
+.gm-memex-rail {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    background: var(--gm-surface);
+    border: 1px solid var(--gm-border);
+    border-radius: 12px;
+    padding: 12px;
+    position: sticky;
+    top: 88px;
+    max-height: calc(100vh - 120px);
+    overflow-y: auto;
+}
+
+.gm-memex-rail-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--gm-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 4px 8px 8px;
+    border-bottom: 1px solid var(--gm-border);
+    margin-bottom: 4px;
+}
+
+.gm-memex-rail-empty {
+    color: var(--gm-text-muted);
+    font-size: 12px;
+    padding: 12px 8px;
+}
+
+.gm-memex-rail-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 10px;
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--gm-text-soft);
+    border-radius: 8px;
+    cursor: pointer;
+    text-align: left;
+    font: inherit;
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.gm-memex-rail-item:hover {
+    background: var(--gm-surface-2);
+    color: var(--gm-text);
+    border-color: var(--gm-border);
+}
+
+.gm-memex-rail-item.is-active {
+    background: rgba(124, 92, 255, 0.12);
+    border-color: rgba(124, 92, 255, 0.35);
+    color: #fff;
+}
+
+.gm-memex-rail-label {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.gm-memex-rail-sublabel {
+    font-size: 11px;
+    color: var(--gm-text-muted);
+}
+
+.gm-memex-rail-kind {
+    font-size: 10px;
+    color: var(--gm-text-faint);
+    font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+    margin-top: 2px;
+}
+
+.gm-memex-rail-item.is-active .gm-memex-rail-kind {
+    color: rgba(255, 255, 255, 0.55);
+}
+
+/* Centre pane: filter row, summary, table, load-more */
+.gm-memex-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    background: var(--gm-surface);
+    border: 1px solid var(--gm-border);
+    border-radius: 12px;
+    padding: 16px;
+    min-height: 320px;
+}
+
+.gm-memex-error {
+    background: rgba(255, 80, 80, 0.10);
+    border: 1px solid rgba(255, 80, 80, 0.35);
+    color: #ffd7d7;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+}
+
+.gm-memex-filter-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: flex-end;
+}
+
+.gm-memex-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1 1 160px;
+    min-width: 120px;
+}
+
+.gm-memex-field-label {
+    font-size: 11px;
+    color: var(--gm-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.gm-memex-input {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--gm-border-strong);
+    color: var(--gm-text);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font: inherit;
+    font-size: 13px;
+    transition: border-color 120ms ease, background 120ms ease;
+}
+
+.gm-memex-input:focus {
+    outline: none;
+    border-color: var(--gm-accent);
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.gm-memex-list-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    color: var(--gm-text-muted);
+    font-size: 12px;
+}
+
+.gm-memex-table {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.gm-memex-empty {
+    padding: 32px 16px;
+    text-align: center;
+    color: var(--gm-text-muted);
+    font-size: 13px;
+    border: 1px dashed var(--gm-border-strong);
+    border-radius: 10px;
+}
+
+.gm-memex-row {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 12px 14px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--gm-border);
+    border-radius: 10px;
+    cursor: pointer;
+    text-align: left;
+    color: inherit;
+    font: inherit;
+    transition: background 120ms ease, border-color 120ms ease;
+}
+
+.gm-memex-row:hover {
+    background: var(--gm-surface-2);
+    border-color: var(--gm-border-strong);
+}
+
+.gm-memex-row.is-selected {
+    border-color: rgba(124, 92, 255, 0.55);
+    background: rgba(124, 92, 255, 0.08);
+}
+
+.gm-memex-row-main {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.gm-memex-row-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #fff;
+    line-height: 1.4;
+}
+
+.gm-memex-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.gm-memex-tag-chip {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(124, 92, 255, 0.14);
+    color: #c9bcff;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+
+.gm-memex-row-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.gm-memex-meta-pill {
+    display: inline-flex;
+    gap: 4px;
+    align-items: center;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--gm-border);
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 10px;
+    color: var(--gm-text-soft);
+}
+
+.gm-memex-meta-pill-label {
+    color: var(--gm-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.gm-memex-meta-pill-value {
+    color: var(--gm-text);
+    font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+}
+
+.gm-memex-loadmore {
+    align-self: center;
+}
+
+/* Right pane: editor */
+.gm-memex-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    background: var(--gm-surface);
+    border: 1px solid var(--gm-border);
+    border-radius: 12px;
+    padding: 16px;
+    position: sticky;
+    top: 88px;
+    max-height: calc(100vh - 120px);
+    overflow-y: auto;
+}
+
+.gm-memex-editor-empty {
+    text-align: center;
+    color: var(--gm-text-muted);
+    padding: 32px 8px;
+}
+
+.gm-memex-editor-empty-title {
+    color: var(--gm-text-soft);
+    font-weight: 600;
+    margin-bottom: 6px;
+}
+
+.gm-memex-editor-empty-body {
+    font-size: 12px;
+    color: var(--gm-text-muted);
+}
+
+.gm-memex-editor-header {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--gm-border);
+}
+
+.gm-memex-editor-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #fff;
+    line-height: 1.4;
+    word-break: break-word;
+}
+
+.gm-memex-editor-id {
+    font-size: 10px;
+    color: var(--gm-text-faint);
+    font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+    word-break: break-all;
+}
+
+.gm-memex-editor-status {
+    padding: 8px 10px;
+    border-radius: 8px;
+    font-size: 12px;
+}
+
+.gm-memex-editor-status.is-info {
+    background: rgba(124, 92, 255, 0.10);
+    color: #c9bcff;
+    border: 1px solid rgba(124, 92, 255, 0.30);
+}
+
+.gm-memex-editor-status.is-ok {
+    background: rgba(102, 212, 154, 0.12);
+    color: #b3f0c8;
+    border: 1px solid rgba(102, 212, 154, 0.32);
+}
+
+.gm-memex-editor-status.is-error {
+    background: rgba(255, 80, 80, 0.10);
+    color: #ffd7d7;
+    border: 1px solid rgba(255, 80, 80, 0.32);
+}
+
+.gm-memex-editor-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.gm-memex-editor-field-label {
+    font-size: 11px;
+    color: var(--gm-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.gm-memex-textarea {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--gm-border-strong);
+    color: var(--gm-text);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font: inherit;
+    font-size: 13px;
+    line-height: 1.5;
+    resize: vertical;
+    min-height: 120px;
+}
+
+.gm-memex-textarea:focus {
+    outline: none;
+    border-color: var(--gm-accent);
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.gm-memex-slider-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.gm-memex-slider {
+    flex: 1 1 auto;
+    accent-color: var(--gm-accent);
+}
+
+.gm-memex-slider-value {
+    font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 12px;
+    color: var(--gm-text-soft);
+    min-width: 40px;
+    text-align: right;
+}
+
+.gm-memex-checkbox-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--gm-text-soft);
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.gm-memex-editor-buttons {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--gm-border);
+}
+
+.gm-memex-delete {
+    color: rgba(255, 140, 140, 0.85);
+    border-color: rgba(255, 140, 140, 0.32);
+}
+
+.gm-memex-delete:hover:not(:disabled) {
+    color: #ffabab;
+    background: rgba(255, 80, 80, 0.10);
+    border-color: rgba(255, 80, 80, 0.45);
+}
+
+/* Live feed (top-right floater) */
+.gm-memex-feed {
+    position: fixed;
+    top: 88px;
+    right: 24px;
+    width: 320px;
+    background: rgba(15, 18, 24, 0.95);
+    border: 1px solid var(--gm-border-strong);
+    border-radius: 10px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+    z-index: 30;
+    color: var(--gm-text);
+    overflow: hidden;
+    backdrop-filter: blur(6px);
+}
+
+.gm-memex-feed.is-collapsed {
+    width: 200px;
+}
+
+.gm-memex-feed-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    background: transparent;
+    border: none;
+    color: inherit;
+    padding: 10px 12px;
+    cursor: pointer;
+    font: inherit;
+    text-align: left;
+}
+
+.gm-memex-feed-header:hover {
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.gm-memex-feed-title {
+    flex: 1;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--gm-text-soft);
+}
+
+.gm-memex-feed-count {
+    font-size: 11px;
+    background: rgba(124, 92, 255, 0.18);
+    color: #c9bcff;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-weight: 600;
+    font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+}
+
+.gm-memex-feed-chevron {
+    color: var(--gm-text-muted);
+    font-size: 10px;
+}
+
+.gm-memex-feed-body {
+    border-top: 1px solid var(--gm-border);
+    max-height: 320px;
+    overflow-y: auto;
+}
+
+.gm-memex-feed-empty {
+    padding: 16px;
+    color: var(--gm-text-muted);
+    font-size: 12px;
+    text-align: center;
+}
+
+.gm-memex-feed-list {
+    display: flex;
+    flex-direction: column;
+}
+
+.gm-memex-feed-row {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--gm-border);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    transition: background 240ms ease;
+}
+
+.gm-memex-feed-row:last-child {
+    border-bottom: none;
+}
+
+.gm-memex-feed-row.is-fresh {
+    background: rgba(124, 92, 255, 0.18);
+    animation: gm-memex-feed-flash 1.2s ease;
+}
+
+@keyframes gm-memex-feed-flash {
+    from { background: rgba(124, 92, 255, 0.42); }
+    to   { background: rgba(124, 92, 255, 0.02); }
+}
+
+.gm-memex-feed-row-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 10px;
+    color: var(--gm-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.gm-memex-feed-row-kind {
+    font-weight: 600;
+    font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+}
+
+.gm-memex-feed-row-when {
+    font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+    color: var(--gm-text-faint);
+}
+
+.gm-memex-feed-row-body {
+    font-size: 12px;
+    color: var(--gm-text-soft);
+    line-height: 1.4;
+}
+
+/* Seed-lore dropdown anchored to its trigger button */
+.gm-memex-seed-menu {
+    position: relative;
+}
+
+.gm-memex-seed-panel {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    width: 260px;
+    background: rgba(15, 18, 24, 0.96);
+    border: 1px solid var(--gm-border-strong);
+    border-radius: 10px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+    padding: 6px;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 320px;
+    overflow-y: auto;
+}
+
+.gm-memex-seed-row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 10px;
+    background: transparent;
+    border: 1px solid transparent;
+    color: inherit;
+    border-radius: 8px;
+    cursor: pointer;
+    text-align: left;
+    font: inherit;
+    transition: background 120ms ease, border-color 120ms ease;
+}
+
+.gm-memex-seed-row:hover:not(:disabled) {
+    background: var(--gm-surface-2);
+    border-color: var(--gm-border);
+}
+
+.gm-memex-seed-row-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: #fff;
+}
+
+.gm-memex-seed-row-summary {
+    font-size: 11px;
+    color: var(--gm-text-muted);
+}
+
+.gm-memex-seed-empty,
+.gm-memex-seed-loading {
+    padding: 12px;
+    color: var(--gm-text-muted);
+    font-size: 12px;
+    text-align: center;
+}
+
