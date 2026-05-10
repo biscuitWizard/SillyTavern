@@ -18,6 +18,7 @@ export type WorldLoreSourceType =
     | 'wizard_paste'
     | 'add_lore'
     | 'scene_end'
+    | 'ask_mode'
     | 'manual';
 
 export type WorldLoreEntryKind =

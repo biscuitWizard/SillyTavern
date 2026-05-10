@@ -1,17 +1,29 @@
 /**
  * Campaign Main — the per-campaign hub.
  *
- * Phase 1 ships the shell: banner header, party panel slot (filled in
- * Phase 2), scene history slot (filled in Phase 3), Start Scene CTA, gear
- * Settings popup, Delete campaign menu.
+ * Layout: topbar with brand + Hub/Memory tab switcher + connection +
+ * delete; hero banner reading the campaign brief; left sidebar with the
+ * pinned PC sheet preview; main body that swaps between three sub-views
+ * WITHOUT navigating away from the hub:
+ *
+ *   - 'hub'  (default): "Where things stand" panel + Ask/Plot action
+ *             cards + expandable scene history.
+ *   - 'ask'  : Ask panel (out-of-fiction GM chat, persistent transcript,
+ *             auto-records world lore).
+ *   - 'plot' : Plot panel (declared-action gate; pushback or scene start).
+ *
+ * Sub-view swaps stay inside `.gm-three-col-main` and do NOT toggle
+ * `body.tt-mode-scene` (which is reserved for actual scenes).
  */
 
 import { route } from './router.js';
 import * as api from './api.js';
-import { openStApiPanel } from './llm-profile.js';
+import { openStApiPanel, currentLlmProfile } from './llm-profile.js';
 import { mountConnectionGate, getConnectionStatus } from './connection-gate.js';
 import { openCharacterWizard } from './character-wizard.js';
 import { renderLeftSidebar, teardownLeftSidebar } from './sidebar-left.js';
+import { renderAskPanel } from './ask-panel.js';
+import { renderPlotPanel } from './plot-panel.js';
 
 /**
  * Per-tab set of campaign ids whose PC wizard we have already auto-opened in
@@ -168,37 +180,64 @@ function renderHeroBanner(campaign, scenes) {
 
 /* -------- Body -------- */
 
+/**
+ * Render the Campaign Main body. The body has three sub-views the player
+ * swaps between WITHOUT navigating away from the hub: 'hub' (default,
+ * shows situation panel + Ask/Plot cards + scene history), 'ask' (Ask
+ * panel), and 'plot' (Plot panel). Switching never toggles
+ * `body.tt-mode-scene` — that class is reserved for actual scenes.
+ *
+ * @param {any} campaign
+ * @param {{ player: any, scenes: any[] }} args
+ */
 function renderBody(campaign, { player, scenes }) {
     const page = el('div', 'gm-page gm-campaign-page');
+    /** @type {'hub' | 'ask' | 'plot'} */
+    let view = 'hub';
+    let liveCampaign = campaign;
 
-    const top = el('div', 'gm-campaign-actions');
-    const startBtn = el('button', 'gm-primary-btn');
-    startBtn.type = 'button';
-    startBtn.disabled = !player;
-    startBtn.innerHTML = '<i class="fa-solid fa-play"></i> Start Scene';
-    if (player) {
-        startBtn.addEventListener('click', () => onStartScene(campaign, player));
-    } else {
-        startBtn.title = 'Create your character first';
-    }
-    top.append(startBtn);
+    const swap = async (next) => {
+        if (next === view) return;
+        view = next;
+        await paint();
+    };
 
-    if (!player) {
-        const cta = el('button', 'gm-secondary-btn');
-        cta.type = 'button';
-        cta.innerHTML = '<i class="fa-solid fa-user-pen"></i> Create your character';
-        cta.addEventListener('click', () => openCharacterWizard(campaign.id, () => {
-            route({ view: 'campaign', campaignId: campaign.id });
+    const paint = async () => {
+        if (view === 'ask') {
+            renderAskPanel(page, {
+                campaign: liveCampaign,
+                onBack: () => swap('hub'),
+            });
+            return;
+        }
+        if (view === 'plot') {
+            if (!player) { view = 'hub'; }
+            else {
+                renderPlotPanel(page, {
+                    campaign: liveCampaign,
+                    player,
+                    onBack: () => swap('hub'),
+                });
+                return;
+            }
+        }
+        page.replaceChildren();
+        if (player) {
+            page.append(renderSituationPanel(liveCampaign, {
+                onChanged: (updated) => { if (updated) liveCampaign = updated; paint(); },
+            }));
+        } else {
+            page.append(renderChargenCallout(liveCampaign));
+        }
+        page.append(renderActionCards({
+            player,
+            onAsk: () => swap('ask'),
+            onPlot: () => swap('plot'),
         }));
-        top.append(cta);
-    }
+        page.append(renderSection('Scene history', renderSceneHistoryPanel(liveCampaign, scenes)));
+    };
 
-    page.append(top);
-
-    // The party panel lives in the left sidebar in Phase 5+; the body now
-    // focuses on scene history.
-    page.append(renderSection('Scene history', renderSceneHistoryPanel(campaign, scenes)));
-
+    paint();
     return page;
 }
 
@@ -209,14 +248,247 @@ function renderSection(title, body) {
     return section;
 }
 
+function renderChargenCallout(campaign) {
+    const wrap = el('div', 'gm-empty-panel');
+    wrap.append(elText('div', '', 'Create your player character to start playing.'));
+    const cta = el('button', 'gm-primary-btn');
+    cta.type = 'button';
+    cta.innerHTML = '<i class="fa-solid fa-user-pen"></i> Create your character';
+    cta.addEventListener('click', () => openCharacterWizard(campaign.id, () => {
+        route({ view: 'campaign', campaignId: campaign.id });
+    }));
+    wrap.append(cta);
+    return wrap;
+}
+
+/* -------- Situation panel -------- */
+
+/**
+ * Render the "Where things stand" panel. When `current_situation` is null
+ * the panel offers a "Generate opening" button that POSTs to the server's
+ * opening synth. The pencil icon swaps the panel into an inline edit
+ * form that PATCHes the snapshot.
+ *
+ * @param {any} campaign
+ * @param {{ onChanged: (updated: any) => void }} args
+ */
+function renderSituationPanel(campaign, { onChanged }) {
+    const panel = el('div', 'gm-situation-panel');
+
+    const head = el('div', 'gm-situation-panel-head');
+    head.append(elText('div', 'gm-situation-panel-eyebrow', 'Where things stand'));
+    const headActions = el('div', 'gm-situation-panel-actions');
+    head.append(headActions);
+    panel.append(head);
+
+    const body = el('div', 'gm-situation-panel-body');
+    panel.append(body);
+
+    const cs = campaign.current_situation;
+    if (!cs) {
+        const empty = el('p', 'gm-situation-panel-empty');
+        empty.textContent = 'No situation snapshot on file yet. The GM can write one based on your character and the campaign brief.';
+        body.append(empty);
+
+        const actions = el('div', 'gm-situation-panel-empty-actions');
+        const genBtn = el('button', 'gm-primary-btn');
+        genBtn.type = 'button';
+        genBtn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> Generate opening';
+        genBtn.addEventListener('click', async () => {
+            const status = getConnectionStatus();
+            if (!status.ok) {
+                alert('No active LLM connection. Open the API panel to fix this first.');
+                return;
+            }
+            const directorProfile = currentLlmProfile('director');
+            if (!directorProfile) {
+                alert('No active LLM profile. Open the API panel to select one.');
+                return;
+            }
+            genBtn.disabled = true;
+            genBtn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Generating…';
+            try {
+                const out = await api.generateOpening(campaign.id, { director_profile: directorProfile });
+                onChanged(out.campaign);
+            } catch (err) {
+                console.error('[gm] generateOpening failed', err);
+                alert(`Could not generate opening: ${err?.message || err}`);
+                genBtn.disabled = false;
+                genBtn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> Generate opening';
+            }
+        });
+
+        const writeBtn = el('button', 'gm-secondary-btn');
+        writeBtn.type = 'button';
+        writeBtn.innerHTML = '<i class="fa-solid fa-pen"></i> Write it yourself';
+        writeBtn.addEventListener('click', () => swapToEdit(panel, campaign, null, onChanged));
+        actions.append(genBtn, writeBtn);
+        body.append(actions);
+        return panel;
+    }
+
+    headActions.append(buildEditButton(() => swapToEdit(panel, campaign, cs, onChanged)));
+
+    if (cs.recap) {
+        const recap = el('p', 'gm-situation-panel-recap');
+        recap.textContent = cs.recap;
+        body.append(recap);
+    }
+
+    const meta = el('div', 'gm-situation-panel-meta');
+    if (cs.location) meta.append(metaPill('fa-location-dot', cs.location));
+    if (cs.time) meta.append(metaPill('fa-clock', cs.time));
+    if (Array.isArray(cs.nearby_characters) && cs.nearby_characters.length) {
+        meta.append(metaPill('fa-users', `Nearby: ${cs.nearby_characters.join(', ')}`));
+    }
+    if (meta.childElementCount > 0) body.append(meta);
+
+    return panel;
+}
+
+function metaPill(icon, text) {
+    const span = document.createElement('span');
+    span.innerHTML = `<i class="fa-solid ${icon}"></i><span></span>`;
+    span.querySelector('span').textContent = text;
+    return span;
+}
+
+function buildEditButton(onClick) {
+    const btn = el('button', 'gm-icon-btn');
+    btn.type = 'button';
+    btn.title = 'Edit "where things stand"';
+    btn.innerHTML = '<i class="fa-solid fa-pen"></i>';
+    btn.addEventListener('click', onClick);
+    return btn;
+}
+
+/**
+ * Replace the situation panel's body with an inline edit form. On save
+ * PATCHes the campaign and re-renders via `onChanged`.
+ *
+ * @param {HTMLElement} panel
+ * @param {any} campaign
+ * @param {any} situation
+ * @param {(updated: any) => void} onChanged
+ */
+function swapToEdit(panel, campaign, situation, onChanged) {
+    panel.replaceChildren();
+    const head = el('div', 'gm-situation-panel-head');
+    head.append(elText('div', 'gm-situation-panel-eyebrow', 'Editing where things stand'));
+    panel.append(head);
+
+    const form = el('form', 'gm-situation-edit');
+    const recap = formField('Recap', 'textarea', situation?.recap || '');
+    const location = formField('Location', 'input', situation?.location || '');
+    const time = formField('Time', 'input', situation?.time || '');
+    const nearby = formField('Nearby (comma-separated)', 'input',
+        Array.isArray(situation?.nearby_characters) ? situation.nearby_characters.join(', ') : '');
+
+    form.append(recap.label, location.label, time.label, nearby.label);
+
+    const actions = el('div', 'gm-situation-edit-actions');
+    const cancel = el('button', 'gm-secondary-btn');
+    cancel.type = 'button';
+    cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', () => onChanged(campaign));
+    const save = el('button', 'gm-primary-btn');
+    save.type = 'submit';
+    save.textContent = 'Save';
+    actions.append(cancel, save);
+    form.append(actions);
+
+    form.addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        save.disabled = true;
+        cancel.disabled = true;
+        const payload = {
+            recap: recap.input.value.trim(),
+            location: location.input.value.trim(),
+            time: time.input.value.trim(),
+            nearby_characters: nearby.input.value
+                .split(',')
+                .map(s => s.trim())
+                .filter(Boolean),
+        };
+        try {
+            const out = await api.patchCurrentSituation(campaign.id, payload);
+            onChanged(out.campaign);
+        } catch (err) {
+            console.error('[gm] patchCurrentSituation failed', err);
+            alert(`Could not save: ${err?.message || err}`);
+            save.disabled = false;
+            cancel.disabled = false;
+        }
+    });
+
+    panel.append(form);
+}
+
+function formField(labelText, kind, value) {
+    const label = document.createElement('label');
+    const span = document.createElement('span');
+    span.textContent = labelText;
+    label.append(span);
+    /** @type {HTMLInputElement | HTMLTextAreaElement} */
+    const input = kind === 'textarea' ? document.createElement('textarea') : document.createElement('input');
+    if (input instanceof HTMLInputElement) input.type = 'text';
+    input.value = value || '';
+    label.append(input);
+    return { label, input };
+}
+
+/* -------- Action cards (Ask / Plot) -------- */
+
+function renderActionCards({ player, onAsk, onPlot }) {
+    const wrap = el('div', 'gm-action-cards');
+    wrap.append(buildActionCard({
+        icon: 'fa-comments',
+        title: 'Ask the GM',
+        blurb: 'Out-of-fiction questions about the world, the plot, or what your character knows. The GM will answer without advancing the scene.',
+        onClick: onAsk,
+    }));
+    const plotCard = buildActionCard({
+        icon: 'fa-bolt',
+        title: 'Take action',
+        blurb: player
+            ? `Tell the GM what ${player.name} wants to do, say, or attempt next. They\'ll either push back or set the scene.`
+            : 'Create your character first to start declaring actions.',
+        onClick: onPlot,
+        disabled: !player,
+    });
+    wrap.append(plotCard);
+    return wrap;
+}
+
+function buildActionCard({ icon, title, blurb, onClick, disabled }) {
+    const btn = el('button', 'gm-action-card');
+    btn.type = 'button';
+    btn.disabled = !!disabled;
+    const titleRow = el('div', 'gm-action-card-title');
+    const iconWrap = el('div', 'gm-action-card-icon');
+    iconWrap.innerHTML = `<i class="fa-solid ${icon}"></i>`;
+    titleRow.append(iconWrap, document.createTextNode(title));
+    btn.append(titleRow);
+    btn.append(elText('p', 'gm-action-card-blurb', blurb));
+    if (!disabled) btn.addEventListener('click', onClick);
+    return btn;
+}
+
+/* -------- Scene history (now expandable) -------- */
+
 function renderSceneHistoryPanel(campaign, scenes) {
     if (!scenes.length) {
-        return elText('div', 'gm-empty-panel', 'No scenes yet. Start one to begin the story.');
+        return elText('div', 'gm-empty-panel', 'No scenes yet. Use "Take action" to start one.');
     }
     const list = el('div', 'gm-scene-list');
     const sorted = [...scenes].sort((a, b) => Date.parse(b.started_at || 0) - Date.parse(a.started_at || 0));
     for (const scene of sorted) {
-        list.append(renderSceneRow(campaign, scene));
+        const { row, expand, toggle } = renderSceneRow(campaign, scene);
+        list.append(row);
+        if (expand) list.append(expand);
+        // keep ESLint quiet about the unused `toggle` (the wiring lives
+        // inside the row click handler).
+        void toggle;
     }
     return list;
 }
@@ -239,6 +511,7 @@ function renderSceneRow(campaign, scene) {
             <span class="gm-scene-row-status status-${scene.status}"></span>
             <span class="gm-scene-row-date"></span>
             <span class="gm-scene-row-messages"></span>
+            <span class="gm-scene-row-chevron"><i class="fa-solid fa-chevron-down"></i></span>
         </span>
     `;
     row.querySelector('.gm-scene-row-name').textContent = scene.name || scene.id;
@@ -252,17 +525,130 @@ function renderSceneRow(campaign, scene) {
     row.querySelector('.gm-scene-row-status').textContent = status;
     row.querySelector('.gm-scene-row-date').textContent = date;
     row.querySelector('.gm-scene-row-messages').textContent = messages;
+    const chevron = row.querySelector('.gm-scene-row-chevron i');
 
-    row.addEventListener('click', () => {
+    // Closed scenes get an inline expansion that pulls the SceneSummary
+    // prose. Active scenes go straight to the scene view (Phase 4
+    // behaviour). The "expand" element is created lazily on first toggle.
+    const isClosed = scene.status === 'closed';
+    /** @type {HTMLElement | null} */
+    let expand = null;
+    let loaded = false;
+    let openState = false;
+
+    const toggle = async () => {
+        if (!isClosed) {
+            route({
+                view: 'scene',
+                campaignId: campaign.id,
+                sceneId: scene.id,
+                readOnly: false,
+            });
+            return;
+        }
+        if (!expand) return;
+        openState = !openState;
+        expand.style.display = openState ? '' : 'none';
+        if (chevron) {
+            chevron.className = openState ? 'fa-solid fa-chevron-up' : 'fa-solid fa-chevron-down';
+        }
+        if (openState && !loaded) {
+            loaded = true;
+            await loadExpansion(expand, campaign, scene);
+        }
+    };
+
+    if (isClosed) {
+        expand = el('div', 'gm-scene-row-expand');
+        expand.style.display = 'none';
+        // Initial placeholder content; replaced on first open.
+        expand.append(elText('div', 'gm-scene-row-expand-empty', 'Loading scene summary…'));
+    }
+
+    row.addEventListener('click', toggle);
+
+    return { row, expand, toggle };
+}
+
+async function loadExpansion(host, campaign, scene) {
+    host.replaceChildren(elText('div', 'gm-scene-row-expand-empty', 'Loading scene summary…'));
+    try {
+        const summary = await api.getSceneSummary(campaign.id, scene.id);
+        if (!summary) {
+            host.replaceChildren(buildExpansionFallback(campaign, scene));
+            return;
+        }
+        host.replaceChildren(buildExpansion(campaign, scene, summary));
+    } catch (err) {
+        console.warn('[gm] failed to load scene summary', err);
+        host.replaceChildren(buildExpansionFallback(campaign, scene, err?.message || ''));
+    }
+}
+
+function buildExpansion(campaign, scene, summary) {
+    const wrap = document.createDocumentFragment();
+    if (summary.headline) {
+        wrap.append(elText('div', 'gm-scene-row-expand-headline', summary.headline));
+    }
+    if (summary.summary) {
+        wrap.append(elText('p', 'gm-scene-row-expand-summary', summary.summary));
+    }
+    const meta = el('div', 'gm-scene-row-expand-meta');
+    if (Array.isArray(summary.location_changes) && summary.location_changes.length) {
+        const node = document.createElement('span');
+        node.innerHTML = '<i class="fa-solid fa-location-dot"></i> <span></span>';
+        node.querySelector('span').textContent = summary.location_changes.join(', ');
+        meta.append(node);
+    }
+    if (Array.isArray(summary.participant_changes) && summary.participant_changes.length) {
+        const node = document.createElement('span');
+        node.innerHTML = '<i class="fa-solid fa-users"></i> <span></span>';
+        node.querySelector('span').textContent = summary.participant_changes.join(', ');
+        meta.append(node);
+    }
+    if (meta.childElementCount > 0) wrap.append(meta);
+
+    const actions = el('div', 'gm-scene-row-expand-actions');
+    const open = el('button', 'gm-secondary-btn');
+    open.type = 'button';
+    open.innerHTML = '<i class="fa-solid fa-book-open"></i> Open scene (read-only)';
+    open.addEventListener('click', (ev) => {
+        ev.stopPropagation();
         route({
             view: 'scene',
             campaignId: campaign.id,
             sceneId: scene.id,
-            readOnly: scene.status === 'closed',
+            readOnly: true,
         });
     });
+    actions.append(open);
+    wrap.append(actions);
+    return wrap;
+}
 
-    return row;
+function buildExpansionFallback(campaign, scene, errMessage) {
+    const wrap = document.createDocumentFragment();
+    const note = el('div', 'gm-scene-row-expand-empty');
+    note.textContent = errMessage
+        ? `Couldn't load scene summary: ${errMessage}`
+        : 'No scene summary on file yet (this scene closed before summaries were enabled).';
+    wrap.append(note);
+    const actions = el('div', 'gm-scene-row-expand-actions');
+    const open = el('button', 'gm-secondary-btn');
+    open.type = 'button';
+    open.innerHTML = '<i class="fa-solid fa-book-open"></i> Open scene (read-only)';
+    open.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        route({
+            view: 'scene',
+            campaignId: campaign.id,
+            sceneId: scene.id,
+            readOnly: true,
+        });
+    });
+    actions.append(open);
+    wrap.append(actions);
+    return wrap;
 }
 
 function renderFooter() {
@@ -275,19 +661,6 @@ function renderFooter() {
 }
 
 /* -------- Click handlers -------- */
-
-async function onStartScene(campaign, player) {
-    try {
-        const scene = await api.createScene(campaign.id, {
-            name: `Scene ${new Date().toLocaleString()}`,
-            location: '',
-        });
-        route({ view: 'scene', campaignId: campaign.id, sceneId: scene.id });
-    } catch (err) {
-        console.error('[gm] failed to start scene', err);
-        alert(`Could not start scene: ${err?.message || err}`);
-    }
-}
 
 async function onDelete(campaign) {
     if (!confirm(`Delete campaign "${campaign.name}"? This cannot be undone.`)) return;

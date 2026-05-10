@@ -30,7 +30,7 @@
 /**
  * @typedef {Object} WorldLorePayload
  * @property {'core' | 'generated'} origin
- * @property {'seed_pack' | 'auto_extracted' | 'wizard_paste' | 'add_lore' | 'scene_end' | 'manual'} source_type
+ * @property {'seed_pack' | 'auto_extracted' | 'wizard_paste' | 'add_lore' | 'scene_end' | 'ask_mode' | 'manual'} source_type
  * @property {string | null} scene_id
  * @property {('location' | 'faction' | 'culture' | 'people' | 'history' | 'magic' | 'artifact' | 'bestiary' | 'cosmology' | 'language' | 'pantheon' | 'custom')} entry_kind
  * @property {string} title
@@ -90,7 +90,7 @@ export const WORLD_LORE_ENTRY_KINDS = /** @type {const} */ ([
 
 export const WORLD_LORE_SOURCE_TYPES = /** @type {const} */ ([
     'seed_pack', 'auto_extracted', 'wizard_paste',
-    'add_lore', 'scene_end', 'manual',
+    'add_lore', 'scene_end', 'ask_mode', 'manual',
 ]);
 
 /**

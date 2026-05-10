@@ -11,13 +11,18 @@
 import express from 'express';
 
 import * as campaignStore from '../gm-core/campaigns/store.js';
-import { validateCampaignInput } from '../gm-core/campaigns/schemas.js';
+import { validateCampaignInput, buildCurrentSituation } from '../gm-core/campaigns/schemas.js';
+import { synthesizeOpening } from '../gm-core/openings/synth.js';
+import { ask as runAsk } from '../gm-core/ask/service.js';
+import * as askStore from '../gm-core/ask/store.js';
+import { decide as runPlotDecide } from '../gm-core/plot/service.js';
 import * as characterStore from '../gm-core/library/store.js';
 import { validateCharacterInput } from '../gm-core/library/schemas.js';
 import * as sheetOps from '../gm-core/sheets/operations.js';
 import * as sceneStore from '../gm-core/scenes/store.js';
 import { validateSceneInput } from '../gm-core/scenes/schemas.js';
 import * as transcript from '../gm-core/scenes/transcript.js';
+import * as summaryStore from '../gm-core/scenes/summary-store.js';
 import { runSceneEndPipeline } from '../gm-core/scenes/end-pipeline.js';
 import { writeStCardForCharacter, removeStCardForCharacter } from '../gm-core/integrations/st-card-mirror.js';
 import { mirrorCharacterToPersona } from '../gm-core/integrations/st-persona-mirror.js';
@@ -299,6 +304,330 @@ router.delete('/campaigns/:id', async (request, response) => {
     });
 });
 
+/* -------- Current situation (post-chargen / scene-end recap) -------- */
+
+/**
+ * POST /api/gm/campaigns/:cid/opening
+ *
+ * (Re-)generate the opening `current_situation` for a campaign. Requires a
+ * `director_profile` in the body (same shape the /turn route uses). Used by
+ * Campaign Main as a fallback when the chargen-time synth failed or was
+ * skipped, and as a "regenerate" affordance.
+ */
+router.post('/campaigns/:cid/opening', async (request, response) => {
+    const directories = request.user.directories;
+    const campaign = campaignStore.get(directories, request.params.cid);
+    if (!campaign) return response.status(404).json({ error: 'campaign not found' });
+
+    const body = request.body ?? {};
+    if (!body.director_profile || typeof body.director_profile !== 'object') {
+        return response.status(400).json({ error: 'director_profile is required' });
+    }
+
+    const characters = characterStore.listAll(directories, campaign.id);
+    const player = characters.find(c => c.is_player) || null;
+    if (!player) {
+        return response.status(409).json({ error: 'campaign has no player character yet' });
+    }
+
+    let client;
+    try {
+        client = createLlmClient({ userDirectories: directories, profile: body.director_profile });
+    } catch (err) {
+        return response.status(400).json({ error: 'invalid director_profile', details: err?.message || String(err) });
+    }
+
+    try {
+        const opening = await synthesizeOpening({
+            campaign: { name: campaign.name, brief: campaign.brief, ruleset_id: campaign.ruleset_id },
+            playerCharacter: {
+                name: player.name,
+                appearance: player.appearance,
+                personality: player.personality,
+                background: player.background,
+            },
+            client,
+        });
+        const updated = campaignStore.updateCurrentSituation(directories, campaign.id, opening);
+        return response.json({ campaign: updated, current_situation: updated?.current_situation ?? opening });
+    } catch (err) {
+        console.error('[gm] /opening synth failed', err);
+        return response.status(502).json({ error: 'opening synth failed', details: err?.message || String(err) });
+    }
+});
+
+/**
+ * PATCH /api/gm/campaigns/:cid/current-situation
+ *
+ * Manual edit of the "where things stand" snapshot. Clamping is handled by
+ * `buildCurrentSituation`; passing a body of `null` clears the field.
+ */
+router.patch('/campaigns/:cid/current-situation', (request, response) => {
+    const directories = request.user.directories;
+    const campaign = campaignStore.get(directories, request.params.cid);
+    if (!campaign) return response.status(404).json({ error: 'campaign not found' });
+
+    const body = request.body ?? null;
+    let situation;
+    if (body === null) {
+        situation = null;
+    } else if (typeof body === 'object') {
+        situation = buildCurrentSituation({ ...body, source: 'manual' });
+    } else {
+        return response.status(400).json({ error: 'body must be null or an object' });
+    }
+
+    const updated = campaignStore.updateCurrentSituation(directories, campaign.id, situation);
+    if (!updated) return response.status(404).json({ error: 'campaign not found' });
+    return response.json({ campaign: updated, current_situation: updated.current_situation });
+});
+
+/* -------- Ask mode (out-of-fiction GM chat) -------- */
+
+/**
+ * GET /api/gm/campaigns/:cid/ask
+ *
+ * Returns the per-campaign Ask transcript so the panel can render history
+ * on mount. Empty array when the file does not exist yet.
+ */
+router.get('/campaigns/:cid/ask', (request, response) => {
+    const directories = request.user.directories;
+    const campaign = campaignStore.get(directories, request.params.cid);
+    if (!campaign) return response.status(404).json({ error: 'campaign not found' });
+    try {
+        const entries = askStore.readAll(directories, campaign.id);
+        return response.json({ entries });
+    } catch (error) {
+        console.error('[gm.ask] read transcript failed', error);
+        return response.status(500).json({ error: 'failed to read ask transcript' });
+    }
+});
+
+/**
+ * POST /api/gm/campaigns/:cid/ask
+ *
+ * Run one Ask exchange. Body:
+ *   { question: string, director_profile: LlmProfile }
+ *
+ * Returns the GM reply, the two persisted transcript entries, and the
+ * id of the world_lore record created (when the GM emitted a
+ * `lore_candidate`).
+ */
+router.post('/campaigns/:cid/ask', async (request, response) => {
+    const directories = request.user.directories;
+    const campaign = campaignStore.get(directories, request.params.cid);
+    if (!campaign) return response.status(404).json({ error: 'campaign not found' });
+
+    const body = request.body ?? {};
+    const question = typeof body.question === 'string' ? body.question.trim() : '';
+    if (!question) return response.status(400).json({ error: 'question is required' });
+    if (!body.director_profile || typeof body.director_profile !== 'object') {
+        return response.status(400).json({ error: 'director_profile is required' });
+    }
+
+    let client;
+    try {
+        client = createLlmClient({ userDirectories: directories, profile: body.director_profile });
+    } catch (err) {
+        return response.status(400).json({ error: 'invalid director_profile', details: err?.message || String(err) });
+    }
+
+    const characters = characterStore.listAll(directories, campaign.id);
+    const player = characters.find(c => c.is_player) || null;
+    const allScenes = sceneStore.listAll(directories, campaign.id);
+    const recentSceneHeadlines = allScenes
+        .slice()
+        .sort((a, b) => Date.parse(b.started_at || '') - Date.parse(a.started_at || ''))
+        .map(s => typeof s.summary_headline === 'string' ? s.summary_headline.trim() : '')
+        .filter(Boolean);
+
+    let memoryService = null;
+    let sceneIndex = 0;
+    try {
+        memoryService = await getMemoryService(directories);
+        if (campaign.current_scene_id) {
+            const found = sceneStore.findById(directories, campaign.current_scene_id);
+            if (found) sceneIndex = computeSceneIndex(found.scene);
+        }
+    } catch (err) {
+        console.warn('[gm.ask] memory service unavailable; running RAG-free', err?.message || err);
+    }
+
+    const abortController = new AbortController();
+    request.on('close', () => {
+        if (!response.writableEnded) abortController.abort();
+    });
+
+    try {
+        const result = await runAsk({
+            directories,
+            campaign,
+            playerCharacter: player,
+            recentSceneHeadlines,
+            question,
+            client,
+            memoryService,
+            sceneIndex,
+            signal: abortController.signal,
+        });
+        campaignStore.touch(directories, campaign.id);
+        return response.json({
+            reply: result.reply,
+            lore_id: result.lore_id,
+            entries: result.entries,
+        });
+    } catch (err) {
+        console.error('[gm.ask] failed', err);
+        return response.status(502).json({ error: 'ask failed', details: err?.message || String(err) });
+    }
+});
+
+/* -------- Plot mode (intent gate -> scene start) -------- */
+
+/**
+ * POST /api/gm/campaigns/:cid/plot
+ *
+ * Run one Plot decision pass. Body:
+ *   { intent: string, director_profile: LlmProfile }
+ *
+ * On `start_scene`, the route also creates the Scene, maps any suggested
+ * NPC names to existing campaign character ids, and seeds the
+ * transcript with the GM's `opening_pose` as a narrator system message
+ * so the scene view loads grounded in the GM's setup.
+ */
+router.post('/campaigns/:cid/plot', async (request, response) => {
+    const directories = request.user.directories;
+    const campaign = campaignStore.get(directories, request.params.cid);
+    if (!campaign) return response.status(404).json({ error: 'campaign not found' });
+
+    const body = request.body ?? {};
+    const intent = typeof body.intent === 'string' ? body.intent.trim() : '';
+    if (!intent) return response.status(400).json({ error: 'intent is required' });
+    if (!body.director_profile || typeof body.director_profile !== 'object') {
+        return response.status(400).json({ error: 'director_profile is required' });
+    }
+
+    const characters = characterStore.listAll(directories, campaign.id);
+    const player = characters.find(c => c.is_player) || null;
+    if (!player) return response.status(409).json({ error: 'campaign has no player character yet' });
+
+    let client;
+    try {
+        client = createLlmClient({ userDirectories: directories, profile: body.director_profile });
+    } catch (err) {
+        return response.status(400).json({ error: 'invalid director_profile', details: err?.message || String(err) });
+    }
+
+    const allScenes = sceneStore.listAll(directories, campaign.id);
+    const recentSceneHeadlines = allScenes
+        .slice()
+        .sort((a, b) => Date.parse(b.started_at || '') - Date.parse(a.started_at || ''))
+        .map(s => typeof s.summary_headline === 'string' ? s.summary_headline.trim() : '')
+        .filter(Boolean);
+
+    // Roster the GM may pull NPCs from: campaign characters minus the PC,
+    // plus the current_situation's nearby_characters (which may be names
+    // the GM invented at chargen and never persisted as Characters yet).
+    const nearbyRoster = [
+        ...characters.filter(c => !c.is_player).map(c => c.name),
+        ...((campaign.current_situation?.nearby_characters) || []),
+    ];
+
+    let memoryService = null;
+    try {
+        memoryService = await getMemoryService(directories);
+    } catch (err) {
+        console.warn('[gm.plot] memory service unavailable; running RAG-free', err?.message || err);
+    }
+
+    const abortController = new AbortController();
+    request.on('close', () => {
+        if (!response.writableEnded) abortController.abort();
+    });
+
+    /** @type {import('../gm-core/plot/service.js').PlotDecision} */
+    let decision;
+    try {
+        decision = await runPlotDecide({
+            campaign,
+            playerCharacter: player,
+            recentSceneHeadlines,
+            nearbyRoster,
+            intent,
+            client,
+            memoryService,
+            signal: abortController.signal,
+        });
+    } catch (err) {
+        console.error('[gm.plot] failed', err);
+        return response.status(502).json({ error: 'plot failed', details: err?.message || String(err) });
+    }
+
+    if (decision.decision === 'pushback') {
+        return response.json({ decision: 'pushback', reason: decision.reason });
+    }
+
+    // Scene start path: map suggested NPC names to existing character ids
+    // (case-insensitive). Names without a match are still surfaced to the
+    // client as `suggested_unknown` so the user can decide whether to
+    // wire them up later — they're not added to the participants list.
+    const npcByLowerName = new Map();
+    for (const c of characters) {
+        if (!c.is_player) npcByLowerName.set(c.name.trim().toLowerCase(), c.id);
+    }
+    /** @type {string[]} */
+    const participantIds = [player.id];
+    /** @type {string[]} */
+    const suggestedUnknown = [];
+    for (const name of decision.suggested_participants) {
+        const id = npcByLowerName.get(name.trim().toLowerCase());
+        if (id && !participantIds.includes(id)) participantIds.push(id);
+        else if (!id) suggestedUnknown.push(name);
+    }
+
+    let scene;
+    try {
+        scene = sceneStore.create(directories, campaign.id, {
+            name: decision.name,
+            location: decision.location,
+            participants: participantIds,
+        });
+    } catch (err) {
+        console.error('[gm.plot] scene create failed', err);
+        return response.status(500).json({ error: 'failed to create scene' });
+    }
+
+    // Seed the transcript with the GM's opening pose so the scene view
+    // loads with the GM's setup already on the page. Marked
+    // `is_user: false`, `is_system: false`, `extra.role: 'narrator'` so
+    // it renders through the existing narrator bubble path.
+    try {
+        await transcript.appendLine(directories, campaign.id, scene.id, {
+            name: 'Narrator',
+            mes: decision.opening_pose,
+            is_user: false,
+            is_system: false,
+            send_date: new Date().toISOString(),
+            extra: { role: 'narrator', source: 'plot_mode' },
+        });
+        sceneStore.refreshMessageCount(directories, campaign.id, scene.id);
+    } catch (err) {
+        // The scene exists either way; surface a warning but don't fail.
+        console.warn('[gm.plot] failed to seed opening_pose', err?.message || err);
+    }
+
+    campaignStore.touch(directories, campaign.id);
+
+    return response.json({
+        decision: 'start_scene',
+        scene_id: scene.id,
+        scene,
+        opening_pose: decision.opening_pose,
+        suggested_participants: decision.suggested_participants,
+        suggested_unknown: suggestedUnknown,
+    });
+});
+
 /* -------- Characters (Phase 2) -------- */
 
 /**
@@ -324,7 +653,7 @@ router.get('/campaigns/:cid/characters', (request, response) => {
  * Create a character. Phase 2 only ships the player character creation flow
  * (`is_player: true`). Server enforces a single PC per campaign.
  */
-router.post('/campaigns/:cid/characters', (request, response) => {
+router.post('/campaigns/:cid/characters', async (request, response) => {
     const campaign = campaignStore.get(request.user.directories, request.params.cid);
     if (!campaign) return response.status(404).json({ error: 'campaign not found' });
 
@@ -380,7 +709,49 @@ router.post('/campaigns/:cid/characters', (request, response) => {
 
         campaignStore.touch(request.user.directories, campaign.id);
 
-        return response.status(201).json({ character });
+        // Best-effort opening synth: if the wizard sent a director_profile
+        // and this is the freshly-created PC for a campaign that has no
+        // current_situation yet, generate the "where you start" snapshot
+        // before responding so Campaign Main has something to render on
+        // the player's next paint. Failure is non-fatal — the frontend
+        // shows a "Generate opening" button as the fallback.
+        let opening = null;
+        let openingError = null;
+        const reloadedCampaign = campaignStore.get(request.user.directories, campaign.id) || campaign;
+        if (
+            character.is_player
+            && reloadedCampaign
+            && !reloadedCampaign.current_situation
+            && body.director_profile
+            && typeof body.director_profile === 'object'
+        ) {
+            try {
+                const client = createLlmClient({
+                    userDirectories: request.user.directories,
+                    profile: body.director_profile,
+                });
+                opening = await synthesizeOpening({
+                    campaign: {
+                        name: reloadedCampaign.name,
+                        brief: reloadedCampaign.brief,
+                        ruleset_id: reloadedCampaign.ruleset_id,
+                    },
+                    playerCharacter: {
+                        name: character.name,
+                        appearance: character.appearance,
+                        personality: character.personality,
+                        background: character.background,
+                    },
+                    client,
+                });
+                campaignStore.updateCurrentSituation(request.user.directories, campaign.id, opening);
+            } catch (err) {
+                openingError = err?.message || String(err);
+                console.warn('[gm] opening synth failed', openingError);
+            }
+        }
+
+        return response.status(201).json({ character, opening, opening_error: openingError });
     } catch (error) {
         console.error('[gm] create character failed', error);
         return response.status(500).json({ error: 'failed to create character' });
@@ -628,6 +999,25 @@ router.get('/scenes/:id', (request, response) => {
     const found = sceneStore.findById(request.user.directories, request.params.id);
     if (!found) return response.status(404).json({ error: 'scene not found' });
     return response.json({ scene: found.scene });
+});
+
+/**
+ * GET /api/gm/campaigns/:cid/scenes/:sid/summary
+ *
+ * Returns the full `SceneSummary` JSON written by the scene-end pipeline.
+ * Used by Campaign Main to expand a closed scene's recap inline. Returns
+ * 404 when the scene is missing or has no summary file yet (active
+ * scenes / scenes that closed before Phase 8 shipped).
+ */
+router.get('/campaigns/:cid/scenes/:sid/summary', (request, response) => {
+    const directories = request.user.directories;
+    const campaign = campaignStore.get(directories, request.params.cid);
+    if (!campaign) return response.status(404).json({ error: 'campaign not found' });
+    const scene = sceneStore.get(directories, campaign.id, request.params.sid);
+    if (!scene) return response.status(404).json({ error: 'scene not found' });
+    const summary = summaryStore.read(directories, campaign.id, scene.id);
+    if (!summary) return response.status(404).json({ error: 'no summary on file' });
+    return response.json({ summary, scene });
 });
 
 /**

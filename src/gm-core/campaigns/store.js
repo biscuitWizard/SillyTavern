@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import sanitize from 'sanitize-filename';
 
-import { buildCampaign } from './schemas.js';
+import { buildCampaign, buildCurrentSituation } from './schemas.js';
 import {
     ensureDir,
     nowIso,
@@ -91,6 +91,10 @@ export function get(directories, campaignId) {
     const file = campaignFile(directories, campaignId);
     const raw = readJson(file, /** @type {Campaign | null} */(null));
     if (raw === null) return null;
+    // Defensive backfill for fields added after the campaign was first
+    // written. Read-side default keeps older on-disk records compatible
+    // without a one-shot migration; the next write persists the field.
+    if (!('current_situation' in raw)) raw.current_situation = null;
     cache.set(key, raw);
     return raw;
 }
@@ -193,6 +197,24 @@ export function update(directories, campaignId, patch) {
  */
 export function touch(directories, campaignId) {
     return update(directories, campaignId, { last_played_at: nowIso() });
+}
+
+/**
+ * Replace `Campaign.current_situation`. Pass `null` to clear it. Input is
+ * normalised through `buildCurrentSituation` so callers may pass partial
+ * payloads (e.g. raw LLM output) without leaking unvalidated fields.
+ *
+ * @param {import('../../users.js').UserDirectoryList} directories
+ * @param {string} campaignId
+ * @param {Partial<import('./schemas.js').CurrentSituation> | null} situation
+ * @returns {Campaign | null}
+ */
+export function updateCurrentSituation(directories, campaignId, situation) {
+    const normalised = situation === null ? null : buildCurrentSituation({
+        ...situation,
+        updated_at: nowIso(),
+    });
+    return update(directories, campaignId, { current_situation: normalised });
 }
 
 /**

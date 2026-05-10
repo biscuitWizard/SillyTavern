@@ -117,6 +117,14 @@ function makeFakeClient(capture, overrides = {}) {
                 }
                 return { is_significant: false, memories: [] };
             }
+            if (schemaName === 'SceneEndRecap') {
+                return overrides.recap ?? {
+                    recap: 'Jack stands beside the wagon as the gate creaks shut behind him.',
+                    location: 'Just past the Ironhold gate',
+                    time: 'Mid-morning, an hour after the bribe',
+                    nearby_characters: ['Amelia'],
+                };
+            }
             throw new Error(`unexpected schemaName ${schemaName}`);
         },
         async chat() { return ''; },
@@ -132,6 +140,14 @@ function makeFakeFailingClient(capture, failingSchema) {
             }
             if (schemaName === 'SceneSummary') return SUMMARY_PAYLOAD;
             if (schemaName === 'SceneEndMemoryExtraction') return { is_significant: false, memories: [] };
+            if (schemaName === 'SceneEndRecap') {
+                return {
+                    recap: 'The PC stands where the scene left them.',
+                    location: 'Where the scene ended',
+                    time: 'Just after the scene',
+                    nearby_characters: [],
+                };
+            }
             throw new Error(`unexpected schemaName ${schemaName}`);
         },
         async chat() { return ''; },
@@ -419,6 +435,14 @@ describe('scene-end pipeline — orchestration', () => {
                             throw new Error('upstream 500');
                         }
                         return EXTRACTION_BY_NAME.Jack;
+                    }
+                    if (schemaName === 'SceneEndRecap') {
+                        return {
+                            recap: 'Jack stands beside the wagon as the gate creaks shut behind him.',
+                            location: 'Just past the Ironhold gate',
+                            time: 'Mid-morning',
+                            nearby_characters: ['Amelia'],
+                        };
                     }
                     throw new Error('unexpected');
                 },

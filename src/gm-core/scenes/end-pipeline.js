@@ -35,6 +35,7 @@
 import * as transcript from './transcript.js';
 import * as sceneStore from './store.js';
 import * as summaryStore from './summary-store.js';
+import * as campaignStore from '../campaigns/store.js';
 import { buildSceneSummary } from './schemas.js';
 import {
     SCENE_SUMMARY_SCHEMA,
@@ -51,6 +52,7 @@ import {
     deriveSceneEndCharacterMemoryId,
     deriveSceneEndKeyEventId,
 } from '../rag/writers/ids.js';
+import { recapFromSceneEnd } from '../openings/synth.js';
 
 /** @typedef {import('./schemas.js').Scene} Scene */
 /** @typedef {import('./schemas.js').SceneSummary} SceneSummary */
@@ -291,6 +293,36 @@ export async function runSceneEndPipeline(args) {
         summary_path: summaryRel,
     });
 
+    // Refresh "where things stand" so Campaign Main shows the post-scene
+    // beat instead of stale chargen-time copy. Failure is non-fatal: the
+    // scene is still closed, the summary is still written, the player
+    // can retry from the hub via POST .../opening (which also drives
+    // this same path under the hood once we extend it).
+    let recapWritten = false;
+    let recapError = null;
+    try {
+        const camp = campaignStore.get(directories, campaignId);
+        const playerName = participants.find(p => p.is_player)?.name;
+        const recap = await recapFromSceneEnd({
+            campaign: { name: campaign?.name, brief: campaign?.brief },
+            playerName,
+            previousSituation: camp?.current_situation || null,
+            sceneSummary: {
+                headline: summary.headline,
+                summary: summary.summary,
+                location_changes: summary.location_changes,
+                participant_changes: summary.participant_changes,
+            },
+            client: sumClient,
+            signal,
+        });
+        campaignStore.updateCurrentSituation(directories, campaignId, recap);
+        recapWritten = true;
+    } catch (err) {
+        recapError = err?.message || String(err);
+        warnings.push({ stage: 'current_situation_recap', error: recapError });
+    }
+
     if (warnings.length > 0) {
         console.warn('[gm] scene-end completed with warnings', { sceneId: scene.id, warnings });
     } else {
@@ -299,6 +331,7 @@ export async function runSceneEndPipeline(args) {
             participants: participants.length,
             memories_extracted: memoriesExtracted,
             key_events_written: keyEventsWritten,
+            current_situation: recapWritten,
         });
     }
 

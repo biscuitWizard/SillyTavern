@@ -16,6 +16,7 @@
  */
 
 import * as api from './api.js';
+import { currentLlmProfile } from './llm-profile.js';
 
 let activeOverlay = null;
 
@@ -74,7 +75,14 @@ export function openCharacterWizard(campaignId, onDone, options = {}) {
                 }
                 try {
                     const stats = collectStats(state);
-                    const created = await api.createCharacter(campaignId, {
+                    // Ship the active connection's director profile to the
+                    // server so it can synthesise the opening "where things
+                    // stand" snapshot in the same request when this is the
+                    // freshly-created PC. Failure is non-fatal — Campaign
+                    // Main shows a "Generate opening" affordance as the
+                    // fallback.
+                    const directorProfile = !state.isNpc ? currentLlmProfile('director') : null;
+                    const out = await api.createCharacter(campaignId, {
                         name: state.name,
                         appearance: state.appearance,
                         personality: state.personality,
@@ -82,9 +90,10 @@ export function openCharacterWizard(campaignId, onDone, options = {}) {
                         background: state.background,
                         is_player: !state.isNpc,
                         sheet: Object.keys(stats).length ? { stats } : undefined,
+                        ...(directorProfile ? { director_profile: directorProfile } : {}),
                     });
                     closeWizard();
-                    if (onDone) onDone(created);
+                    if (onDone) onDone(out.character);
                 } catch (err) {
                     console.error('[gm] createCharacter failed', err);
                     alert(`Could not create character: ${err?.message || err}`);

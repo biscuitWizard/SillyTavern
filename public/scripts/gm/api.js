@@ -126,6 +126,43 @@ export async function deleteCampaign(id) {
     await request(`/campaigns/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
+/* -------- Current situation / opening (chargen + scene-end recap) -------- */
+
+/**
+ * Replace the campaign's `current_situation` snapshot. Pass `null` to
+ * clear it, or a partial CurrentSituation object. The server normalises
+ * the payload via `buildCurrentSituation` and stamps `source: 'manual'`.
+ *
+ * @param {string} campaignId
+ * @param {{ recap?: string, location?: string, time?: string, nearby_characters?: string[] } | null} situation
+ * @returns {Promise<{ campaign: Campaign, current_situation: any }>}
+ */
+export async function patchCurrentSituation(campaignId, situation) {
+    return request(`/campaigns/${encodeURIComponent(campaignId)}/current-situation`, {
+        method: 'PATCH',
+        body: JSON.stringify(situation),
+    });
+}
+
+/**
+ * (Re-)generate the opening "where things stand" snapshot. Used by Campaign
+ * Main as a fallback when the chargen-time synth failed or as a manual
+ * regenerate.
+ *
+ * @param {string} campaignId
+ * @param {{ director_profile: object }} options
+ * @returns {Promise<{ campaign: Campaign, current_situation: any }>}
+ */
+export async function generateOpening(campaignId, options) {
+    if (!options || !options.director_profile) {
+        throw new Error('generateOpening requires a director_profile');
+    }
+    return request(`/campaigns/${encodeURIComponent(campaignId)}/opening`, {
+        method: 'POST',
+        body: JSON.stringify({ director_profile: options.director_profile }),
+    });
+}
+
 /* -------- Characters (Phase 2) -------- */
 
 /** @param {string} campaignId */
@@ -135,15 +172,26 @@ export async function listCharacters(campaignId) {
 }
 
 /**
+ * Create a character. When the body includes `director_profile` AND this
+ * is the freshly-created PC for a campaign with no `current_situation`
+ * yet, the server will (best-effort) synthesise the opening snapshot in
+ * the same request. Caller may inspect `response.opening` for the
+ * generated payload (or `opening_error` when synth failed).
+ *
  * @param {string} campaignId
  * @param {object} body
+ * @returns {Promise<{ character: any, opening: any, opening_error: string | null }>}
  */
 export async function createCharacter(campaignId, body) {
     const out = await request(`/campaigns/${encodeURIComponent(campaignId)}/characters`, {
         method: 'POST',
         body: JSON.stringify(body),
     });
-    return out.character;
+    return {
+        character: out.character,
+        opening: out.opening ?? null,
+        opening_error: out.opening_error ?? null,
+    };
 }
 
 /** @param {string} characterId */
@@ -243,6 +291,88 @@ export async function endScene(sceneId, options) {
         }),
     });
     return out ?? null;
+}
+
+/**
+ * Read the per-scene `SceneSummary` JSON (Phase 8). Returns null when the
+ * scene has no summary on file (active or closed-pre-Phase-8).
+ *
+ * @param {string} campaignId
+ * @param {string} sceneId
+ */
+export async function getSceneSummary(campaignId, sceneId) {
+    try {
+        const out = await request(`/campaigns/${encodeURIComponent(campaignId)}/scenes/${encodeURIComponent(sceneId)}/summary`);
+        return out?.summary ?? null;
+    } catch (err) {
+        if (err instanceof GmApiError && err.status === 404) return null;
+        throw err;
+    }
+}
+
+/* -------- Ask mode (out-of-fiction GM chat) -------- */
+
+/**
+ * @typedef {{ id: string, role: 'player' | 'gm', text: string, lore_id?: string | null, ts: string }} AskEntry
+ */
+
+/**
+ * Read the persistent Ask transcript for a campaign.
+ *
+ * @param {string} campaignId
+ * @returns {Promise<AskEntry[]>}
+ */
+export async function getAskTranscript(campaignId) {
+    const out = await request(`/campaigns/${encodeURIComponent(campaignId)}/ask`);
+    return out?.entries ?? [];
+}
+
+/**
+ * Run one Ask exchange. The server persists both player + GM entries and
+ * writes any GM-suggested `lore_candidate` as a `world_lore` record.
+ *
+ * @param {string} campaignId
+ * @param {{ question: string, director_profile: object }} options
+ * @returns {Promise<{ reply: string, lore_id: string | null, entries: { player: AskEntry, gm: AskEntry } }>}
+ */
+export async function postAsk(campaignId, options) {
+    if (!options || !options.question || !options.director_profile) {
+        throw new Error('postAsk requires question and director_profile');
+    }
+    return request(`/campaigns/${encodeURIComponent(campaignId)}/ask`, {
+        method: 'POST',
+        body: JSON.stringify({
+            question: options.question,
+            director_profile: options.director_profile,
+        }),
+    });
+}
+
+/* -------- Plot mode (intent gate -> scene start) -------- */
+
+/**
+ * Run one Plot decision pass. On `start_scene` the response includes the
+ * created `scene_id` (transcript already seeded with the GM's
+ * opening_pose).
+ *
+ * @param {string} campaignId
+ * @param {{ intent: string, director_profile: object }} options
+ * @returns {Promise<
+ *   | { decision: 'pushback', reason: string }
+ *   | { decision: 'start_scene', scene_id: string, scene: any, opening_pose: string, suggested_participants: string[], suggested_unknown: string[] }
+ * >}
+ */
+export async function postPlot(campaignId, options) {
+    if (!options || !options.intent || !options.director_profile) {
+        throw new Error('postPlot requires intent and director_profile');
+    }
+    return request(`/campaigns/${encodeURIComponent(campaignId)}/plot`, {
+        method: 'POST',
+        body: JSON.stringify({
+            intent: options.intent,
+            director_profile: options.director_profile,
+        }),
+    });
 }
 
 /**

@@ -897,6 +897,528 @@ body.tt-mode-scene #send_form.no-connection #send_textarea {
     color: var(--gm-text-muted);
 }
 
+/* Expanded scene row: surfaces the full SceneSummary prose under the row
+   when the user clicks. The row keeps its grid; we append a sibling
+   block beneath it with the prose. */
+.gm-scene-row-expand {
+    background: rgba(255, 255, 255, 0.02);
+    border-bottom: 1px solid var(--gm-border);
+    padding: 12px 18px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    color: var(--gm-text-soft);
+    font-size: 13px;
+    line-height: 1.55;
+}
+
+.gm-scene-row-expand:last-child {
+    border-bottom: none;
+}
+
+.gm-scene-row-expand-headline {
+    color: #fff;
+    font-weight: 600;
+}
+
+.gm-scene-row-expand-summary {
+    margin: 0;
+    white-space: pre-wrap;
+}
+
+.gm-scene-row-expand-meta {
+    color: var(--gm-text-muted);
+    font-size: 12px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.gm-scene-row-expand-empty {
+    color: var(--gm-text-faint);
+    font-style: italic;
+}
+
+.gm-scene-row-expand-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+/* -------- Phase 8a: situation panel + Ask/Plot cards -------- */
+
+.gm-situation-panel {
+    background: linear-gradient(160deg, rgba(124, 92, 255, 0.10) 0%, rgba(79, 141, 255, 0.04) 100%);
+    border: 1px solid rgba(124, 92, 255, 0.22);
+    border-radius: 14px;
+    padding: 18px 20px;
+    margin-bottom: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    color: var(--gm-text);
+}
+
+.gm-situation-panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.gm-situation-panel-eyebrow {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #c8b9ff;
+}
+
+.gm-situation-panel-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.gm-situation-panel-recap {
+    margin: 0;
+    color: #f1f3fa;
+    font-size: 14.5px;
+    line-height: 1.55;
+}
+
+.gm-situation-panel-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    color: var(--gm-text-soft);
+    font-size: 12.5px;
+}
+
+.gm-situation-panel-meta span > i {
+    margin-right: 6px;
+    color: #c8b9ff;
+}
+
+.gm-situation-panel-empty {
+    color: var(--gm-text-muted);
+    font-size: 13.5px;
+    margin: 0;
+}
+
+.gm-situation-panel-empty-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.gm-situation-edit {
+    display: grid;
+    gap: 10px;
+}
+
+.gm-situation-edit label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--gm-text-soft);
+}
+
+.gm-situation-edit input,
+.gm-situation-edit textarea {
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid var(--gm-border-strong);
+    border-radius: 8px;
+    padding: 8px 10px;
+    color: var(--gm-text);
+    font: inherit;
+    font-size: 13px;
+}
+
+.gm-situation-edit textarea {
+    min-height: 80px;
+    resize: vertical;
+}
+
+.gm-situation-edit-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.gm-action-cards {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin-bottom: 18px;
+}
+
+@media (max-width: 720px) {
+    .gm-action-cards {
+        grid-template-columns: 1fr;
+    }
+}
+
+.gm-action-card {
+    background: var(--gm-surface);
+    border: 1px solid var(--gm-border);
+    border-radius: 14px;
+    padding: 18px;
+    text-align: left;
+    color: var(--gm-text);
+    font: inherit;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.gm-action-card:hover:not(:disabled) {
+    background: var(--gm-surface-2);
+    border-color: rgba(124, 92, 255, 0.40);
+    transform: translateY(-1px);
+}
+
+.gm-action-card:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+.gm-action-card-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    display: grid;
+    place-items: center;
+    background: rgba(124, 92, 255, 0.18);
+    color: #d6caff;
+    font-size: 18px;
+}
+
+.gm-action-card-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.gm-action-card-blurb {
+    margin: 0;
+    color: var(--gm-text-soft);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.gm-panel-back-btn {
+    background: transparent;
+    border: 1px solid var(--gm-border-strong);
+    color: var(--gm-text-soft);
+    padding: 6px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: background 120ms ease, color 120ms ease;
+}
+
+.gm-panel-back-btn:hover {
+    color: var(--gm-text);
+    background: rgba(255, 255, 255, 0.05);
+}
+
+/* -------- Ask panel -------- */
+
+.gm-ask-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.gm-ask-panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.gm-ask-panel-title {
+    font-size: 18px;
+    font-weight: 700;
+    color: #fff;
+    margin: 0;
+}
+
+.gm-ask-panel-blurb {
+    margin: 0;
+    color: var(--gm-text-soft);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.gm-ask-transcript {
+    background: rgba(0, 0, 0, 0.18);
+    border: 1px solid var(--gm-border);
+    border-radius: 12px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: 60vh;
+    overflow-y: auto;
+}
+
+.gm-ask-empty {
+    color: var(--gm-text-muted);
+    font-size: 13px;
+    text-align: center;
+    padding: 24px 8px;
+    font-style: italic;
+}
+
+.gm-ask-msg {
+    border-radius: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--gm-border);
+    line-height: 1.55;
+    font-size: 13.5px;
+    white-space: pre-wrap;
+    max-width: 88%;
+}
+
+.gm-ask-msg-player {
+    align-self: flex-end;
+    background: rgba(124, 92, 255, 0.14);
+    border-color: rgba(124, 92, 255, 0.32);
+    color: #f1ebff;
+}
+
+.gm-ask-msg-gm {
+    align-self: flex-start;
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--gm-text);
+}
+
+.gm-ask-msg-role {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--gm-text-muted);
+    margin-bottom: 4px;
+}
+
+.gm-ask-msg-player .gm-ask-msg-role {
+    color: #c8b9ff;
+}
+
+.gm-ask-msg-pending {
+    opacity: 0.65;
+}
+
+.gm-lore-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(79, 141, 255, 0.16);
+    border: 1px solid rgba(79, 141, 255, 0.40);
+    color: #c9defc;
+    border-radius: 999px;
+    padding: 3px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    margin-top: 8px;
+    cursor: pointer;
+    text-decoration: none;
+}
+
+.gm-lore-chip:hover {
+    background: rgba(79, 141, 255, 0.24);
+    color: #fff;
+}
+
+.gm-lore-chip > i {
+    font-size: 10px;
+}
+
+.gm-ask-form {
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
+}
+
+.gm-ask-form textarea {
+    flex: 1;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid var(--gm-border-strong);
+    border-radius: 10px;
+    padding: 10px 12px;
+    color: var(--gm-text);
+    font: inherit;
+    font-size: 14px;
+    line-height: 1.4;
+    min-height: 56px;
+    max-height: 200px;
+    resize: vertical;
+}
+
+.gm-ask-form textarea:focus {
+    outline: 1px solid rgba(124, 92, 255, 0.6);
+    border-color: rgba(124, 92, 255, 0.6);
+}
+
+.gm-ask-form button {
+    flex-shrink: 0;
+}
+
+.gm-ask-error {
+    color: #ffb3b3;
+    background: rgba(255, 80, 80, 0.10);
+    border: 1px solid rgba(255, 80, 80, 0.30);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 13px;
+}
+
+/* -------- Plot panel -------- */
+
+.gm-plot-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.gm-plot-panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.gm-plot-panel-title {
+    font-size: 18px;
+    font-weight: 700;
+    color: #fff;
+    margin: 0;
+}
+
+.gm-plot-panel-blurb {
+    margin: 0;
+    color: var(--gm-text-soft);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.gm-plot-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.gm-plot-form label {
+    font-size: 13px;
+    color: var(--gm-text-soft);
+    font-weight: 600;
+}
+
+.gm-plot-form textarea {
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid var(--gm-border-strong);
+    border-radius: 10px;
+    padding: 12px 14px;
+    color: var(--gm-text);
+    font: inherit;
+    font-size: 14px;
+    line-height: 1.55;
+    min-height: 110px;
+    resize: vertical;
+}
+
+.gm-plot-form textarea:focus {
+    outline: 1px solid rgba(124, 92, 255, 0.6);
+    border-color: rgba(124, 92, 255, 0.6);
+}
+
+.gm-plot-form-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.gm-plot-result {
+    border-radius: 14px;
+    padding: 18px;
+    border: 1px solid var(--gm-border);
+    background: var(--gm-surface);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.gm-plot-result.is-pushback {
+    border-color: rgba(255, 184, 0, 0.32);
+    background: rgba(255, 184, 0, 0.06);
+}
+
+.gm-plot-result.is-start {
+    border-color: rgba(124, 230, 168, 0.32);
+    background: rgba(124, 230, 168, 0.06);
+}
+
+.gm-plot-result-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 700;
+}
+
+.gm-plot-result.is-pushback .gm-plot-result-head { color: #ffd897; }
+.gm-plot-result.is-start    .gm-plot-result-head { color: #b8f0d2; }
+
+.gm-plot-result-body {
+    margin: 0;
+    color: var(--gm-text);
+    font-size: 14px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+}
+
+.gm-plot-result-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.gm-plot-result-spinner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--gm-text-soft);
+    font-size: 13px;
+}
+
+.gm-plot-result-spinner > i {
+    color: #c8b9ff;
+}
+
+.gm-plot-error {
+    color: #ffb3b3;
+    background: rgba(255, 80, 80, 0.10);
+    border: 1px solid rgba(255, 80, 80, 0.30);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 13px;
+}
+
 /* -------- Modal -------- */
 
 .gm-modal-overlay {
