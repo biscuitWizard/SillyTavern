@@ -813,6 +813,50 @@ router.patch('/characters/:char_id', (request, response) => {
 });
 
 /**
+ * PUT /api/gm/characters/:char_id/identity/:field
+ *
+ * Atomic setter for one identity field (appearance, personality, voice,
+ * background, name). Used by the sheet panel's direct-edit inputs and by
+ * the frontend's Director-proposal approval bubble.
+ */
+const ALLOWED_IDENTITY_FIELDS = new Set(['appearance', 'personality', 'voice', 'background', 'name']);
+
+router.put('/characters/:char_id/identity/:field', (request, response) => {
+    const { char_id, field } = request.params;
+    if (!ALLOWED_IDENTITY_FIELDS.has(field)) {
+        return response.status(400).json({
+            error: `unknown identity field "${field}"; allowed: appearance, personality, voice, background, name`,
+        });
+    }
+
+    const found = characterStore.findById(request.user.directories, char_id);
+    if (!found) return response.status(404).json({ error: 'character not found' });
+
+    const value = (request.body ?? {}).value;
+    if (typeof value !== 'string') {
+        return response.status(400).json({ error: 'body.value must be a string' });
+    }
+
+    const validationError = validateCharacterInput({ [field]: value });
+    if (validationError) return response.status(400).json({ error: validationError });
+
+    const updated = characterStore.update(request.user.directories, found.campaign_id, found.character.id, { [field]: value });
+    if (!updated) return response.status(404).json({ error: 'character not found' });
+
+    const stCardAvatar = writeStCardForCharacter(request.user.directories, updated);
+    if (stCardAvatar && stCardAvatar !== updated.st_card_avatar) {
+        const finalUpdate = characterStore.update(request.user.directories, found.campaign_id, updated.id, { st_card_avatar: stCardAvatar });
+        if (finalUpdate) {
+            if (finalUpdate.is_player) mirrorCharacterToPersona(request.user.directories, finalUpdate);
+            return response.json({ character: finalUpdate });
+        }
+    }
+
+    if (updated.is_player) mirrorCharacterToPersona(request.user.directories, updated);
+    return response.json({ character: updated });
+});
+
+/**
  * DELETE /api/gm/characters/:char_id
  *
  * Drop `character_memory__{cid}__{char_id}` from Qdrant before deleting
@@ -1688,6 +1732,20 @@ router.post('/turn', async (request, response) => {
                         return null;
                 }
                 if (updated) charactersById.set(updated.id, updated);
+                return updated;
+            },
+            // Identity field updates (appearance, personality, voice,
+            // background, name). For NPCs the Director applies these
+            // directly; for the PC the loop emits an `identity_edit_request`
+            // event and returns the update as pending, leaving the actual
+            // write to the player's approve/deny action in the frontend.
+            updateCharacter: (characterId, patch) => {
+                const updated = characterStore.update(directories, campaign.id, characterId, patch);
+                if (updated) {
+                    charactersById.set(updated.id, updated);
+                    writeStCardForCharacter(directories, updated);
+                    if (updated.is_player) mirrorCharacterToPersona(directories, updated);
+                }
                 return updated;
             },
             memoryService,

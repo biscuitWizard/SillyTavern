@@ -3722,3 +3722,173 @@ body.tt-mode-scene #chat .mes.gm-roll-card::before {
     margin-top: 16px;
 }
 
+/* -------- Sheet panel identity section -------- */
+
+.gm-identity-field {
+    margin-bottom: 10px;
+}
+
+.gm-identity-field__textarea {
+    width: 100%;
+    background: var(--gm-surface);
+    border: 1px solid var(--gm-border-strong);
+    border-radius: 5px;
+    color: var(--gm-text);
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 6px 8px;
+    resize: vertical;
+    font-family: inherit;
+    transition: border-color 120ms ease;
+}
+
+.gm-identity-field__textarea:focus {
+    border-color: var(--gm-accent);
+    outline: none;
+}
+
+/* -------- Identity-edit approval bubble -------- */
+
+.gm-identity-request {
+    background: var(--gm-surface-2);
+    border: 1px solid var(--gm-accent);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin: 8px 0;
+    max-width: 680px;
+}
+
+.gm-identity-request__header {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--gm-accent);
+    margin-bottom: 10px;
+}
+
+.gm-identity-request__diff {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    margin-bottom: 10px;
+}
+
+.gm-identity-request__diff-pane {
+    flex: 1;
+    border-radius: 6px;
+    padding: 8px 10px;
+}
+
+.gm-identity-request__diff-pane--current {
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--gm-text-muted);
+}
+
+.gm-identity-request__diff-pane--proposed {
+    background: rgba(124, 92, 255, 0.12);
+    color: var(--gm-text);
+}
+
+.gm-identity-request__diff-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 4px;
+    opacity: 0.6;
+}
+
+.gm-identity-request__diff-text {
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+}
+
+.gm-identity-request__diff-arrow {
+    color: var(--gm-text-faint);
+    align-self: center;
+    font-size: 16px;
+    flex: 0 0 auto;
+}
+
+.gm-identity-request__rationale {
+    font-size: 12px;
+    font-style: italic;
+    color: var(--gm-text-soft);
+    margin-bottom: 12px;
+}
+
+.gm-identity-request__actions {
+    display: flex;
+    gap: 8px;
+}
+
+.gm-identity-request__btn {
+    border: none;
+    border-radius: 5px;
+    padding: 6px 14px;
+    font-size: 13px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: opacity 120ms ease;
+}
+
+.gm-identity-request__btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.gm-identity-request__btn--approve {
+    background: var(--gm-accent);
+    color: #fff;
+}
+
+.gm-identity-request__btn--approve:hover:not(:disabled) {
+    opacity: 0.85;
+}
+
+.gm-identity-request__btn--deny {
+    background: var(--gm-surface);
+    color: var(--gm-text-soft);
+    border: 1px solid var(--gm-border-strong);
+}
+
+.gm-identity-request__btn--deny:hover:not(:disabled) {
+    background: var(--gm-surface-2);
+}
+
+.gm-identity-request__deny-form {
+    margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.gm-identity-request__feedback {
+    width: 100%;
+    background: var(--gm-surface);
+    border: 1px solid var(--gm-border-strong);
+    border-radius: 5px;
+    color: var(--gm-text);
+    font-size: 13px;
+    padding: 6px 8px;
+    resize: vertical;
+}
+
+.gm-identity-request__btn--confirm-deny {
+    background: rgba(220, 80, 80, 0.2);
+    color: #e88;
+    border: 1px solid rgba(220, 80, 80, 0.3);
+    align-self: flex-start;
+}
+
+.gm-identity-request__btn--confirm-deny:hover {
+    background: rgba(220, 80, 80, 0.3);
+}
+
+.gm-identity-request__confirmation {
+    font-size: 12px;
+    color: var(--gm-text-muted);
+    margin-top: 6px;
+    font-style: italic;
+}
+

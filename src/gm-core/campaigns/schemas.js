@@ -32,6 +32,7 @@
  * @property {string} name
  * @property {string} brief - Short pitch (<= 280 chars).
  * @property {string} ruleset_id - e.g. `dnd5e`. Phase 6 wires real ruleset loading.
+ * @property {string} lore_pack_id - Bundled lore pack applied at creation, or empty string when none.
  * @property {string} addendum - GM addendum injected into Director system prompts.
  * @property {BannerTheme} banner_theme
  * @property {string | null} current_scene_id - Set when a scene is active.
@@ -49,6 +50,7 @@
  * @property {string} name
  * @property {string} brief
  * @property {string} ruleset_id
+ * @property {string} lore_pack_id
  * @property {BannerTheme} banner_theme
  * @property {string | null} last_played_at
  * @property {number} scene_count
@@ -118,6 +120,7 @@ export function buildCampaign(input) {
         name: String(input.name).trim().slice(0, CAMPAIGN_NAME_MAX),
         brief: String(input.brief ?? '').trim().slice(0, CAMPAIGN_BRIEF_MAX),
         ruleset_id: String(input.ruleset_id ?? 'dnd5e'),
+        lore_pack_id: String(input.lore_pack_id ?? ''),
         addendum: String(input.addendum ?? ''),
         banner_theme: banner,
         current_scene_id: input.current_scene_id ?? null,

@@ -228,6 +228,22 @@ export async function deleteCharacter(characterId) {
     await request(`/characters/${encodeURIComponent(characterId)}`, { method: 'DELETE' });
 }
 
+/**
+ * Atomic setter for a single identity field.
+ *
+ * @param {string} characterId
+ * @param {'appearance'|'personality'|'voice'|'background'|'name'} field
+ * @param {string} value
+ * @returns {Promise<any>} updated character
+ */
+export async function setIdentityField(characterId, field, value) {
+    const out = await request(`/characters/${encodeURIComponent(characterId)}/identity/${encodeURIComponent(field)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ value }),
+    });
+    return out?.character ?? null;
+}
+
 /* -------- Scenes (Phase 3) -------- */
 
 /** @param {string} campaignId */

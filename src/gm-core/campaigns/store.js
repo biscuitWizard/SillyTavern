@@ -121,6 +121,7 @@ function toSummary(c, sceneCountValue) {
         name: c.name,
         brief: c.brief,
         ruleset_id: c.ruleset_id,
+        lore_pack_id: c.lore_pack_id || '',
         banner_theme: c.banner_theme,
         last_played_at: c.last_played_at,
         scene_count: sceneCountValue,

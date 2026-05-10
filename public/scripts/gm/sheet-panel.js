@@ -189,10 +189,7 @@ function renderHeader(character) {
 function renderBody(character) {
     const body = el('div', 'gm-modal-body');
 
-    body.append(detail('Appearance', character.appearance));
-    body.append(detail('Personality', character.personality));
-    body.append(detail('Voice', character.voice));
-    if (character.background) body.append(detail('Background', character.background));
+    body.append(renderIdentitySection(character));
 
     if (isLoadingLayout) {
         body.append(elText('p', 'gm-modal-detail-body', 'Loading sheet…'));
@@ -205,6 +202,53 @@ function renderBody(character) {
         renderLegacyBody(body, character);
     }
     return body;
+}
+
+/* -------- Identity section -------- */
+
+/**
+ * Render the character identity fields (appearance, personality, voice,
+ * background) as editable textareas that save on blur. This is always
+ * rendered at the top of the panel, before any sheet categories, for
+ * both PCs and NPCs.
+ *
+ * Direct player edits are always committed immediately — no approval
+ * gate. The Director's `mutate_identity` action is the only path that
+ * triggers an approval bubble (PC) or a silent state update (NPC).
+ *
+ * @param {any} character
+ * @returns {HTMLElement}
+ */
+function renderIdentitySection(character) {
+    const section = el('div', 'gm-sheet-section gm-identity-section');
+    section.append(elText('div', 'gm-sheet-section-title', 'Identity'));
+
+    const FIELDS = [
+        { key: 'appearance', label: 'Appearance' },
+        { key: 'personality', label: 'Personality' },
+        { key: 'voice', label: 'Voice' },
+        { key: 'background', label: 'Background' },
+    ];
+
+    for (const { key, label } of FIELDS) {
+        const wrap = el('div', 'gm-modal-detail gm-identity-field');
+        wrap.append(elText('div', 'gm-modal-detail-label', label));
+
+        const textarea = /** @type {HTMLTextAreaElement} */ (el('textarea', 'gm-identity-field__textarea'));
+        textarea.rows = 3;
+        textarea.placeholder = `${label}…`;
+        textarea.value = String(character[key] ?? '');
+
+        bindBlurSave(textarea, textarea.value, async () => {
+            const out = await api.setIdentityField(character.id, key, textarea.value.trim());
+            return out;
+        });
+
+        wrap.append(textarea);
+        section.append(wrap);
+    }
+
+    return section;
 }
 
 /* -------- Categorized body (layout-driven) -------- */

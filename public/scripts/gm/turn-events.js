@@ -14,6 +14,7 @@
 
 import { appendActorLine, appendRollCard } from './st-bridge.js';
 import { emit as emitGmEvent } from './events.js';
+import * as api from './api.js';
 
 /** @type {Set<(ev: any) => void>} */
 const stateListeners = new Set();
@@ -154,4 +155,142 @@ export function handleTurnEvent(ev, ui) {
         emitGmEvent('memory_write', ev);
         return;
     }
+
+    if (ev.kind === 'identity_mutated') {
+        // NPC identity was updated directly by the Director. Notify
+        // party/sheet panel listeners to refresh; no chat line needed —
+        // the Director will narrate the change itself if it matters.
+        window.dispatchEvent(new CustomEvent('tt:character-changed', {
+            detail: { character_id: ev.character_id },
+        }));
+        return;
+    }
+
+    if (ev.kind === 'identity_edit_request') {
+        appendIdentityApprovalBubble(ev);
+        return;
+    }
+}
+
+/**
+ * Render a Director-proposed identity field change as a chat bubble with
+ * Approve / Deny controls. For the PC only — NPC changes go through
+ * `identity_mutated` (applied directly, no approval needed).
+ *
+ * Layout:
+ *   ┌── Director proposes updating [name]'s [field] ──────────────────┐
+ *   │  Current  │  Proposed                                            │
+ *   │  <muted>  │  <highlighted>                                       │
+ *   │  Rationale (italic)                                              │
+ *   │  [Approve]  [Deny ▾]                                             │
+ *   │    (feedback textarea + Confirm Deny — shown on Deny click)      │
+ *   └──────────────────────────────────────────────────────────────────┘
+ *
+ * After a decision the controls are replaced with a read-only confirmation
+ * note so the bubble is preserved in the transcript for reference.
+ *
+ * @param {{ character_id: string, character_name: string, field: string, current_value: string, proposed_value: string, rationale: string }} ev
+ */
+function appendIdentityApprovalBubble(ev) {
+    const FIELD_LABELS = {
+        appearance: 'Appearance',
+        personality: 'Personality',
+        voice: 'Voice',
+        background: 'Background',
+    };
+    const fieldLabel = FIELD_LABELS[ev.field] || ev.field;
+
+    const bubble = document.createElement('div');
+    bubble.className = 'mes gm-identity-request';
+    bubble.dataset.characterId = ev.character_id;
+    bubble.dataset.field = ev.field;
+
+    bubble.innerHTML = `
+        <div class="gm-identity-request__header">
+            Director proposes: update <strong>${escHtml(ev.character_name)}</strong>'s <em>${escHtml(fieldLabel)}</em>
+        </div>
+        <div class="gm-identity-request__diff">
+            <div class="gm-identity-request__diff-pane gm-identity-request__diff-pane--current">
+                <div class="gm-identity-request__diff-label">Current</div>
+                <div class="gm-identity-request__diff-text">${escHtml(ev.current_value || '(empty)')}</div>
+            </div>
+            <div class="gm-identity-request__diff-arrow">→</div>
+            <div class="gm-identity-request__diff-pane gm-identity-request__diff-pane--proposed">
+                <div class="gm-identity-request__diff-label">Proposed</div>
+                <div class="gm-identity-request__diff-text">${escHtml(ev.proposed_value)}</div>
+            </div>
+        </div>
+        <div class="gm-identity-request__rationale">"${escHtml(ev.rationale)}"</div>
+        <div class="gm-identity-request__actions">
+            <button class="gm-identity-request__btn gm-identity-request__btn--approve" type="button">Approve</button>
+            <button class="gm-identity-request__btn gm-identity-request__btn--deny" type="button">Deny</button>
+        </div>
+        <div class="gm-identity-request__deny-form" hidden>
+            <textarea class="gm-identity-request__feedback" rows="2" placeholder="Optional reason for the Director…"></textarea>
+            <button class="gm-identity-request__btn gm-identity-request__btn--confirm-deny" type="button">Confirm Deny</button>
+        </div>
+    `;
+
+    const actionsEl = bubble.querySelector('.gm-identity-request__actions');
+    const denyFormEl = bubble.querySelector('.gm-identity-request__deny-form');
+    const feedbackEl = bubble.querySelector('.gm-identity-request__feedback');
+    const approveBtn = bubble.querySelector('.gm-identity-request__btn--approve');
+    const denyBtn = bubble.querySelector('.gm-identity-request__btn--deny');
+    const confirmDenyBtn = bubble.querySelector('.gm-identity-request__btn--confirm-deny');
+
+    function lockBubble(confirmationText) {
+        actionsEl.remove();
+        if (denyFormEl) denyFormEl.remove();
+        const note = document.createElement('div');
+        note.className = 'gm-identity-request__confirmation';
+        note.textContent = confirmationText;
+        bubble.append(note);
+    }
+
+    approveBtn.addEventListener('click', async () => {
+        approveBtn.disabled = true;
+        denyBtn.disabled = true;
+        try {
+            await api.setIdentityField(ev.character_id, ev.field, ev.proposed_value);
+            window.dispatchEvent(new CustomEvent('tt:character-changed', {
+                detail: { character_id: ev.character_id },
+            }));
+            lockBubble('✓ Applied.');
+        } catch (err) {
+            approveBtn.disabled = false;
+            denyBtn.disabled = false;
+            console.error('[gm] identity approve failed', err);
+            alert(`Could not apply change: ${err?.message || err}`);
+        }
+    });
+
+    denyBtn.addEventListener('click', () => {
+        denyFormEl.hidden = false;
+        denyBtn.hidden = true;
+        feedbackEl.focus();
+    });
+
+    confirmDenyBtn.addEventListener('click', () => {
+        const feedback = feedbackEl.value.trim();
+        const reason = feedback ? ` Reason: "${feedback}"` : '';
+        const systemText = `[Director proposed updating ${ev.character_name}'s ${fieldLabel} — rejected.${reason}]`;
+        appendActorLine({
+            actor: 'system',
+            name: 'System',
+            text: systemText,
+            role: 'system',
+        });
+        lockBubble('✗ Declined.');
+    });
+
+    const chat = document.getElementById('chat');
+    if (chat) {
+        chat.append(bubble);
+        bubble.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+}
+
+/** HTML-escape a string for safe insertion into innerHTML. */
+function escHtml(str) {
+    return String(str ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }

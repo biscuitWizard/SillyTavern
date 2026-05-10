@@ -104,7 +104,7 @@ const DEFAULT_MAX_STEPS = 8;
 
 /**
  * @typedef {object} TurnEvent
- * @property {('status'|'message'|'state'|'roll'|'error'|'tool_error'|'end_of_turn'|'memory_write'|'sheet_mutated')} kind
+ * @property {('status'|'message'|'state'|'roll'|'error'|'tool_error'|'end_of_turn'|'memory_write'|'sheet_mutated'|'identity_mutated'|'identity_edit_request')} kind
  * @property {string} [phase]      for status: 'directing' | 'awaiting_actor' | 'rolling' | 'closing'
  * @property {string} [actor]      for message
  * @property {string} [name]       for message: display name
@@ -132,6 +132,10 @@ const DEFAULT_MAX_STEPS = 8;
  * @property {Array<{ op: string, ok: boolean, summary: string, error?: string }>} [ops_applied]  for sheet_mutated
  * @property {object} [sheet]      for sheet_mutated: the post-mutation sheet snapshot
  * @property {string} [audit_record_id]  for sheet_mutated: the director_memory record id of the audit row
+ * @property {string} [field]           for identity_mutated / identity_edit_request: which field changed
+ * @property {string} [current_value]   for identity_edit_request: the current value of the field
+ * @property {string} [proposed_value]  for identity_edit_request: the Director's proposed replacement
+ * @property {string} [value]           for identity_mutated: the new value that was applied
  */
 
 /**
@@ -149,6 +153,7 @@ const DEFAULT_MAX_STEPS = 8;
  *   findCharacter?: (characterId: string) => import('../library/schemas.js').Character | null,
  *   createCharacter?: (input: Partial<import('../library/schemas.js').Character> & { name: string }) => Promise<import('../library/schemas.js').Character> | import('../library/schemas.js').Character,
  *   mutateSheet?: (characterId: string, op: import('./schemas.js').SheetMutationOp) => Promise<import('../library/schemas.js').Character | null> | import('../library/schemas.js').Character | null,
+ *   updateCharacter?: (characterId: string, patch: Partial<import('../library/schemas.js').Character>) => Promise<import('../library/schemas.js').Character | null> | import('../library/schemas.js').Character | null,
  *   signal?: AbortSignal,
  *   maxSteps?: number,
  *   memoryService?: import('../rag/service.d.ts').MemoryService | null,
@@ -169,6 +174,7 @@ export async function runTurn({
     findCharacter,
     createCharacter,
     mutateSheet,
+    updateCharacter,
     signal,
     maxSteps = DEFAULT_MAX_STEPS,
     memoryService = null,
@@ -364,6 +370,12 @@ export async function runTurn({
                 memoryService,
                 cid,
                 sceneIndex,
+            });
+        } else if (decision.action === 'mutate_identity') {
+            outcome = await dispatchMutateIdentity({
+                ctx, decision, emit,
+                findCharacter: resolveCharacter,
+                updateCharacter,
             });
         } else {
             // Unreachable: any newly supported action should have a branch above.
@@ -1736,6 +1748,126 @@ async function dispatchMutateSheet({ ctx, decision, emit, findCharacter, mutateS
                 ? 'Some ops failed. Inspect the failures above before retrying. Do NOT repeat the failing call verbatim.'
                 : 'The sheet is updated. Decide whether the player still needs a narrative beat (speak / narrator) or whether to end_turn.',
         ].join('\n'),
+    };
+}
+
+/**
+ * Dispatch a `mutate_identity` decision.
+ *
+ * Sequence:
+ *   1. Resolve the target character (must be in scene roster).
+ *   2. Validate the requested field (appearance, personality, voice,
+ *      background — `name` is intentionally excluded from Director
+ *      reach).
+ *   3a. NPC (`is_player: false`): apply the change immediately via
+ *       `updateCharacter`, refresh ctx.actors, emit `identity_mutated`.
+ *   3b. PC (`is_player: true`): emit `identity_edit_request` and return
+ *       a tool result telling the Director the change is pending player
+ *       approval. The Director should `end_turn` next so the approval
+ *       bubble is presented before anything else happens.
+ *
+ * @param {{
+ *   ctx: import('./prompts.js').TurnContext,
+ *   decision: any,
+ *   emit: (ev: TurnEvent) => Promise<void> | void,
+ *   findCharacter?: (characterId: string) => import('../library/schemas.js').Character | null,
+ *   updateCharacter?: (characterId: string, patch: Partial<import('../library/schemas.js').Character>) => Promise<import('../library/schemas.js').Character | null> | import('../library/schemas.js').Character | null,
+ * }} args
+ */
+async function dispatchMutateIdentity({ ctx, decision, emit, findCharacter, updateCharacter }) {
+    const ALLOWED = new Set(['appearance', 'personality', 'voice', 'background']);
+
+    const targetId = String(decision.character_id || '').trim();
+    if (!targetId) {
+        const message = 'mutate_identity.character_id is required.';
+        await emit({ kind: 'tool_error', tool: 'mutate_identity', code: 'missing_character_id', message });
+        return {
+            kind: 'continue',
+            summary: formatToolError({ tool: 'mutate_identity', code: 'missing_character_id', message }),
+        };
+    }
+
+    const inScene = (ctx.actors || []).some(a => a.id === targetId);
+    if (!inScene) {
+        const suggestions = buildUnknownActorSuggestions(ctx, targetId);
+        const message = `mutate_identity target "${targetId}" is not in the current scene roster.`;
+        await emit({ kind: 'tool_error', tool: 'mutate_identity', code: 'unknown_character', message, suggestions });
+        return {
+            kind: 'continue',
+            summary: formatToolError({ tool: 'mutate_identity', code: 'unknown_character', message, suggestions }),
+        };
+    }
+
+    const field = String(decision.field || '').trim();
+    if (!ALLOWED.has(field)) {
+        const message = `mutate_identity.field "${field}" is not allowed. Use one of: ${[...ALLOWED].join(', ')}.`;
+        await emit({ kind: 'tool_error', tool: 'mutate_identity', code: 'invalid_field', message });
+        return {
+            kind: 'continue',
+            summary: formatToolError({ tool: 'mutate_identity', code: 'invalid_field', message }),
+        };
+    }
+
+    const value = String(decision.value ?? '');
+    const character = findCharacter ? findCharacter(targetId) : null;
+    if (!character) {
+        const message = `mutate_identity could not load character "${targetId}".`;
+        await emit({ kind: 'tool_error', tool: 'mutate_identity', code: 'character_not_found', message });
+        return {
+            kind: 'continue',
+            summary: formatToolError({ tool: 'mutate_identity', code: 'character_not_found', message }),
+        };
+    }
+
+    // PC path — hold for player approval; do not write to disk.
+    if (character.is_player) {
+        await emit({
+            kind: 'identity_edit_request',
+            character_id: targetId,
+            character_name: character.name,
+            field,
+            current_value: String(character[field] ?? ''),
+            proposed_value: value,
+            rationale: String(decision.rationale || ''),
+        });
+        return {
+            kind: 'continue',
+            summary: `identity_edit_request for ${character.name} (${field}) submitted for player approval. The player must approve or reject before the change is committed. You should end_turn now so the player can respond.`,
+        };
+    }
+
+    // NPC path — apply directly.
+    if (typeof updateCharacter !== 'function') {
+        await emit({
+            kind: 'error',
+            code: 'no_character_writer',
+            message: 'mutate_identity: character writer not configured for this loop.',
+            retryable: false,
+        });
+        return { kind: 'end' };
+    }
+
+    const updated = await updateCharacter(targetId, { [field]: value });
+
+    // Refresh ctx.actors so subsequent Director steps see the new value.
+    if (updated) {
+        const idx = (ctx.actors || []).findIndex(a => a.id === targetId);
+        if (idx >= 0 && ctx.actors) {
+            ctx.actors[idx] = { ...ctx.actors[idx], [field]: updated[field] };
+        }
+    }
+
+    await emit({
+        kind: 'identity_mutated',
+        character_id: targetId,
+        character_name: updated?.name || character.name,
+        field,
+        value: updated ? String(updated[field] ?? value) : value,
+    });
+
+    return {
+        kind: 'continue',
+        summary: `identity_mutated: ${updated?.name || character.name}.${field} updated. The change is applied. Decide whether to narrate it or end_turn.`,
     };
 }
 

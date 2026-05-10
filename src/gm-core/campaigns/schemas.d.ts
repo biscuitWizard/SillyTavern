@@ -23,6 +23,7 @@ export interface Campaign {
     name: string;
     brief: string;
     ruleset_id: string;
+    lore_pack_id: string;
     addendum: string;
     banner_theme: BannerTheme;
     current_scene_id: string | null;
@@ -37,6 +38,7 @@ export interface CampaignSummary {
     name: string;
     brief: string;
     ruleset_id: string;
+    lore_pack_id: string;
     banner_theme: BannerTheme;
     last_played_at: string | null;
     scene_count: number;

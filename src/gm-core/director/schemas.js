@@ -32,6 +32,7 @@
  *  | { action: 'remove_character', character_id: string, on_leave_message?: string, rationale: string }
  *  | { action: 'add_lore', title: string, body: string, tags: string[], rationale: string }
  *  | { action: 'mutate_sheet', character_id: string, ops: SheetMutationOp[], rationale: string }
+ *  | { action: 'mutate_identity', character_id: string, field: 'appearance'|'personality'|'voice'|'background', value: string, rationale: string }
  *  | { action: 'propose_scene', name: string, setting: string, suggested_participants: string[], hooks: string[], rationale: string }
  *  | { action: 'end_turn', rationale: string }
  * )} DirectorDecision
@@ -61,8 +62,12 @@ export const SUPPORTED_ACTIONS = new Set([
     'remove_character',
     'add_lore',
     'mutate_sheet',
+    'mutate_identity',
     'end_turn',
 ]);
+
+/** The identity field names the Director may rewrite via `mutate_identity`. */
+export const IDENTITY_FIELDS = new Set(['appearance', 'personality', 'voice', 'background']);
 
 /**
  * The set of `mutate_sheet.ops[].op` discriminator values the dispatcher
@@ -311,6 +316,29 @@ export const directorDecisionJsonSchema = {
             additionalProperties: false,
         },
         {
+            title: 'MutateIdentity',
+            type: 'object',
+            properties: {
+                action: { type: 'string', const: 'mutate_identity' },
+                character_id: {
+                    type: 'string',
+                    description: 'Character whose identity field is being rewritten. MUST be currently in the scene roster.',
+                },
+                field: {
+                    type: 'string',
+                    enum: ['appearance', 'personality', 'voice', 'background'],
+                    description: 'Which identity field to update. "appearance" — physical description; "personality" — core traits and disposition; "voice" — how they speak; "background" — backstory summary.',
+                },
+                value: {
+                    type: 'string',
+                    description: 'The full replacement text for the field. Write in second or third person, as the player will read this directly on the character sheet.',
+                },
+                rationale: { type: 'string' },
+            },
+            required: ['action', 'character_id', 'field', 'value', 'rationale'],
+            additionalProperties: false,
+        },
+        {
             title: 'ProposeScene',
             type: 'object',
             properties: {
@@ -400,6 +428,18 @@ export function validateDirectorDecision(value) {
         case 'add_lore':
         case 'propose_scene':
             return null;
+        case 'mutate_identity': {
+            if (typeof v.character_id !== 'string' || !v.character_id.trim()) {
+                return 'mutate_identity.character_id required';
+            }
+            if (!IDENTITY_FIELDS.has(v.field)) {
+                return `mutate_identity.field must be one of: ${[...IDENTITY_FIELDS].join(', ')}`;
+            }
+            if (typeof v.value !== 'string') {
+                return 'mutate_identity.value must be a string';
+            }
+            return null;
+        }
         default:
             return `unknown action: ${v.action}`;
     }

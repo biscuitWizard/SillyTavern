@@ -209,8 +209,16 @@ async function onOpenCampaign(campaign) {
 async function onNewCampaign() {
     const result = await openNewCampaignModal();
     if (!result) return;
+    const { lore_pack_id, ...campaignBody } = result;
     try {
-        const campaign = await api.createCampaign(result);
+        const campaign = await api.createCampaign({ ...campaignBody, lore_pack_id });
+        if (lore_pack_id) {
+            try {
+                await api.applyLorePack({ cid: campaign.id, pack_id: lore_pack_id });
+            } catch (loreErr) {
+                console.warn('[gm] applyLorePack failed (campaign still created)', loreErr);
+            }
+        }
         await route({ view: 'campaign', campaignId: campaign.id });
     } catch (err) {
         console.error('[gm] createCampaign failed', err);
@@ -222,7 +230,7 @@ async function onNewCampaign() {
  * Open a single-step new-campaign modal. Resolves with the user's input or
  * `null` if cancelled.
  *
- * @returns {Promise<{ name: string, brief: string, ruleset_id: string, banner_theme: string } | null>}
+ * @returns {Promise<{ name: string, brief: string, ruleset_id: string, banner_theme: string, lore_pack_id: string } | null>}
  */
 function openNewCampaignModal() {
     return new Promise((resolve) => {
@@ -248,9 +256,10 @@ function openNewCampaignModal() {
         const nameInput = inputField('Name', { placeholder: 'Shadows of Ironhold' });
         const briefInput = textareaField('Brief', { placeholder: 'A short pitch — what kind of campaign is this?', rows: 3 });
         const rulesetInput = inputField('Ruleset', { value: 'dnd5e', placeholder: 'dnd5e' });
+        const lorePackInput = asyncSelectField('World / Lore book', fetchLorePacks, '');
         const themeInput = selectField('Banner theme', BANNER_THEMES, 'default');
 
-        body.append(nameInput.wrap, briefInput.wrap, rulesetInput.wrap, themeInput.wrap);
+        body.append(nameInput.wrap, briefInput.wrap, rulesetInput.wrap, lorePackInput.wrap, themeInput.wrap);
 
         const foot = el('div', 'gm-modal-footer');
         const cancel = el('button', 'gm-secondary-btn');
@@ -273,6 +282,7 @@ function openNewCampaignModal() {
                 brief: briefInput.input.value.trim(),
                 ruleset_id: rulesetInput.input.value.trim() || 'dnd5e',
                 banner_theme: themeInput.select.value,
+                lore_pack_id: lorePackInput.select.value,
             });
         });
         foot.append(cancel, create);
@@ -286,6 +296,27 @@ function openNewCampaignModal() {
             if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
         }
     });
+}
+
+/**
+ * Fetch lore packs from the API, returning `{ value, label }` options for a
+ * select. The first option is always "None" (empty value).
+ *
+ * @returns {Promise<Array<{ value: string, label: string }>>}
+ */
+async function fetchLorePacks() {
+    /** @type {Array<{ value: string, label: string }>} */
+    const options = [{ value: '', label: 'None' }];
+    try {
+        const packs = await api.listLorePacks();
+        for (const pack of packs) {
+            const entryHint = pack.entry_count != null ? ` (${pack.entry_count} entries)` : '';
+            options.push({ value: pack.id, label: `${pack.name}${entryHint}` });
+        }
+    } catch (err) {
+        console.warn('[gm] listLorePacks failed', err);
+    }
+    return options;
 }
 
 function inputField(label, { value = '', placeholder = '' } = {}) {
@@ -324,6 +355,55 @@ function selectField(label, options, defaultValue) {
     }
     if (defaultValue && options.includes(defaultValue)) select.value = defaultValue;
     wrap.append(select);
+    return { wrap, select };
+}
+
+/**
+ * A select field whose options are loaded asynchronously. Shows a
+ * "Loading…" placeholder until the fetch resolves, then populates the
+ * dropdown. Falls back to a single "None" option on error.
+ *
+ * @param {string} label
+ * @param {() => Promise<Array<{ value: string, label: string }>>} fetchOptions
+ * @param {string} defaultValue
+ */
+function asyncSelectField(label, fetchOptions, defaultValue) {
+    const wrap = el('label', 'gm-modal-field');
+    wrap.append(elText('span', 'gm-modal-field-label', label));
+    const select = document.createElement('select');
+    select.className = 'gm-modal-select';
+
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = 'Loading…';
+    placeholder.disabled = true;
+    placeholder.selected = true;
+    select.append(placeholder);
+    select.disabled = true;
+
+    wrap.append(select);
+
+    fetchOptions().then((options) => {
+        select.replaceChildren();
+        for (const opt of options) {
+            const o = document.createElement('option');
+            o.value = opt.value;
+            o.textContent = opt.label;
+            select.append(o);
+        }
+        if (defaultValue && options.some(o => o.value === defaultValue)) {
+            select.value = defaultValue;
+        }
+        select.disabled = false;
+    }).catch(() => {
+        select.replaceChildren();
+        const fallback = document.createElement('option');
+        fallback.value = '';
+        fallback.textContent = 'None';
+        select.append(fallback);
+        select.disabled = false;
+    });
+
     return { wrap, select };
 }
 
