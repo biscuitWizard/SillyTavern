@@ -24,6 +24,7 @@ import { openCharacterWizard } from './character-wizard.js';
 import { renderLeftSidebar, teardownLeftSidebar } from './sidebar-left.js';
 import { renderAskPanel } from './ask-panel.js';
 import { renderPlotPanel } from './plot-panel.js';
+import { setActiveCampaign } from './sheet-panel.js';
 
 /**
  * Per-tab set of campaign ids whose PC wizard we have already auto-opened in
@@ -57,6 +58,11 @@ export async function renderCampaignMain(mount, { campaignId }) {
         mount.replaceChildren(notFoundNode());
         return;
     }
+
+    // Stash the active campaign so the sheet panel (opened by the left
+    // sidebar / party panel / etc.) can fetch the matching layout
+    // without every call site having to thread the campaign through.
+    setActiveCampaign(campaign);
 
     const characters = await api.listCharacters(campaignId).catch(() => []);
     const player = characters.find(c => c.is_player) || null;

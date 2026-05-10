@@ -74,6 +74,7 @@ const FALLBACK_RULESETS = {
             level: 1,
         },
         starter_skills: [],
+        sheet_layout: null,
     },
 };
 

@@ -58,10 +58,92 @@ export interface Ruleset {
     /** Starter sheet seed used by the character wizard. */
     starter_stats: Record<string, number | string>;
     starter_skills: string[];
+    /**
+     * Category-driven sheet layout (M1). Concatenated from this ruleset's
+     * own `sheet_layout.yaml` (combat-side categories) plus the universal
+     * social overlay at `data/sheet-layouts/universal-social.yaml`. The
+     * sheet panel, wizard, sidebar, and prompt YAML renderer all walk
+     * this layout.
+     *
+     * Null when neither file is loadable (the in-memory fallback ruleset
+     * sets this to null; consumers should treat it as "use the legacy
+     * flat KV grid").
+     */
+    sheet_layout: SheetLayout | null;
 }
 
 export interface RulesetIdSummary {
     id: string;
     name: string;
     source: 'user' | 'bundled' | 'fallback';
+}
+
+/* --------- Sheet layout (M1) --------- */
+
+export type SheetFieldType = 'number' | 'bar' | 'text' | 'paired';
+
+export interface PairedFieldOpposite {
+    key: string;
+    label: string;
+    /** Default for the opposite-side stat key (e.g. shy when key=dom). */
+    default?: number;
+}
+
+export interface SheetField {
+    /** Stat / status / relationship sub-field key written into the sheet bag. */
+    key: string;
+    /** Display label rendered in the editor and the prompt YAML. */
+    label: string;
+    type: SheetFieldType;
+    /** Render a slot for this field even if the underlying bag has no value. */
+    required?: boolean;
+    /** Default value to seed at character-create time. */
+    default?: number | string;
+    /** Numeric clamp lower bound (bar / number / paired). */
+    min?: number;
+    /** Numeric clamp upper bound (bar / number / paired). */
+    max?: number;
+    /**
+     * For `type: bar` — when the bar's max should be read from another
+     * stat key on the same sheet (e.g. HP whose max is `max_hp`). The
+     * editor uses this to compute the fill ratio dynamically.
+     */
+    max_from_key?: string;
+    /** Right-side leg of a paired trait (e.g. {key:'shy', label:'Shy'}). */
+    paired_with?: PairedFieldOpposite;
+    /** Optional prompt-side hint; not rendered in the editor. */
+    description?: string;
+}
+
+export type SheetCategoryKind = 'stats' | 'statuses' | 'skills' | 'items' | 'relationships' | 'notes';
+
+export interface SheetCategory {
+    id: string;
+    label: string;
+    /**
+     * Which sheet bag this category writes to. Special-cased renderers:
+     *   - `stats` / `statuses`        -> KV grid driven by `fields[]`.
+     *   - `skills`                    -> checklist; `show_all_from_ruleset` drives "always render every ruleset skill".
+     *   - `items`                     -> list editor over `sheet.items[]`.
+     *   - `relationships`             -> per-other-character mini-grid driven by `per_target_fields[]`.
+     *   - `notes`                     -> single textarea over `sheet.notes`.
+     */
+    kind: SheetCategoryKind;
+    /** Field schema for stats / statuses categories. */
+    fields?: SheetField[];
+    /** Field schema for relationships categories (one per target). */
+    per_target_fields?: SheetField[];
+    /** Skills-only: render every ruleset skill as a row, proficient or not. */
+    show_all_from_ruleset?: boolean;
+    /** When true, the wizard surfaces a dedicated step for this category. */
+    wizard_step?: boolean;
+    /** When true, the left sidebar's compact card pulls this category in. */
+    sidebar_highlight?: boolean;
+    /** Optional prompt-side hint; not rendered in the editor. */
+    description?: string;
+}
+
+export interface SheetLayout {
+    version: number;
+    categories: SheetCategory[];
 }

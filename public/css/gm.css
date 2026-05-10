@@ -1458,15 +1458,15 @@ body.tt-mode-scene #send_form.no-connection #send_textarea {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
-    padding: 16px 20px;
+    gap: 10px;
+    padding: 10px 14px;
     border-bottom: 1px solid var(--gm-border);
     background: rgba(255, 255, 255, 0.02);
 }
 
 .gm-modal-title {
     margin: 0;
-    font-size: 16px;
+    font-size: 14px;
     font-weight: 600;
 }
 
@@ -1494,11 +1494,11 @@ body.tt-mode-scene #send_form.no-connection #send_textarea {
 }
 
 .gm-modal-body {
-    padding: 20px;
+    padding: 12px 14px;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 8px;
     flex: 1 1 auto;
     min-height: 0;
 }
@@ -1568,11 +1568,11 @@ body.tt-mode-scene #send_form.no-connection #send_textarea {
     background: rgba(255, 255, 255, 0.04);
     border: 1px solid var(--gm-border-strong);
     color: var(--gm-text);
-    border-radius: 8px;
-    padding: 10px 12px;
+    border-radius: 6px;
+    padding: 6px 10px;
     font: inherit;
-    font-size: 13px;
-    line-height: 1.4;
+    font-size: 12.5px;
+    line-height: 1.35;
     width: 100%;
     transition: border-color 120ms ease, background 120ms ease;
 }
@@ -1596,24 +1596,24 @@ body.tt-mode-scene #send_form.no-connection #send_textarea {
 
 .gm-modal-detail {
     background: rgba(255, 255, 255, 0.03);
-    border-radius: 8px;
-    padding: 10px 12px;
+    border-radius: 6px;
+    padding: 6px 10px;
     border: 1px solid var(--gm-border);
 }
 
 .gm-modal-detail-label {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--gm-text-muted);
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    margin-bottom: 4px;
+    margin-bottom: 2px;
 }
 
 .gm-modal-detail-body {
-    font-size: 13px;
+    font-size: 12.5px;
     color: var(--gm-text);
     white-space: pre-wrap;
-    line-height: 1.5;
+    line-height: 1.4;
 }
 
 .gm-modal-status {
@@ -1651,7 +1651,7 @@ body.tt-mode-scene #send_form.no-connection #send_textarea {
 }
 
 .gm-sheet-modal {
-    width: min(720px, 100%);
+    width: min(840px, 100%);
 }
 
 .gm-stats-grid {
@@ -1874,6 +1874,59 @@ body.tt-mode-scene #send_form.no-connection #send_textarea {
     font-weight: 600;
     color: #fff;
     margin-top: 2px;
+}
+
+/* Layout-driven sidebar highlights (M5). Bar fields render as labelled
+ * mini-bars; paired traits show both legs side-by-side. The fall-back
+ * legacy KEY_STAT_ORDER reuses the plain `.gm-sidebar-stat` cell. */
+
+.gm-sidebar-stat-bar {
+    grid-column: 1 / -1;
+    text-align: left;
+    padding: 6px 8px;
+}
+
+.gm-sidebar-bar {
+    position: relative;
+    height: 6px;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 3px;
+    overflow: hidden;
+    margin: 4px 0 2px;
+}
+
+.gm-sidebar-bar-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    background: var(--gm-accent, #a78bfa);
+    border-radius: 3px;
+    transition: width 120ms ease-out;
+}
+
+.gm-sidebar-bar-value {
+    font-size: 11px;
+    color: var(--gm-text-muted);
+    text-align: right;
+}
+
+.gm-sidebar-stat-paired {
+    grid-column: span 2;
+    text-align: left;
+    padding: 6px 8px;
+}
+
+.gm-sidebar-stat-paired-labels,
+.gm-sidebar-stat-paired-values {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    justify-content: flex-start;
+}
+
+.gm-sidebar-stat-paired-vs {
+    font-size: 11px;
+    color: var(--gm-text-muted);
+    opacity: 0.6;
 }
 
 .gm-sidebar-actions {
@@ -3074,5 +3127,598 @@ body.tt-mode-scene #chat .mes.gm-roll-card::before {
     color: var(--gm-text-muted);
     font-size: 12px;
     text-align: center;
+}
+
+/* -------- M4: Category-driven sheet panel -------- */
+
+/* Each category becomes a section: a small uppercase title above a typed
+   grid (or list / textarea / checklist depending on the category kind).
+   Matches the modal aesthetic: subtle surfaces, accent borders, no loud
+   shadows. */
+.gm-sheet-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.025);
+    border: 1px solid var(--gm-border);
+    border-radius: 8px;
+}
+
+.gm-sheet-section + .gm-sheet-section {
+    margin-top: 2px;
+}
+
+.gm-sheet-section-title {
+    font-size: 10.5px;
+    font-weight: 700;
+    color: #c9bcff;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin: 0;
+}
+
+.gm-sheet-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px 12px;
+}
+
+@media (max-width: 720px) {
+    .gm-sheet-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 480px) {
+    .gm-sheet-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.gm-sheet-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.gm-sheet-field-label {
+    font-size: 9.5px;
+    font-weight: 700;
+    color: var(--gm-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.gm-sheet-field-control {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+/* -------- M4: Bar widget (HP / energy / pulse pools) -------- */
+
+.gm-bar-widget {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.gm-bar {
+    position: relative;
+    width: 100%;
+    height: 8px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--gm-border);
+    overflow: hidden;
+}
+
+.gm-bar-fill {
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--gm-accent) 0%, var(--gm-accent-2) 100%);
+    transition: width 160ms ease;
+}
+
+.gm-bar-label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--gm-text-soft);
+}
+
+.gm-bar-value {
+    font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+    color: var(--gm-text);
+    font-size: 11.5px;
+}
+
+.gm-bar-input {
+    width: 64px;
+    text-align: right;
+    padding: 2px 6px;
+    font-size: 11.5px;
+}
+
+/* -------- M4: Paired trait widget (Dom/Shy etc.) -------- */
+
+.gm-paired-widget {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.gm-paired-bar {
+    position: relative;
+    width: 100%;
+    height: 8px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--gm-border);
+    overflow: hidden;
+}
+
+/* Centre tick: a 1px column at 50% so the eye reads a balance point. */
+.gm-paired-bar::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 1px;
+    background: rgba(255, 255, 255, 0.18);
+}
+
+.gm-paired-bar-fill-left,
+.gm-paired-bar-fill-right {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 0;
+    background: linear-gradient(90deg, var(--gm-accent) 0%, var(--gm-accent-2) 100%);
+    transition: width 160ms ease;
+}
+
+.gm-paired-bar-fill-left {
+    right: 50%;
+    border-radius: 999px 0 0 999px;
+}
+
+.gm-paired-bar-fill-right {
+    left: 50%;
+    border-radius: 0 999px 999px 0;
+}
+
+.gm-paired-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.gm-paired-cell {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+.gm-paired-cell-right {
+    justify-content: flex-end;
+}
+
+.gm-paired-label {
+    font-size: 11px;
+    color: var(--gm-text-soft);
+    font-weight: 600;
+}
+
+.gm-paired-input {
+    width: 52px;
+    padding: 2px 6px;
+    font-size: 11.5px;
+    text-align: center;
+}
+
+.gm-paired-input-left {
+    text-align: center;
+}
+
+.gm-paired-input-right {
+    text-align: center;
+}
+
+/* -------- M4: Skills checklist -------- */
+
+.gm-skills-list {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 2px 12px;
+}
+
+@media (max-width: 720px) {
+    .gm-skills-list {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 480px) {
+    .gm-skills-list {
+        grid-template-columns: 1fr;
+    }
+}
+
+.gm-skill-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 120ms ease;
+}
+
+.gm-skill-row:hover {
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.gm-skill-checkbox {
+    accent-color: var(--gm-accent);
+    margin: 0;
+    cursor: pointer;
+}
+
+.gm-skill-name {
+    flex: 1 1 auto;
+    font-size: 12px;
+    color: var(--gm-text);
+}
+
+.gm-skill-ability {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--gm-text-muted);
+    background: rgba(124, 92, 255, 0.12);
+    padding: 2px 6px;
+    border-radius: 999px;
+    letter-spacing: 0.05em;
+}
+
+/* -------- M4: Items list -------- */
+
+.gm-items-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.gm-item-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+        "name actions"
+        "desc actions"
+        "chips chips";
+    gap: 4px 8px;
+    padding: 6px 8px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--gm-border);
+    border-radius: 6px;
+}
+
+.gm-item-name {
+    grid-area: name;
+    font-weight: 600;
+}
+
+.gm-item-desc {
+    grid-area: desc;
+    min-height: 32px;
+    font-size: 12px;
+}
+
+.gm-item-influences {
+    grid-area: chips;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.gm-item-influence-chip {
+    background: rgba(79, 141, 255, 0.14);
+    border: 1px solid rgba(79, 141, 255, 0.32);
+    color: #c9defc;
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 600;
+}
+
+.gm-item-actions {
+    grid-area: actions;
+    display: flex;
+    align-items: flex-start;
+    gap: 4px;
+}
+
+.gm-item-add-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto;
+    gap: 4px;
+    padding-top: 4px;
+    border-top: 1px dashed var(--gm-border);
+}
+
+/* -------- M4: Notes textarea -------- */
+
+.gm-notes-wrap {
+    display: flex;
+    flex-direction: column;
+}
+
+.gm-notes-wrap textarea {
+    min-height: 70px;
+    font-size: 12.5px;
+    line-height: 1.45;
+}
+
+/* -------- M7: Relationships (NPC-only, PC card eager + others lazy) --------
+ *
+ * The NPC sheet renders one eager card for the player character (or a
+ * CTA when there isn't an entry yet), then a single collapsed
+ * `<details>` group ("Other relationships") that holds NPC↔NPC entries
+ * as one collapsed row each. Each row only fires its `getRelationship`
+ * fetch on first expand. */
+
+.gm-rels-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.gm-rel-pc-loading {
+    color: var(--gm-text-muted);
+    font-style: italic;
+    margin: 0;
+}
+
+.gm-rel-pc-empty {
+    padding: 6px 8px;
+    border: 1px dashed var(--gm-border);
+    border-radius: 6px;
+}
+
+.gm-rel-pc-cta {
+    display: flex;
+    justify-content: flex-start;
+    padding: 4px 0;
+}
+
+.gm-rel-card {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--gm-border);
+    border-radius: 8px;
+    padding: 6px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.gm-rel-card-pc {
+    border-color: rgba(124, 92, 255, 0.45);
+    background: rgba(124, 92, 255, 0.06);
+}
+
+.gm-rel-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.gm-rel-card-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.gm-rel-card-name {
+    font-size: 12px;
+    font-weight: 700;
+    color: #fff;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gm-rel-card-badge {
+    font-size: 9px;
+    font-weight: 700;
+    color: #c9bcff;
+    background: rgba(124, 92, 255, 0.18);
+    border: 1px solid rgba(124, 92, 255, 0.4);
+    border-radius: 999px;
+    padding: 0 6px;
+    letter-spacing: 0.08em;
+}
+
+.gm-rel-card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+    gap: 4px;
+}
+
+.gm-rel-field {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--gm-border);
+    border-radius: 4px;
+    padding: 4px 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.gm-rel-field-label {
+    font-size: 9.5px;
+    color: var(--gm-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.gm-rel-field-value {
+    font-size: 12px;
+    font-weight: 600;
+    color: #fff;
+}
+
+.gm-rels-others {
+    margin-top: 4px;
+    border-top: 1px dashed var(--gm-border);
+    padding-top: 4px;
+}
+
+.gm-rels-others-summary {
+    cursor: pointer;
+    font-size: 10.5px;
+    font-weight: 700;
+    color: var(--gm-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    user-select: none;
+    list-style: none;
+    padding: 2px 0;
+}
+
+.gm-rels-others-summary::before {
+    content: "▶ ";
+    font-size: 9px;
+    color: var(--gm-text-faint);
+}
+
+.gm-rels-others[open] > .gm-rels-others-summary::before {
+    content: "▼ ";
+}
+
+.gm-rels-others-body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 4px;
+}
+
+.gm-rel-other-row {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--gm-border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.gm-rel-other-summary {
+    cursor: pointer;
+    user-select: none;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 4px 8px;
+    font-size: 12px;
+}
+
+.gm-rel-other-summary::before {
+    content: "▶";
+    font-size: 9px;
+    color: var(--gm-text-faint);
+    flex: 0 0 auto;
+}
+
+.gm-rel-other-row[open] > .gm-rel-other-summary::before {
+    content: "▼";
+}
+
+.gm-rel-other-name {
+    flex: 1 1 auto;
+    color: var(--gm-text);
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-left: 6px;
+}
+
+.gm-rel-other-hint {
+    flex: 0 0 auto;
+    font-size: 10px;
+    color: var(--gm-text-faint);
+    text-transform: lowercase;
+    letter-spacing: 0.04em;
+}
+
+.gm-rel-other-body {
+    padding: 4px 6px 6px;
+    border-top: 1px dashed var(--gm-border);
+    background: rgba(255, 255, 255, 0.015);
+}
+
+.gm-rel-add-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    margin-top: 2px;
+    padding-top: 4px;
+    border-top: 1px dashed var(--gm-border);
+}
+
+.gm-rel-add-select {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+/* -------- M4: Other footer (free-form KVs the layout didn't claim) -------- */
+
+.gm-sheet-other {
+    margin-top: 4px;
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px dashed var(--gm-border-strong);
+    border-radius: 8px;
+    color: var(--gm-text-soft);
+}
+
+.gm-sheet-other > summary {
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--gm-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    list-style: none;
+    user-select: none;
+}
+
+.gm-sheet-other > summary::before {
+    content: "▶ ";
+    font-size: 9px;
+    color: var(--gm-text-faint);
+    transition: transform 120ms ease;
+}
+
+.gm-sheet-other[open] > summary::before {
+    content: "▼ ";
+}
+
+.gm-sheet-other > .gm-sheet-section-title {
+    margin-top: 12px;
+    margin-bottom: 4px;
+}
+
+.gm-sheet-other > .gm-kv-section + .gm-sheet-section-title {
+    margin-top: 16px;
 }
 

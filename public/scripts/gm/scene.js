@@ -25,6 +25,7 @@ import {
 import { handleTurnEvent as dispatchTurnEvent } from './turn-events.js';
 import { renderLeftSidebar, teardownLeftSidebar } from './sidebar-left.js';
 import { renderRightSidebar, teardownRightSidebar } from './sidebar-right.js';
+import { setActiveCampaign } from './sheet-panel.js';
 
 let abortCurrentTurn = null;
 
@@ -54,6 +55,9 @@ export async function renderScene(mount, { campaignId, sceneId, readOnly = false
 
     const player = characters.find(c => c.is_player) || null;
     setSceneState({ campaign, scene, player, readOnly, characters });
+    // Mirror the campaign into the sheet-panel module so any sheet
+    // opened from the in-scene sidebars resolves the right layout.
+    setActiveCampaign(campaign);
 
     enterSceneMode({
         scene,

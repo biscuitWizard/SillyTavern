@@ -60,6 +60,7 @@ import { narratorPostRollUserPrompt } from '../skillcheck/prompts.js';
 import { formatSections } from '../rag/injection.js';
 import { writeAddLore } from '../rag/writers/lore-add.js';
 import { writeDirectorPacing } from '../rag/writers/director-pacing.js';
+import { writeSheetMutationAudit } from '../rag/writers/sheet-mutation.js';
 import { extractAndWriteOpinion } from '../rag/writers/opinion.js';
 import { extractAndWriteNarratorContinuity } from '../rag/writers/narrator-continuity.js';
 
@@ -85,7 +86,7 @@ const MAX_SPEAKS_NARRATOR  = 2;
 
 /**
  * @typedef {object} TurnEvent
- * @property {('status'|'message'|'state'|'roll'|'error'|'tool_error'|'end_of_turn')} kind
+ * @property {('status'|'message'|'state'|'roll'|'error'|'tool_error'|'end_of_turn'|'memory_write'|'sheet_mutated')} kind
  * @property {string} [phase]      for status: 'directing' | 'awaiting_actor' | 'rolling' | 'closing'
  * @property {string} [actor]      for message
  * @property {string} [name]       for message: display name
@@ -94,19 +95,25 @@ const MAX_SPEAKS_NARRATOR  = 2;
  * @property {string} [actor_id]   for message/roll: stable id of the speaking actor
  * @property {string} [actor_name] for roll
  * @property {string} [change]     for state: 'spawn' | 'remove'
- * @property {string} [character_id]    for state
- * @property {string} [character_name]  for state
+ * @property {string} [character_id]    for state / sheet_mutated
+ * @property {string} [character_name]  for state / sheet_mutated
  * @property {boolean} [ephemeral]      for state.spawn: character is held in-memory until first speak
  * @property {boolean} [promoted]       for state.spawn: a previously transient character was just persisted
  * @property {object} [card]       for roll: RollCard payload (skill, dc, breakdown, outcome, severity)
  * @property {string} [narration]  for roll: post-roll narrator prose
  * @property {string} [intent]     for roll: original director intent
  * @property {string} [code]       for error/tool_error
- * @property {string} [message]    for error/tool_error
+ * @property {string} [message]    for error/tool_error / status
  * @property {boolean} [retryable] for error
  * @property {string} [tool]       for tool_error: action name that errored (e.g. 'speak', 'spawn_character')
  * @property {string[]} [suggestions]   for tool_error: short human-readable recovery hints
  * @property {string} [reason]     for end_of_turn: 'director' | 'cap' | 'error' | 'aborted'
+ * @property {string} [memory_kind]     for memory_write
+ * @property {string} [record_id]       for memory_write
+ * @property {string} [title]           for memory_write
+ * @property {Array<{ op: string, ok: boolean, summary: string, error?: string }>} [ops_applied]  for sheet_mutated
+ * @property {object} [sheet]      for sheet_mutated: the post-mutation sheet snapshot
+ * @property {string} [audit_record_id]  for sheet_mutated: the director_memory record id of the audit row
  */
 
 /**
@@ -122,6 +129,7 @@ const MAX_SPEAKS_NARRATOR  = 2;
  *   removeParticipant?: (characterId: string) => Promise<import('../library/schemas.js').Character | null> | import('../library/schemas.js').Character | null,
  *   findCharacter?: (characterId: string) => import('../library/schemas.js').Character | null,
  *   createCharacter?: (input: Partial<import('../library/schemas.js').Character> & { name: string }) => Promise<import('../library/schemas.js').Character> | import('../library/schemas.js').Character,
+ *   mutateSheet?: (characterId: string, op: import('./schemas.js').SheetMutationOp) => Promise<import('../library/schemas.js').Character | null> | import('../library/schemas.js').Character | null,
  *   signal?: AbortSignal,
  *   maxSteps?: number,
  *   memoryService?: import('../rag/service.d.ts').MemoryService | null,
@@ -140,6 +148,7 @@ export async function runTurn({
     removeParticipant,
     findCharacter,
     createCharacter,
+    mutateSheet,
     signal,
     maxSteps = DEFAULT_MAX_STEPS,
     memoryService = null,
@@ -152,6 +161,15 @@ export async function runTurn({
     const cid = ctx.campaign?.id;
     let step = 0;
     let lastMemoryWriteId = 0;
+
+    // M3: surface the sheet layout via ctx so prompt builders can render
+    // category-aware YAML without each one re-importing the ruleset
+    // loader. The layout is null when the campaign's ruleset shipped no
+    // `sheet_layout.yaml` AND no universal overlay is on disk; the
+    // renderer falls back to its flat KV dump in that case.
+    if (ctx.sheet_layout === undefined) {
+        ctx.sheet_layout = ruleset?.sheet_layout || null;
+    }
 
     // Per-turn transient character store. The Director's `spawn_character`
     // with `from_source: 'new'` parks a new NPC here; we mirror them into
@@ -384,6 +402,22 @@ export async function runTurn({
             continue;
         }
 
+        if (decision.action === 'mutate_sheet') {
+            const result = await dispatchMutateSheet({
+                ctx, decision, emit,
+                findCharacter: resolveCharacter,
+                mutateSheet,
+                memoryService,
+                cid,
+                sceneIndex,
+            });
+            if (result === 'end') {
+                await emit({ kind: 'end_of_turn', reason: 'error' });
+                return;
+            }
+            continue;
+        }
+
         // Unreachable: any newly supported action should have a branch above.
         await emit({ kind: 'error', code: 'internal', message: `Unhandled supported action ${decision.action}` });
         await emit({ kind: 'end_of_turn', reason: 'error' });
@@ -399,9 +433,23 @@ export async function runTurn({
  * fall back to the recent transcript tail's last line if input is
  * silent.
  *
+ * # Sheet-isolation invariant (M0)
+ *
+ * This reads ONLY from `ctx.user_input` and `ctx.recent_transcript`. It
+ * MUST NOT touch `ctx.actors[].sheet` or any other character-sheet field.
+ * Doing so would let sheet content (traits, pulse, relationships in the
+ * post-overhaul layout) seed RAG retrieval and pull in unrelated memories
+ * that match those sheet values. `tests/gm-core/rag-query-isolation.test.js`
+ * pins this with poison-token assertions; do not regress it without
+ * updating that test.
+ *
+ * Exported for the isolation test suite. Internal callers (the loop's RAG
+ * sites) should not import it from outside this file — they already use
+ * the in-module reference.
+ *
  * @param {import('./prompts.js').TurnContext} ctx
  */
-function pickQueryText(ctx) {
+export function pickQueryText(ctx) {
     const ui = String(ctx.user_input || '').trim();
     if (ui) return ui;
     const tail = String(ctx.recent_transcript || '').trim();
@@ -1456,6 +1504,211 @@ async function dispatchRemove({ ctx, decision, emit, removeParticipant, findChar
     });
     ctx.last_beat = `${character.name} (id: \`${character.id}\`) left the scene. Continue or end_turn.`;
     return;
+}
+
+/**
+ * Dispatch a `mutate_sheet` decision (M8).
+ *
+ * Sequence:
+ *   1. Resolve the target character. The id MUST belong to a character
+ *      currently in the scene roster (PC or NPC) — Director-driven sheet
+ *      edits are scoped to the active scene so off-stage characters can't
+ *      be silently changed.
+ *   2. Apply each op in order via the supplied `mutateSheet` callback (a
+ *      thin wrapper over `sheets/operations.js`). Op-level errors are
+ *      collected and surfaced; an error in the middle of a multi-op
+ *      decision does not roll back earlier ops (mutator writes are
+ *      already on disk via `library/store.js`).
+ *   3. Refresh `ctx.actors[i]` references and the resolved character so
+ *      subsequent steps in this same turn (a follow-up `speak`, for
+ *      instance) see the updated sheet via the per-actor renderer in
+ *      `actors/prompts.js`.
+ *   4. Emit a `sheet_mutated` event carrying the per-op results and the
+ *      post-mutation sheet snapshot.
+ *   5. Persist a one-line audit row into `director_memory__{cid}` via
+ *      `writeSheetMutationAudit` so future Director steps can reason
+ *      about state changes that weren't visible as speak/skill_check.
+ *   6. Set `ctx.last_beat` so the Director's next step sees what just
+ *      changed.
+ *
+ * @param {{
+ *   ctx: import('./prompts.js').TurnContext,
+ *   decision: any,
+ *   emit: (ev: TurnEvent) => Promise<void> | void,
+ *   findCharacter?: (characterId: string) => import('../library/schemas.js').Character | null,
+ *   mutateSheet?: (characterId: string, op: import('./schemas.js').SheetMutationOp) => Promise<import('../library/schemas.js').Character | null> | import('../library/schemas.js').Character | null,
+ *   memoryService?: import('../rag/service.d.ts').MemoryService | null,
+ *   cid?: string,
+ *   sceneIndex?: number,
+ * }} args
+ */
+async function dispatchMutateSheet({ ctx, decision, emit, findCharacter, mutateSheet, memoryService, cid, sceneIndex }) {
+    const targetId = String(decision.character_id || '').trim();
+    if (!targetId) {
+        const message = 'mutate_sheet.character_id is required.';
+        await emit({ kind: 'tool_error', tool: 'mutate_sheet', code: 'missing_character_id', message });
+        ctx.last_beat = formatToolError({ tool: 'mutate_sheet', code: 'missing_character_id', message });
+        return;
+    }
+
+    const inScene = (ctx.actors || []).some(a => a.id === targetId);
+    if (!inScene) {
+        const suggestions = buildUnknownActorSuggestions(ctx, targetId);
+        const message = `mutate_sheet target "${targetId}" is not in the current scene roster.`;
+        await emit({ kind: 'tool_error', tool: 'mutate_sheet', code: 'unknown_character', message, suggestions });
+        ctx.last_beat = formatToolError({ tool: 'mutate_sheet', code: 'unknown_character', message, suggestions });
+        return;
+    }
+
+    const character = findCharacter ? findCharacter(targetId) : null;
+    if (!character) {
+        const message = `mutate_sheet could not load character "${targetId}".`;
+        await emit({ kind: 'tool_error', tool: 'mutate_sheet', code: 'character_not_found', message });
+        ctx.last_beat = formatToolError({ tool: 'mutate_sheet', code: 'character_not_found', message });
+        return;
+    }
+
+    if (typeof mutateSheet !== 'function') {
+        await emit({
+            kind: 'error',
+            code: 'no_sheet_writer',
+            message: 'mutate_sheet: sheet writer not configured for this loop.',
+            retryable: false,
+        });
+        return 'end';
+    }
+
+    const ops = Array.isArray(decision.ops) ? decision.ops : [];
+    /** @type {Array<{ op: string, ok: boolean, summary: string, error?: string }>} */
+    const opsApplied = [];
+    /** @type {import('../library/schemas.js').Character | null} */
+    let updated = character;
+    for (let i = 0; i < ops.length; i++) {
+        const op = ops[i] || {};
+        try {
+            const result = await mutateSheet(targetId, op);
+            if (result) {
+                updated = result;
+                opsApplied.push({ op: String(op.op || 'unknown'), ok: true, summary: summarizeSheetMutationOp(op) });
+            } else {
+                opsApplied.push({ op: String(op.op || 'unknown'), ok: false, summary: summarizeSheetMutationOp(op), error: 'mutator returned null' });
+            }
+        } catch (err) {
+            opsApplied.push({
+                op: String(op.op || 'unknown'),
+                ok: false,
+                summary: summarizeSheetMutationOp(op),
+                error: err?.message || String(err),
+            });
+        }
+    }
+
+    // Mirror the updated character back into ctx.actors so subsequent
+    // dispatch steps in this turn render the new sheet. ctx.actors[]
+    // entries don't carry `sheet`, but the actor prompt builder pulls
+    // the character via `findCharacter` (resolveCharacter) — that lookup
+    // already returns the latest record because the endpoint's
+    // `mutateSheet` callback is responsible for updating its own
+    // by-id cache (see `endpoints/gm.js`). What we DO refresh here is
+    // the cached display-name + identity blurb fields on ctx.actors so
+    // the Director's user prompt stays consistent if a Director later
+    // picks `speak` for the same actor on the next step.
+    if (updated) {
+        const idx = (ctx.actors || []).findIndex(a => a.id === updated.id);
+        if (idx >= 0 && ctx.actors) {
+            ctx.actors[idx] = {
+                ...ctx.actors[idx],
+                name: updated.name,
+                appearance: updated.appearance,
+                personality: updated.personality,
+                voice: updated.voice,
+                background: updated.background,
+            };
+        }
+    }
+
+    const okCount = opsApplied.filter(o => o.ok).length;
+    const failCount = opsApplied.length - okCount;
+    const headline = `Sheet for ${updated?.name || character.name} (id: \`${targetId}\`): ${okCount} op${okCount === 1 ? '' : 's'} applied${failCount ? `, ${failCount} failed` : ''}`;
+    const summaryLines = opsApplied.map(o => o.ok ? `- ${o.summary}` : `- (failed) ${o.summary}: ${o.error || 'unknown error'}`);
+    const auditSummary = `${headline}. ${opsApplied.map(o => o.summary).join('; ')}`;
+
+    /** @type {string | undefined} */
+    let auditRecordId;
+    if (memoryService && cid && okCount > 0) {
+        try {
+            const result = await writeSheetMutationAudit({
+                memoryService,
+                campaignId: cid,
+                sceneId: ctx.scene?.id || '',
+                sceneIndex: typeof sceneIndex === 'number' ? sceneIndex : 0,
+                characterId: targetId,
+                summary: auditSummary,
+            });
+            if (result.wrote && result.id) {
+                auditRecordId = result.id;
+                await emit({
+                    kind: 'memory_write',
+                    memory_kind: 'director_memory',
+                    record_id: result.id,
+                    title: auditSummary,
+                });
+            }
+        } catch (err) {
+            console.warn('[loop.mutate_sheet] audit write failed', err?.message || err);
+        }
+    }
+
+    await emit({
+        kind: 'sheet_mutated',
+        character_id: targetId,
+        character_name: updated?.name || character.name,
+        ops_applied: opsApplied,
+        sheet: updated?.sheet || character.sheet,
+        audit_record_id: auditRecordId,
+    });
+
+    ctx.last_beat = [
+        headline + '.',
+        ...summaryLines,
+        failCount
+            ? 'Some ops failed. Inspect the failures above before retrying. Do NOT repeat the failing call verbatim.'
+            : 'The sheet is updated. Decide whether the player still needs a narrative beat (speak / narrator) or whether to end_turn.',
+    ].join('\n');
+    return;
+}
+
+/**
+ * Render a per-op one-line summary used in both the `sheet_mutated`
+ * event payload and the director_memory audit row. Pure (no I/O).
+ *
+ * @param {any} op
+ * @returns {string}
+ */
+function summarizeSheetMutationOp(op) {
+    if (!op || typeof op !== 'object') return 'unknown_op';
+    switch (op.op) {
+        case 'set_stat':     return `set_stat ${op.key} = ${formatScalarForBeat(op.value)}`;
+        case 'adjust_stat': {
+            const delta = Number(op.delta) || 0;
+            const sign = delta >= 0 ? '+' : '';
+            return `adjust_stat ${op.key} ${sign}${delta}`;
+        }
+        case 'clear_stat':   return `clear_stat ${op.key}`;
+        case 'set_status':   return `set_status ${op.key} = ${formatScalarForBeat(op.value)}`;
+        case 'clear_status': return `clear_status ${op.key}`;
+        case 'add_item':     return `add_item "${truncateForBeat(String(op.name || ''))}"`;
+        case 'update_item':  return `update_item ${op.item_id}${op.name ? ` (name="${truncateForBeat(String(op.name))}")` : ''}`;
+        case 'remove_item':  return `remove_item ${op.item_id}`;
+        default:             return `unknown_op:${String(op.op || '')}`;
+    }
+}
+
+/** @param {unknown} v */
+function formatScalarForBeat(v) {
+    if (typeof v === 'number') return String(v);
+    if (typeof v === 'string') return `"${truncateForBeat(v)}"`;
+    return String(v);
 }
 
 /**

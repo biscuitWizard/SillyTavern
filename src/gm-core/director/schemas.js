@@ -14,12 +14,24 @@
 
 /**
  * @typedef {(
+ *  | { op: 'set_stat', key: string, value: number | string }
+ *  | { op: 'adjust_stat', key: string, delta: number }
+ *  | { op: 'clear_stat', key: string }
+ *  | { op: 'set_status', key: string, value: string }
+ *  | { op: 'clear_status', key: string }
+ *  | { op: 'add_item', name: string, description?: string, influences?: string[] }
+ *  | { op: 'update_item', item_id: string, name?: string, description?: string, influences?: string[] }
+ *  | { op: 'remove_item', item_id: string }
+ * )} SheetMutationOp
+ *
+ * @typedef {(
  *  | { action: 'speak', actor: 'narrator' | string, intent: string, rationale: string }
  *  | { action: 'skill_check', actor: string, intent: string, voice?: 'narrator' | string, rationale: string }
  *  | { action: 'search_library', query: string, rationale: string }
  *  | { action: 'spawn_character', from_source: 'library' | 'new', ref?: string, name?: string, brief?: string, on_join_message?: string, rationale: string }
  *  | { action: 'remove_character', character_id: string, on_leave_message?: string, rationale: string }
  *  | { action: 'add_lore', title: string, body: string, tags: string[], rationale: string }
+ *  | { action: 'mutate_sheet', character_id: string, ops: SheetMutationOp[], rationale: string }
  *  | { action: 'propose_scene', name: string, setting: string, suggested_participants: string[], hooks: string[], rationale: string }
  *  | { action: 'end_turn', rationale: string }
  * )} DirectorDecision
@@ -48,7 +60,24 @@ export const SUPPORTED_ACTIONS = new Set([
     'spawn_character',
     'remove_character',
     'add_lore',
+    'mutate_sheet',
     'end_turn',
+]);
+
+/**
+ * The set of `mutate_sheet.ops[].op` discriminator values the dispatcher
+ * understands. New ops require both a schema variant below AND an entry
+ * in the dispatch table in `director/loop.js`.
+ */
+export const SUPPORTED_SHEET_MUTATION_OPS = new Set([
+    'set_stat',
+    'adjust_stat',
+    'clear_stat',
+    'set_status',
+    'clear_status',
+    'add_item',
+    'update_item',
+    'remove_item',
 ]);
 
 /**
@@ -167,6 +196,121 @@ export const directorDecisionJsonSchema = {
             additionalProperties: false,
         },
         {
+            title: 'MutateSheet',
+            type: 'object',
+            properties: {
+                action: { type: 'string', const: 'mutate_sheet' },
+                character_id: {
+                    type: 'string',
+                    description: 'Character whose sheet is being mutated. MUST be the player character or an NPC currently in the scene roster.',
+                },
+                ops: {
+                    type: 'array',
+                    minItems: 1,
+                    description: 'Ordered list of one or more sheet mutations to apply atomically (per-op; the dispatch is sequential, not transactional). Each item is a discriminated union by `op`.',
+                    items: {
+                        type: 'object',
+                        oneOf: [
+                            {
+                                title: 'SetStat',
+                                type: 'object',
+                                properties: {
+                                    op: { type: 'string', const: 'set_stat' },
+                                    key: { type: 'string', description: 'Stat key (e.g. "hp", "ac", "armor"). Free-form; the layout decides which keys are surfaced in the UI.' },
+                                    value: {
+                                        oneOf: [{ type: 'number' }, { type: 'string' }],
+                                        description: 'Scalar value. Use a number for numeric stats; strings are accepted for free-form text stats.',
+                                    },
+                                },
+                                required: ['op', 'key', 'value'],
+                                additionalProperties: false,
+                            },
+                            {
+                                title: 'AdjustStat',
+                                type: 'object',
+                                properties: {
+                                    op: { type: 'string', const: 'adjust_stat' },
+                                    key: { type: 'string' },
+                                    delta: { type: 'number', description: 'Signed integer or float to add to the current numeric value. Missing keys are treated as 0.' },
+                                },
+                                required: ['op', 'key', 'delta'],
+                                additionalProperties: false,
+                            },
+                            {
+                                title: 'ClearStat',
+                                type: 'object',
+                                properties: {
+                                    op: { type: 'string', const: 'clear_stat' },
+                                    key: { type: 'string' },
+                                },
+                                required: ['op', 'key'],
+                                additionalProperties: false,
+                            },
+                            {
+                                title: 'SetStatus',
+                                type: 'object',
+                                properties: {
+                                    op: { type: 'string', const: 'set_status' },
+                                    key: { type: 'string', description: 'Status / condition key (e.g. "poisoned", "blessed", "on_fire").' },
+                                    value: { type: 'string', description: 'Severity / qualifier (e.g. "minor", "stage_2", "1_round").' },
+                                },
+                                required: ['op', 'key', 'value'],
+                                additionalProperties: false,
+                            },
+                            {
+                                title: 'ClearStatus',
+                                type: 'object',
+                                properties: {
+                                    op: { type: 'string', const: 'clear_status' },
+                                    key: { type: 'string' },
+                                },
+                                required: ['op', 'key'],
+                                additionalProperties: false,
+                            },
+                            {
+                                title: 'AddItem',
+                                type: 'object',
+                                properties: {
+                                    op: { type: 'string', const: 'add_item' },
+                                    name: { type: 'string', description: 'Short display name (e.g. "Iron Sword").' },
+                                    description: { type: 'string' },
+                                    influences: { type: 'array', items: { type: 'string' }, description: 'Stat keys this item informs.' },
+                                },
+                                required: ['op', 'name'],
+                                additionalProperties: false,
+                            },
+                            {
+                                title: 'UpdateItem',
+                                type: 'object',
+                                properties: {
+                                    op: { type: 'string', const: 'update_item' },
+                                    item_id: { type: 'string' },
+                                    name: { type: 'string' },
+                                    description: { type: 'string' },
+                                    influences: { type: 'array', items: { type: 'string' } },
+                                },
+                                required: ['op', 'item_id'],
+                                additionalProperties: false,
+                            },
+                            {
+                                title: 'RemoveItem',
+                                type: 'object',
+                                properties: {
+                                    op: { type: 'string', const: 'remove_item' },
+                                    item_id: { type: 'string' },
+                                },
+                                required: ['op', 'item_id'],
+                                additionalProperties: false,
+                            },
+                        ],
+                    },
+                },
+                rationale: { type: 'string' },
+            },
+            required: ['action', 'character_id', 'ops', 'rationale'],
+            additionalProperties: false,
+        },
+        {
             title: 'ProposeScene',
             type: 'object',
             properties: {
@@ -239,11 +383,76 @@ export function validateDirectorDecision(value) {
                 if (typeof v.brief !== 'string' || !v.brief.trim()) return 'spawn_character.brief required when from_source is "new"';
             }
             return null;
+        case 'mutate_sheet': {
+            if (typeof v.character_id !== 'string' || !v.character_id.trim()) {
+                return 'mutate_sheet.character_id required';
+            }
+            if (!Array.isArray(v.ops) || v.ops.length === 0) {
+                return 'mutate_sheet.ops required (non-empty array)';
+            }
+            for (let i = 0; i < v.ops.length; i++) {
+                const opErr = validateSheetMutationOp(v.ops[i], i);
+                if (opErr) return opErr;
+            }
+            return null;
+        }
         case 'remove_character':
         case 'add_lore':
         case 'propose_scene':
             return null;
         default:
             return `unknown action: ${v.action}`;
+    }
+}
+
+/**
+ * Per-op runtime validation. Returns a string error or null.
+ *
+ * @param {unknown} value
+ * @param {number} idx
+ * @returns {string | null}
+ */
+export function validateSheetMutationOp(value, idx = 0) {
+    if (!value || typeof value !== 'object') return `mutate_sheet.ops[${idx}] must be an object`;
+    const o = /** @type {any} */ (value);
+    if (typeof o.op !== 'string') return `mutate_sheet.ops[${idx}].op must be a string`;
+    if (!SUPPORTED_SHEET_MUTATION_OPS.has(o.op)) return `mutate_sheet.ops[${idx}].op "${o.op}" is not supported`;
+    switch (o.op) {
+        case 'set_stat':
+            if (typeof o.key !== 'string' || !o.key.trim()) return `mutate_sheet.ops[${idx}].key required`;
+            if (typeof o.value !== 'number' && typeof o.value !== 'string') return `mutate_sheet.ops[${idx}].value must be number or string`;
+            return null;
+        case 'adjust_stat':
+            if (typeof o.key !== 'string' || !o.key.trim()) return `mutate_sheet.ops[${idx}].key required`;
+            if (typeof o.delta !== 'number' || !Number.isFinite(o.delta)) return `mutate_sheet.ops[${idx}].delta must be a finite number`;
+            return null;
+        case 'clear_stat':
+        case 'clear_status':
+            if (typeof o.key !== 'string' || !o.key.trim()) return `mutate_sheet.ops[${idx}].key required`;
+            return null;
+        case 'set_status':
+            if (typeof o.key !== 'string' || !o.key.trim()) return `mutate_sheet.ops[${idx}].key required`;
+            if (typeof o.value !== 'string') return `mutate_sheet.ops[${idx}].value must be a string`;
+            return null;
+        case 'add_item':
+            if (typeof o.name !== 'string' || !o.name.trim()) return `mutate_sheet.ops[${idx}].name required`;
+            if (o.description !== undefined && typeof o.description !== 'string') return `mutate_sheet.ops[${idx}].description must be a string`;
+            if (o.influences !== undefined && (!Array.isArray(o.influences) || o.influences.some(s => typeof s !== 'string'))) {
+                return `mutate_sheet.ops[${idx}].influences must be a string[]`;
+            }
+            return null;
+        case 'update_item':
+            if (typeof o.item_id !== 'string' || !o.item_id.trim()) return `mutate_sheet.ops[${idx}].item_id required`;
+            if (o.name !== undefined && typeof o.name !== 'string') return `mutate_sheet.ops[${idx}].name must be a string`;
+            if (o.description !== undefined && typeof o.description !== 'string') return `mutate_sheet.ops[${idx}].description must be a string`;
+            if (o.influences !== undefined && (!Array.isArray(o.influences) || o.influences.some(s => typeof s !== 'string'))) {
+                return `mutate_sheet.ops[${idx}].influences must be a string[]`;
+            }
+            return null;
+        case 'remove_item':
+            if (typeof o.item_id !== 'string' || !o.item_id.trim()) return `mutate_sheet.ops[${idx}].item_id required`;
+            return null;
+        default:
+            return `mutate_sheet.ops[${idx}].op "${o.op}" is not supported`;
     }
 }

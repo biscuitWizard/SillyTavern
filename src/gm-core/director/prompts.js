@@ -34,6 +34,10 @@
  * @property {string} [memories_block]     pre-rendered MEMORIES block from MemoryService (Phase 7).
  *                                          The HTTP wrapper builds it before dispatch and the
  *                                          prompt builder splices it; do NOT pass raw MemoryService.
+ * @property {import('../rulesets/schemas.d.ts').SheetLayout | null} [sheet_layout]
+ *                                          Merged sheet layout (M1). The actor prompt builder
+ *                                          reads this to render the per-actor sheet YAML grouped
+ *                                          by category. Set once by `runTurn` from `ruleset.sheet_layout`.
  */
 
 /**
@@ -64,6 +68,11 @@ export function directorSystemPrompt(_ctx) {
         '- `spawn_character` with `from_source: "new"`, `name: "<short name>"`, `brief: "<one sentence on who they are and how they read>"` — invent a brand new NPC and add them to the scene. Use this when the player addresses someone who plausibly exists in this location but isn\'t on stage yet ("the bartender", "the guard", "a passing merchant"). The character is held tentatively until they actually speak; if you spawn one and never call `speak` for them, they vanish.',
         '- `remove_character` with `character_id: "<character_id>"` — write a non-player participant out of the scene when their narrative beat is done.',
         '- `add_lore` — record a new world fact (Phase 7+).',
+        '- `mutate_sheet` with `character_id: "<id>"` and `ops: [...]` — apply one or more mechanical sheet edits to an in-scene character (PC or NPC). Each op is one of:',
+        '    - `{ op: "set_stat", key, value }` / `{ op: "adjust_stat", key, delta }` / `{ op: "clear_stat", key }`',
+        '    - `{ op: "set_status", key, value }` / `{ op: "clear_status", key }`',
+        '    - `{ op: "add_item", name, description?, influences? }` / `{ op: "update_item", item_id, name?, description?, influences? }` / `{ op: "remove_item", item_id }`',
+        '  Use this when something the player did (or that landed in a `skill_check`) should leave a *durable, mechanical* mark on the sheet — e.g. taking 4 damage (`adjust_stat hp -4`), gaining the `poisoned` status, picking up an item from a chest. Do NOT use it to record narrative flavour the sheet doesn\'t track. The character_id MUST be in the actor list. Sheet edits should usually run BEFORE the speak/narrator beat that describes them so the next beat sees the updated state.',
         '',
         '# Closing',
         '- `end_turn` — hand control back to the player. Emit this as soon as the player\'s input has had a response.',

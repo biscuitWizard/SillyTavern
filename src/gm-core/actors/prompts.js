@@ -20,6 +20,22 @@
  *   4. The Narrator's prompt is built separately in `narrator/prompts.js`;
  *      this module is character-only.
  *
+ * # Sheet-AFTER-RAG ordering (M0 invariant)
+ *
+ * The character sheet YAML is rendered into the USER prompt, AFTER the
+ * MEMORIES block. The system prompt only restates the rule that other
+ * actors' sheets are not visible. Two reasons:
+ *
+ *   - With richer categorized sheets (traits, pulse, relationships) we do
+ *     not want the model treating sheet entries as retrieval seeds — RAG
+ *     content arrives first so it grounds the reply, then the sheet sits
+ *     immediately above the director instruction as authoritative current
+ *     state.
+ *   - Defense-in-depth: the RAG retrieval query (`pickQueryText` in
+ *     `director/loop.js`) is constructed from `ctx.user_input` and the
+ *     transcript tail only, never from `character.sheet`. Pinning the
+ *     prompt order makes that guarantee structurally observable.
+ *
  * The builder takes the active character explicitly (it does not even
  * receive `ctx.actors`) so a future caller cannot accidentally splice in
  * another actor's data.
@@ -49,6 +65,7 @@ export function actorSystemPrompt(_ctx, character) {
         '- Do not speak for any other character.',
         '- Do not invent skill checks, dice rolls, or numeric outcomes — those are decided by the system.',
         '- Keep replies short by default: one to four sentences plus optional brief action beats in *italics*.',
+        '- Only your own sheet is visible to you. Other characters\' sheets are not.',
         '',
         '# Identity',
     ];
@@ -57,16 +74,6 @@ export function actorSystemPrompt(_ctx, character) {
     if (character.voice) lines.push(`- Voice: ${character.voice}`);
     if (character.background) lines.push(`- Background: ${character.background}`);
     lines.push('');
-
-    const sheetYaml = renderSheetYaml(character.sheet);
-    if (sheetYaml.trim()) {
-        lines.push('# Your character sheet');
-        lines.push('```yaml');
-        lines.push(sheetYaml);
-        lines.push('```');
-        lines.push('Only your own sheet is visible to you. Other characters\' sheets are not.');
-        lines.push('');
-    }
 
     lines.push('# Output');
     lines.push('Reply with your character\'s words and actions only — no headers, no labels, no meta-commentary.');
@@ -109,6 +116,15 @@ export function actorUserPrompt(ctx, character, intent) {
 
     if (ctx.memories_block && ctx.memories_block.trim()) {
         lines.push(ctx.memories_block.trim());
+        lines.push('');
+    }
+
+    const sheetYaml = renderSheetYaml(character.sheet, ctx.sheet_layout);
+    if (sheetYaml.trim()) {
+        lines.push('# Your character sheet');
+        lines.push('```yaml');
+        lines.push(sheetYaml);
+        lines.push('```');
         lines.push('');
     }
 

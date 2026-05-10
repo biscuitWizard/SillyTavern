@@ -74,6 +74,24 @@ export async function getRuleset(rulesetId) {
     }
 }
 
+/**
+ * Fetch only the merged sheet layout (M1) for the requested ruleset.
+ * Returns `null` when the ruleset has no layout on disk so callers can
+ * fall back to the legacy flat-KV editor without crashing.
+ *
+ * @param {string} rulesetId
+ * @returns {Promise<import('../../../src/gm-core/rulesets/schemas.d.ts').SheetLayout | null>}
+ */
+export async function getSheetLayout(rulesetId) {
+    try {
+        const out = await request(`/rulesets/${encodeURIComponent(rulesetId)}/sheet-layout`);
+        return out?.sheet_layout ?? null;
+    } catch (err) {
+        if (err instanceof GmApiError && err.status === 404) return null;
+        throw err;
+    }
+}
+
 /* -------- Campaigns -------- */
 
 /** @returns {Promise<CampaignSummary[]>} */
@@ -459,6 +477,151 @@ export async function getSheet(characterId) {
         if (err instanceof GmApiError && err.status === 404) return null;
         throw err;
     }
+}
+
+/* -------- Sheet items / skills / notes (M4) -------- */
+
+/**
+ * Push a new item onto `sheet.items`. Body shape mirrors the server's
+ * `addItem` mutator: `{ name, description, influences }`.
+ *
+ * @param {string} characterId
+ * @param {{ name: string, description?: string, influences?: any }} item
+ */
+export async function addItem(characterId, item) {
+    const out = await request(`/sheets/${encodeURIComponent(characterId)}/items`, {
+        method: 'POST',
+        body: JSON.stringify(item || {}),
+    });
+    return out?.character ?? null;
+}
+
+/**
+ * Patch fields on an existing item by id. Unspecified fields are left
+ * untouched.
+ *
+ * @param {string} characterId
+ * @param {string} itemId
+ * @param {{ name?: string, description?: string, influences?: any }} patch
+ */
+export async function updateItem(characterId, itemId, patch) {
+    const out = await request(`/sheets/${encodeURIComponent(characterId)}/items/${encodeURIComponent(itemId)}`, {
+        method: 'PUT',
+        body: JSON.stringify(patch || {}),
+    });
+    return out?.character ?? null;
+}
+
+/**
+ * @param {string} characterId
+ * @param {string} itemId
+ */
+export async function deleteItem(characterId, itemId) {
+    const out = await request(`/sheets/${encodeURIComponent(characterId)}/items/${encodeURIComponent(itemId)}`, {
+        method: 'DELETE',
+    });
+    return out?.character ?? null;
+}
+
+/**
+ * Replace the full `sheet.skills` list in one call. The frontend
+ * recomputes the desired set from the skills checklist and ships it
+ * here; the server validates membership against the ruleset.
+ *
+ * @param {string} characterId
+ * @param {string[]} skills
+ */
+export async function setSkills(characterId, skills) {
+    const out = await request(`/sheets/${encodeURIComponent(characterId)}/skills`, {
+        method: 'PUT',
+        body: JSON.stringify({ skills: Array.isArray(skills) ? skills : [] }),
+    });
+    return out?.character ?? null;
+}
+
+/**
+ * @param {string} characterId
+ * @param {string} notes
+ */
+export async function setNotes(characterId, notes) {
+    const out = await request(`/sheets/${encodeURIComponent(characterId)}/notes`, {
+        method: 'PUT',
+        body: JSON.stringify({ notes: typeof notes === 'string' ? notes : '' }),
+    });
+    return out?.character ?? null;
+}
+
+/* -------- Sheet relationships (M2) -------- */
+
+/**
+ * List the `other_id` keys present in `sheet.relationships` without
+ * fetching the field bag for each one. Lets the panel render the
+ * disclosure rows for hidden NPC↔NPC entries cheaply, and only
+ * fetch the per-target fields when the user expands a row.
+ *
+ * @param {string} characterId
+ * @returns {Promise<{ character_id: string, other_ids: string[] }>}
+ */
+export async function listRelationshipKeys(characterId) {
+    const path = `/sheets/${encodeURIComponent(characterId)}/relationships`;
+    return await request(path);
+}
+
+/**
+ * Fetch the field bag for a single relationship entry.
+ *
+ * @param {string} characterId
+ * @param {string} otherId
+ * @returns {Promise<{ character_id: string, other_id: string, fields: Record<string, number | string> | null }>}
+ */
+export async function getRelationship(characterId, otherId) {
+    const path = `/sheets/${encodeURIComponent(characterId)}`
+        + `/relationships/${encodeURIComponent(otherId)}`;
+    return await request(path);
+}
+
+/**
+ * Set a single field on `sheet.relationships[other_id]`. The server
+ * rejects writes targeting another campaign's character.
+ *
+ * @param {string} characterId
+ * @param {string} otherId
+ * @param {string} field
+ * @param {number | string} value
+ */
+export async function setRelationshipField(characterId, otherId, field, value) {
+    const path = `/sheets/${encodeURIComponent(characterId)}`
+        + `/relationships/${encodeURIComponent(otherId)}/${encodeURIComponent(field)}`;
+    const out = await request(path, {
+        method: 'PUT',
+        body: JSON.stringify({ value }),
+    });
+    return out?.character ?? null;
+}
+
+/**
+ * @param {string} characterId
+ * @param {string} otherId
+ * @param {string} field
+ */
+export async function clearRelationshipField(characterId, otherId, field) {
+    const path = `/sheets/${encodeURIComponent(characterId)}`
+        + `/relationships/${encodeURIComponent(otherId)}/${encodeURIComponent(field)}`;
+    const out = await request(path, { method: 'DELETE' });
+    return out?.character ?? null;
+}
+
+/**
+ * Drop the entire `sheet.relationships[other_id]` sub-bag in one call.
+ *
+ * @param {string} characterId
+ * @param {string} otherId
+ */
+export async function removeRelationship(characterId, otherId) {
+    const path = `/sheets/${encodeURIComponent(characterId)}`
+        + `/relationships/${encodeURIComponent(otherId)}`;
+    const out = await request(path, { method: 'DELETE' });
+    return out?.character ?? null;
 }
 
 /* -------- Turn (Phase 4) -------- */

@@ -29,6 +29,14 @@
  * @property {Item[]} items
  * @property {string[]} skills
  * @property {string} notes
+ * @property {Record<string, Record<string, number | string>>} relationships
+ *   Per-other-character record of how *this* character feels about them.
+ *   Keys are the other character's id; values are a small KV grid whose
+ *   schema is driven by the layout's `relationships` category
+ *   `per_target_fields[]` (M1). Other characters' opinions about this
+ *   one live on THEIR sheet, not here — context-isolation invariant from
+ *   `actor-prompts.test.js` requires the renderer to never look at a
+ *   campaign-side mirror.
  */
 
 /**
@@ -56,12 +64,21 @@
  * @returns {CharacterSheet}
  */
 export function defaultSheet(overrides = {}) {
+    /** @type {CharacterSheet['relationships']} */
+    const relationships = {};
+    if (overrides.relationships && typeof overrides.relationships === 'object' && !Array.isArray(overrides.relationships)) {
+        for (const [otherId, fields] of Object.entries(overrides.relationships)) {
+            if (!fields || typeof fields !== 'object' || Array.isArray(fields)) continue;
+            relationships[otherId] = { ...fields };
+        }
+    }
     return {
         stats: { ...(overrides.stats || {}) },
         statuses: { ...(overrides.statuses || {}) },
         items: Array.isArray(overrides.items) ? [...overrides.items] : [],
         skills: Array.isArray(overrides.skills) ? [...overrides.skills] : [],
         notes: typeof overrides.notes === 'string' ? overrides.notes : '',
+        relationships,
     };
 }
 
@@ -124,6 +141,19 @@ export function validateCharacterInput(body) {
         }
         if (body.sheet.skills !== undefined && !Array.isArray(body.sheet.skills)) {
             return 'sheet.skills must be an array';
+        }
+        if (body.sheet.relationships !== undefined) {
+            if (!body.sheet.relationships || typeof body.sheet.relationships !== 'object' || Array.isArray(body.sheet.relationships)) {
+                return 'sheet.relationships must be an object';
+            }
+            for (const [otherId, fields] of Object.entries(body.sheet.relationships)) {
+                if (typeof otherId !== 'string' || !otherId.trim()) {
+                    return 'sheet.relationships keys must be non-empty strings';
+                }
+                if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
+                    return `sheet.relationships.${otherId} must be an object`;
+                }
+            }
         }
     }
     return null;

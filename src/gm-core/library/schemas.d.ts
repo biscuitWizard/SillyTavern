@@ -15,6 +15,18 @@ export interface CharacterSheet {
     items: Item[];
     skills: string[];
     notes: string;
+    /**
+     * Per-other-character record of how *this* character feels about
+     * them. Keys are the other character's id; values are a small KV
+     * grid whose schema is driven by the layout's `relationships`
+     * category `per_target_fields[]` (M1).
+     *
+     * Other characters' opinions about this one live on THEIR sheet,
+     * not here. The actor-prompt renderer reads only `character.sheet`
+     * — never a campaign-side mirror — to preserve the per-actor
+     * isolation invariant pinned in `tests/gm-core/actor-prompts.test.js`.
+     */
+    relationships: Record<string, Record<string, number | string>>;
 }
 
 export interface Character {

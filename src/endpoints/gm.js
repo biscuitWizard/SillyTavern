@@ -153,6 +153,20 @@ router.get('/rulesets/:id', (request, response) => {
     return response.json({ ruleset });
 });
 
+/**
+ * GET /api/gm/rulesets/:id/sheet-layout
+ *
+ * Return only the merged sheet layout for the requested ruleset (M1).
+ * The sheet panel, wizard, and sidebar all hit this when they render
+ * the category-driven UI; pulling just the layout keeps the response
+ * tight when the rest of the ruleset isn't needed (e.g. the panel
+ * fetches the full ruleset for skill names but the sidebar doesn't).
+ */
+router.get('/rulesets/:id/sheet-layout', (request, response) => {
+    const ruleset = getRulesetFor(request.user.directories, request.params.id);
+    return response.json({ sheet_layout: ruleset.sheet_layout || null });
+});
+
 /* -------- Campaigns -------- */
 
 /**
@@ -940,6 +954,103 @@ router.put('/sheets/:char_id/notes', (request, response) => {
         sheetOps.setNotes(dirs, cid, chid, notes));
 });
 
+/* -------- Relationships (M2) --------
+ *
+ * `sheet.relationships` is a per-other-character KV grid. The endpoints
+ * mirror the stat/status surface but are routed through five explicit
+ * verbs so the frontend can be granular without juggling JSON-patch:
+ *
+ *   GET    /sheets/:char_id/relationships              → just the keys
+ *   GET    /sheets/:char_id/relationships/:other_id    → one entry
+ *   PUT    /sheets/:char_id/relationships/:other_id/:field
+ *   DELETE /sheets/:char_id/relationships/:other_id/:field
+ *   DELETE /sheets/:char_id/relationships/:other_id
+ *
+ * The two GETs exist so the panel UI can render relationships lazily —
+ * the design rule is "the bundled character GET is not the one big
+ * blob to dump": the panel asks for the list of `other_ids` and only
+ * fetches a card's full field set when the user expands it. That keeps
+ * NPC-to-NPC entries (which the player isn't normally looking at)
+ * cheap, and matches the one-card-at-a-time render policy.
+ *
+ * The `:other_id` route param must reference another character that
+ * exists in the same campaign — a leak from another campaign would
+ * never resolve in the panel anyway, but we reject it explicitly here
+ * so a Director-tool dispatch in M8 cannot accidentally write a
+ * dangling relationship.
+ */
+
+function ensureOtherCharacterInSameCampaign(directories, campaignId, otherCharacterId) {
+    if (!otherCharacterId || typeof otherCharacterId !== 'string') return false;
+    const other = characterStore.findById(directories, otherCharacterId);
+    if (!other) return false;
+    return other.campaign_id === campaignId;
+}
+
+router.get('/sheets/:char_id/relationships', (request, response) => {
+    const found = characterStore.findById(request.user.directories, request.params.char_id);
+    if (!found) return response.status(404).json({ error: 'character not found' });
+    const rels = (found.character?.sheet?.relationships && typeof found.character.sheet.relationships === 'object')
+        ? found.character.sheet.relationships
+        : {};
+    return response.json({
+        character_id: found.character.id,
+        other_ids: Object.keys(rels).sort(),
+    });
+});
+
+router.get('/sheets/:char_id/relationships/:other_id', (request, response) => {
+    const found = characterStore.findById(request.user.directories, request.params.char_id);
+    if (!found) return response.status(404).json({ error: 'character not found' });
+    const otherId = request.params.other_id;
+    const rels = (found.character?.sheet?.relationships && typeof found.character.sheet.relationships === 'object')
+        ? found.character.sheet.relationships
+        : {};
+    const entry = rels[otherId];
+    return response.json({
+        character_id: found.character.id,
+        other_id: otherId,
+        fields: (entry && typeof entry === 'object') ? entry : null,
+    });
+});
+
+router.put('/sheets/:char_id/relationships/:other_id/:field', (request, response) => {
+    const value = request.body?.value;
+    if (value === undefined) return response.status(400).json({ error: 'value is required' });
+    if (typeof value !== 'string' && typeof value !== 'number') {
+        return response.status(400).json({ error: 'value must be a string or number' });
+    }
+    const otherId = request.params.other_id;
+    const field = request.params.field;
+    if (!field) return response.status(400).json({ error: 'field is required' });
+
+    const directories = request.user.directories;
+    const found = characterStore.findById(directories, request.params.char_id);
+    if (!found) return response.status(404).json({ error: 'character not found' });
+    if (found.character.id === otherId) {
+        return response.status(400).json({ error: 'cannot set a relationship to self' });
+    }
+    if (!ensureOtherCharacterInSameCampaign(directories, found.campaign_id, otherId)) {
+        return response.status(400).json({ error: 'other character is not in this campaign' });
+    }
+    return withCharacter(request, response, (dirs, cid, chid) =>
+        sheetOps.setRelationshipField(dirs, cid, chid, otherId, field, value));
+});
+
+router.delete('/sheets/:char_id/relationships/:other_id/:field', (request, response) => {
+    const otherId = request.params.other_id;
+    const field = request.params.field;
+    if (!field) return response.status(400).json({ error: 'field is required' });
+    return withCharacter(request, response, (dirs, cid, chid) =>
+        sheetOps.clearRelationshipField(dirs, cid, chid, otherId, field));
+});
+
+router.delete('/sheets/:char_id/relationships/:other_id', (request, response) => {
+    const otherId = request.params.other_id;
+    return withCharacter(request, response, (dirs, cid, chid) =>
+        sheetOps.removeRelationship(dirs, cid, chid, otherId));
+});
+
 /* -------- Scenes (Phase 3) -------- */
 
 /**
@@ -1510,6 +1621,58 @@ router.post('/turn', async (request, response) => {
                 const persisted = characterStore.create(directories, campaign.id, input);
                 if (persisted) charactersById.set(persisted.id, persisted);
                 return persisted;
+            },
+            // M8: Director-driven sheet mutations. Each op is dispatched
+            // through the per-mutator helpers in
+            // `gm-core/sheets/operations.js` so the same audit trail
+            // (atomic write + `updated_at` bump) applies whether the
+            // edit came from the panel UI or the Director's
+            // `mutate_sheet` action. Returning the updated character
+            // also refreshes the per-turn `charactersById` cache so a
+            // subsequent `speak` step in the same loop renders the new
+            // sheet via the per-actor prompt builder.
+            mutateSheet: (characterId, op) => {
+                if (!op || typeof op !== 'object') return null;
+                let updated = null;
+                switch (op.op) {
+                    case 'set_stat':
+                        updated = sheetOps.setStat(directories, campaign.id, characterId, op.key, op.value);
+                        break;
+                    case 'adjust_stat':
+                        updated = sheetOps.adjustStat(directories, campaign.id, characterId, op.key, op.delta);
+                        break;
+                    case 'clear_stat':
+                        updated = sheetOps.clearStat(directories, campaign.id, characterId, op.key);
+                        break;
+                    case 'set_status':
+                        updated = sheetOps.setStatus(directories, campaign.id, characterId, op.key, op.value);
+                        break;
+                    case 'clear_status':
+                        updated = sheetOps.clearStatus(directories, campaign.id, characterId, op.key);
+                        break;
+                    case 'add_item':
+                        updated = sheetOps.addItem(directories, campaign.id, characterId, {
+                            name: op.name,
+                            description: op.description,
+                            influences: op.influences,
+                        });
+                        break;
+                    case 'update_item': {
+                        const patch = {};
+                        if (op.name !== undefined) patch.name = op.name;
+                        if (op.description !== undefined) patch.description = op.description;
+                        if (op.influences !== undefined) patch.influences = op.influences;
+                        updated = sheetOps.updateItem(directories, campaign.id, characterId, op.item_id, patch);
+                        break;
+                    }
+                    case 'remove_item':
+                        updated = sheetOps.deleteItem(directories, campaign.id, characterId, op.item_id);
+                        break;
+                    default:
+                        return null;
+                }
+                if (updated) charactersById.set(updated.id, updated);
+                return updated;
             },
             memoryService,
             sceneIndex,

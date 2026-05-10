@@ -176,3 +176,85 @@ export function setNotes(directories, campaignId, characterId, notes) {
         notes: String(notes ?? ''),
     }));
 }
+
+/* ----------------- Relationships (M2) -----------------
+ *
+ * `sheet.relationships` is a per-other-character KV grid (one entry per
+ * other character id, each entry a small object whose shape comes from
+ * the layout's `per_target_fields`). These mutators are the only path
+ * for editing relationships from the panel/wizard or from a Director
+ * `mutate_sheet` action; the dispatch in `director/loop.js` calls
+ * straight into them.
+ *
+ * Backwards-compat: an existing sheet on disk may not yet carry a
+ * `relationships` key — every mutator coerces a missing bag to `{}`
+ * before writing.
+ */
+
+/**
+ * @param {import('../../users.js').UserDirectoryList} directories
+ * @param {string} campaignId
+ * @param {string} characterId
+ * @param {string} otherCharacterId
+ * @param {string} field
+ * @param {number | string} value
+ */
+export function setRelationshipField(directories, campaignId, characterId, otherCharacterId, field, value) {
+    return withSheet(directories, campaignId, characterId, (sheet) => {
+        const allRel = (sheet.relationships && typeof sheet.relationships === 'object') ? sheet.relationships : {};
+        const current = (allRel[otherCharacterId] && typeof allRel[otherCharacterId] === 'object') ? allRel[otherCharacterId] : {};
+        return {
+            ...sheet,
+            relationships: {
+                ...allRel,
+                [otherCharacterId]: { ...current, [field]: value },
+            },
+        };
+    });
+}
+
+/**
+ * Remove a single field from a relationship entry. If the entry becomes
+ * empty as a result, the entry itself is removed too — keeps the YAML
+ * prompt block tidy.
+ *
+ * @param {import('../../users.js').UserDirectoryList} directories
+ * @param {string} campaignId
+ * @param {string} characterId
+ * @param {string} otherCharacterId
+ * @param {string} field
+ */
+export function clearRelationshipField(directories, campaignId, characterId, otherCharacterId, field) {
+    return withSheet(directories, campaignId, characterId, (sheet) => {
+        const allRel = (sheet.relationships && typeof sheet.relationships === 'object') ? { ...sheet.relationships } : {};
+        const current = allRel[otherCharacterId];
+        if (!current || typeof current !== 'object') return sheet;
+        if (!Object.prototype.hasOwnProperty.call(current, field)) return sheet;
+        const next = { ...current };
+        delete next[field];
+        if (Object.keys(next).length === 0) {
+            delete allRel[otherCharacterId];
+        } else {
+            allRel[otherCharacterId] = next;
+        }
+        return { ...sheet, relationships: allRel };
+    });
+}
+
+/**
+ * Remove an entire relationship entry (all fields) for the given other
+ * character.
+ *
+ * @param {import('../../users.js').UserDirectoryList} directories
+ * @param {string} campaignId
+ * @param {string} characterId
+ * @param {string} otherCharacterId
+ */
+export function removeRelationship(directories, campaignId, characterId, otherCharacterId) {
+    return withSheet(directories, campaignId, characterId, (sheet) => {
+        const allRel = (sheet.relationships && typeof sheet.relationships === 'object') ? { ...sheet.relationships } : {};
+        if (!Object.prototype.hasOwnProperty.call(allRel, otherCharacterId)) return sheet;
+        delete allRel[otherCharacterId];
+        return { ...sheet, relationships: allRel };
+    });
+}
