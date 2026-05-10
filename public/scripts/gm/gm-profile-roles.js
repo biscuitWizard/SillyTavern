@@ -1,5 +1,5 @@
 /**
- * GM per-role model overrides on top of SillyTavern connection profiles.
+ * GM per-role model + URL overrides on top of SillyTavern connection profiles.
  *
  * The TTRPG Tavern GM core dispatches LLM calls for several distinct roles
  * (Director — structured JSON; Narrator — long-form prose; Actor — NPC
@@ -9,17 +9,21 @@
  *
  * Rather than ship a parallel settings popup, we extend SillyTavern's own
  * Connection Profiles (the connection-manager extension). Each profile is
- * a JSON bag in `extension_settings.connectionManager.profiles`; we simply
- * add four optional keys per profile:
+ * a JSON bag in `extension_settings.connectionManager.profiles`; we add
+ * optional keys per profile:
  *
- *   - `gm-director-model`
- *   - `gm-narrator-model`
- *   - `gm-actor-model`
- *   - `gm-summarizer-model`   (collapses long agent-loop history)
+ *   - `gm-director-model`  / `gm-director-url`
+ *   - `gm-narrator-model`  / `gm-narrator-url`
+ *   - `gm-actor-model`     / `gm-actor-url`
+ *   - `gm-summarizer-model` / `gm-summarizer-url`
+ *
+ * Model overrides swap the model name; URL overrides swap the server URL
+ * entirely — enabling setups where the Director and Narrator run on
+ * separate llama.cpp instances (different ports / hosts / models loaded).
  *
  * If a role override is empty, we fall back to the profile's main `model`
- * field (which connection-manager already populates from ST's live API
- * state on profile create / update).
+ * or server URL (which connection-manager already populates from ST's live
+ * API state on profile create / update).
  *
  * The UI is injected into ST's API drawer (`#rm_api_block`), directly
  * below the connection-manager's connection-profile selector. The inputs
@@ -35,23 +39,27 @@ const PANEL_ID = 'gm-role-models-panel';
 const ROLES = /** @type {const} */ ([
     {
         key: 'director',
-        label: 'Director model',
-        hint: 'Structured-output role. Picks the next beat. Empty = profile default.',
+        label: 'Director',
+        modelHint: 'Structured-output role. Picks the next beat. Empty = profile default.',
+        urlHint: 'Server URL for this role. Empty = profile default. Use when the Director runs on a separate llama.cpp instance.',
     },
     {
         key: 'narrator',
-        label: 'Narrator model',
-        hint: 'World narration prose. Empty = profile default.',
+        label: 'Narrator',
+        modelHint: 'World narration prose. Empty = profile default.',
+        urlHint: 'Server URL for this role. Empty = profile default.',
     },
     {
         key: 'actor',
-        label: 'Actor model',
-        hint: 'NPC dialogue (reserved, Phase 5+). Empty = profile default.',
+        label: 'Actor',
+        modelHint: 'NPC dialogue (reserved, Phase 5+). Empty = profile default.',
+        urlHint: 'Server URL for this role. Empty = profile default.',
     },
     {
         key: 'summarizer',
-        label: 'Summarizer model',
-        hint: 'Collapses long agent-loop history into a recap when the Director\'s context fills up. A small, cheap model is fine. Empty = profile default.',
+        label: 'Summarizer',
+        modelHint: 'Collapses long agent-loop history into a recap when the Director\'s context fills up. A small, cheap model is fine. Empty = profile default.',
+        urlHint: 'Server URL for this role. Empty = profile default.',
     },
 ]);
 
@@ -107,7 +115,7 @@ function buildPanel() {
 
     const desc = document.createElement('small');
     desc.className = 'opacity50p';
-    desc.textContent = 'Per-role model overrides for the selected connection profile. Leave empty to use the profile\'s default model.';
+    desc.textContent = 'Per-role model and URL overrides for the selected connection profile. Leave empty to use the profile\'s defaults.';
     panel.append(desc);
 
     const empty = document.createElement('div');
@@ -133,36 +141,57 @@ function buildRoleRow(role) {
     const row = document.createElement('div');
     row.className = 'flex-container flexFlowColumn flexNoGap marginBot5';
 
-    const label = document.createElement('label');
-    label.htmlFor = `gm-role-${role.key}`;
-    label.innerHTML = `<strong>${role.label}</strong>`;
-    row.append(label);
+    const header = document.createElement('label');
+    header.innerHTML = `<strong>${role.label}</strong>`;
+    row.append(header);
 
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.className = 'text_pole';
-    input.id = `gm-role-${role.key}`;
-    input.name = `gm-${role.key}-model`;
-    input.placeholder = '(use profile default)';
-    input.autocomplete = 'off';
-    input.spellcheck = false;
-    input.addEventListener('change', () => onRoleInputChanged(role.key, input.value));
-    input.addEventListener('blur', () => onRoleInputChanged(role.key, input.value));
-    row.append(input);
+    const modelInput = document.createElement('input');
+    modelInput.type = 'text';
+    modelInput.className = 'text_pole';
+    modelInput.id = `gm-role-${role.key}`;
+    modelInput.name = `gm-${role.key}-model`;
+    modelInput.placeholder = '(use profile default)';
+    modelInput.autocomplete = 'off';
+    modelInput.spellcheck = false;
+    modelInput.addEventListener('change', () => onRoleFieldChanged(role.key, 'model', modelInput.value));
+    modelInput.addEventListener('blur', () => onRoleFieldChanged(role.key, 'model', modelInput.value));
+    row.append(modelInput);
 
-    const hint = document.createElement('small');
-    hint.className = 'opacity50p';
-    hint.textContent = role.hint;
-    row.append(hint);
+    const modelHint = document.createElement('small');
+    modelHint.className = 'opacity50p';
+    modelHint.textContent = role.modelHint;
+    row.append(modelHint);
+
+    const urlInput = document.createElement('input');
+    urlInput.type = 'text';
+    urlInput.className = 'text_pole marginTop5';
+    urlInput.id = `gm-role-${role.key}-url`;
+    urlInput.name = `gm-${role.key}-url`;
+    urlInput.placeholder = '(use profile default)';
+    urlInput.autocomplete = 'off';
+    urlInput.spellcheck = false;
+    urlInput.addEventListener('change', () => onRoleFieldChanged(role.key, 'url', urlInput.value));
+    urlInput.addEventListener('blur', () => onRoleFieldChanged(role.key, 'url', urlInput.value));
+    row.append(urlInput);
+
+    const urlHint = document.createElement('small');
+    urlHint.className = 'opacity50p';
+    urlHint.textContent = role.urlHint;
+    row.append(urlHint);
 
     return row;
 }
 
-function onRoleInputChanged(roleKey, rawValue) {
+/**
+ * @param {string} roleKey
+ * @param {'model' | 'url'} field
+ * @param {string} rawValue
+ */
+function onRoleFieldChanged(roleKey, field, rawValue) {
     const profile = getSelectedProfile();
     if (!profile) return;
     const value = String(rawValue || '').trim();
-    const fieldKey = `gm-${roleKey}-model`;
+    const fieldKey = `gm-${roleKey}-${field}`;
     if (!value) {
         delete profile[fieldKey];
     } else {
@@ -184,12 +213,20 @@ function refreshInputs() {
     if (grid) grid.style.display = '';
     for (const role of ROLES) {
         /** @type {HTMLInputElement | null} */
-        const input = document.getElementById(`gm-role-${role.key}`);
-        if (!input) continue;
-        const fieldKey = `gm-${role.key}-model`;
-        input.value = String(profile[fieldKey] || '');
-        const fallback = String(profile['model'] || '');
-        input.placeholder = fallback ? `(use profile default: ${fallback})` : '(use profile default)';
+        const modelInput = document.getElementById(`gm-role-${role.key}`);
+        if (modelInput) {
+            modelInput.value = String(profile[`gm-${role.key}-model`] || '');
+            const fallbackModel = String(profile['model'] || '');
+            modelInput.placeholder = fallbackModel ? `(use profile default: ${fallbackModel})` : '(use profile default)';
+        }
+
+        /** @type {HTMLInputElement | null} */
+        const urlInput = document.getElementById(`gm-role-${role.key}-url`);
+        if (urlInput) {
+            urlInput.value = String(profile[`gm-${role.key}-url`] || '');
+            const fallbackUrl = String(profile['server_url'] || profile['custom_url'] || profile['api-url-text'] || '');
+            urlInput.placeholder = fallbackUrl ? `(${fallbackUrl})` : '(use profile default)';
+        }
     }
 }
 
@@ -210,6 +247,19 @@ export function getRoleModelOverride(roleKey) {
     const profile = getSelectedProfile();
     if (!profile) return '';
     return String(profile[`gm-${roleKey}-model`] || '');
+}
+
+/**
+ * Returns the role-specific URL override for the selected profile, or
+ * `''` if none is set. Used by `currentLlmProfile()` to point individual
+ * roles at separate llama.cpp / Ollama instances.
+ *
+ * @param {'director' | 'narrator' | 'actor' | 'summarizer'} roleKey
+ */
+export function getRoleUrlOverride(roleKey) {
+    const profile = getSelectedProfile();
+    if (!profile) return '';
+    return String(profile[`gm-${roleKey}-url`] || '');
 }
 
 /**

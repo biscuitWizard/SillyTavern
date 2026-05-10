@@ -16,7 +16,7 @@
 import { main_api, online_status } from '../../script.js';
 import { oai_settings } from '../openai.js';
 import { textgenerationwebui_settings, textgen_types } from '../textgen-settings.js';
-import { getRoleModelOverride, getCurrentConnectionProfile } from './gm-profile-roles.js';
+import { getRoleModelOverride, getRoleUrlOverride, getCurrentConnectionProfile } from './gm-profile-roles.js';
 
 /** Textgen types we know how to dispatch to from the GM core. */
 const TEXTGEN_LOCAL_SOURCES = new Set([
@@ -57,8 +57,11 @@ export function currentLlmProfile(role) {
     if (!live.source) return null;
 
     if (role) {
-        const override = getRoleModelOverride(role);
-        if (override) live.model = override;
+        const modelOverride = getRoleModelOverride(role);
+        if (modelOverride) live.model = modelOverride;
+
+        const urlOverride = getRoleUrlOverride(role);
+        if (urlOverride) live.custom_url = urlOverride;
     }
     return live;
 }

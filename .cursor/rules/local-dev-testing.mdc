@@ -36,8 +36,32 @@ The prod stack (`docker-compose.prod.yml`, managed by Portainer) provides all LL
 
 - The `--profile app` container auto-connects to prod Ollama for embeddings via `host.docker.internal:11434`.
 - For `npm start`, Ollama embeddings work automatically (defaults to `localhost:11434`).
-- llama-server and llama-director endpoints are configured in the **ST web UI** under Text Completion API settings, not via env vars.
+- llama-server and llama-director endpoints are configured via per-role URL overrides in the ST web UI (see below).
 - Do **not** run `--profile llm` while the prod stack is up (port 11434 conflict).
+
+## Configuring per-role LLM endpoints in the ST web UI
+
+The GM core uses separate LLM profiles for Director (structured output) and Narrator/Actor (prose). Since each role may run on a different llama.cpp server, the connection panel supports **per-role URL overrides** under "TTRPG Tavern role models":
+
+1. Open the API settings panel (plug icon in the top bar).
+2. Set the base connection to llama.cpp, pointing at the **Narrator** server (the main chat model):
+   - API: Text Completion, API Type: llama.cpp
+   - API URL: `http://llama-server:8080` (prod) or `http://localhost:8180` (dev host)
+3. Select or create a **Connection Profile** and save it.
+4. In the **TTRPG Tavern role models** section that appears below:
+   - **Director URL**: set to `http://llama-director:8082` (prod) or `http://localhost:8182` (dev host)
+   - **Director model**: can be left empty (llama.cpp always serves its loaded model)
+   - **Narrator URL**: leave empty (uses the profile's default URL from step 2)
+   - **Narrator model**: leave empty
+
+The URL override replaces the `custom_url` field in the LLM profile snapshot sent to the backend. The backend's `resolveBaseUrl()` picks it up for llamacpp/ollama sources automatically.
+
+### Quick reference for URL overrides
+
+| Role     | Prod (inside Docker network) | Dev host (`npm start`)   |
+|----------|------------------------------|--------------------------|
+| Narrator | `http://llama-server:8080`   | `http://localhost:8180`  |
+| Director | `http://llama-director:8082` | `http://localhost:8182`  |
 
 ## Browser-based testing with Cursor
 
