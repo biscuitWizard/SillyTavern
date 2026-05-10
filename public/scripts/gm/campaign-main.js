@@ -666,7 +666,7 @@ function buildExpansionFallback(campaign, scene, errMessage) {
 function renderFooter() {
     const footer = el('div', 'gm-footer');
     footer.append(
-        elText('span', '', 'TTRPG Tavern — Phase 4'),
+        elText('span', '', 'TTRPG Tavern'),
         elText('span', 'gm-pill', 'pre-alpha'),
     );
     return footer;

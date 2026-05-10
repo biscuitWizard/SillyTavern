@@ -3,6 +3,9 @@
  *
  * Fetches campaigns from `/api/gm/campaigns` and lets the player create a
  * new one (one-step modal). Click on a campaign card opens Campaign Main.
+ *
+ * The topbar contains a tab switcher (Campaigns / Rulesets / Lore) that
+ * swaps only the body area while keeping the topbar in place.
  */
 
 import * as api from './api.js';
@@ -10,6 +13,8 @@ import { route } from './router.js';
 import { openStApiPanel } from './llm-profile.js';
 import { mountConnectionGate } from './connection-gate.js';
 import { BANNER_THEMES } from './constants.js';
+import { renderRulesetsBrowser } from './rulesets-browser.js';
+import { renderLorePacksBrowser } from './lore-packs-browser.js';
 
 /**
  * Per-mount teardown for the previously-rendered connection gate. The
@@ -34,17 +39,45 @@ export async function renderCampaignManager(mount) {
     } catch (err) {
         console.error('[gm] listCampaigns failed', err);
     }
-    const topbar = renderTopbar();
-    const page = renderPage(campaigns);
-    mount.replaceChildren(topbar, page);
+
+    let activeTab = 'campaigns';
+
+    const topbar = renderTopbar(activeTab, (tab) => {
+        activeTab = tab;
+        paintBody();
+        topbar.querySelectorAll('.gm-topbar-tab').forEach(btn => {
+            btn.classList.toggle('is-active', btn.dataset.tab === activeTab);
+        });
+    });
+
+    const body = el('div', 'gm-page');
+
+    const paintBody = async () => {
+        if (activeTab === 'campaigns') {
+            body.replaceChildren(renderPageHeader(), renderCampaignGrid(campaigns), renderFooter());
+        } else if (activeTab === 'rulesets') {
+            body.replaceChildren(loadingNode());
+            await renderRulesetsBrowser(body);
+        } else if (activeTab === 'lore') {
+            body.replaceChildren(loadingNode());
+            await renderLorePacksBrowser(body);
+        }
+    };
+
+    paintBody();
+    mount.replaceChildren(topbar, body);
 
     if (activeGateTeardown) { activeGateTeardown(); activeGateTeardown = null; }
-    activeGateTeardown = mountConnectionGate({ container: mount, target: page });
+    activeGateTeardown = mountConnectionGate({ container: mount, target: body });
 }
 
 /* -------- Topbar -------- */
 
-function renderTopbar() {
+/**
+ * @param {string} activeTab
+ * @param {(tab: string) => void} onTabSelect
+ */
+function renderTopbar(activeTab, onTabSelect) {
     const topbar = el('div', 'gm-topbar');
 
     const brand = el('div', 'gm-brand');
@@ -55,7 +88,23 @@ function renderTopbar() {
     );
 
     const actions = el('div', 'gm-topbar-actions');
+
+    const tabs = el('div', 'gm-topbar-tabs');
+    for (const { id, label } of [
+        { id: 'campaigns', label: 'Campaigns' },
+        { id: 'rulesets', label: 'Rulesets' },
+        { id: 'lore', label: 'Lore' },
+    ]) {
+        const btn = el('button', `gm-topbar-tab${id === activeTab ? ' is-active' : ''}`);
+        btn.type = 'button';
+        btn.textContent = label;
+        btn.dataset.tab = id;
+        btn.addEventListener('click', () => onTabSelect(id));
+        tabs.append(btn);
+    }
+
     actions.append(
+        tabs,
         iconButton('fa-plug', 'API & connection settings', () => openStApiPanel()),
         iconButton('fa-circle-question', 'Help', () => {
             console.debug('[gm] help click (not implemented)');
@@ -66,18 +115,7 @@ function renderTopbar() {
     return topbar;
 }
 
-/* -------- Page -------- */
-
-function renderPage(campaigns) {
-    const page = el('div', 'gm-page');
-    page.append(
-        renderPageHeader(),
-        renderCampaignGrid(campaigns),
-        renderResourcesSection(),
-        renderFooter(),
-    );
-    return page;
-}
+/* -------- Page sections -------- */
 
 function renderPageHeader() {
     const header = el('div', 'gm-page-header');
@@ -163,38 +201,10 @@ function renderNewCampaignCard() {
     return card;
 }
 
-function renderResourcesSection() {
-    const section = el('div', 'gm-section');
-    section.append(elText('h2', 'gm-section-title', 'Resources'));
-
-    const row = el('div', 'gm-resource-row');
-    row.append(
-        resourceTile('fa-book', 'Browse rulesets', 'Phase 6+'),
-        resourceTile('fa-flask', 'Lore library', 'Phase 6+'),
-        resourceTile('fa-brain', 'Memory inspector', 'Phase 7+'),
-        resourceTile('fa-cogs', 'Model assignments', 'Phase 10'),
-    );
-    section.append(row);
-    return section;
-}
-
-function resourceTile(icon, label, status) {
-    const tile = document.createElement('button');
-    tile.type = 'button';
-    tile.className = 'gm-resource-tile';
-    tile.innerHTML = `<i class="fa-solid ${icon}"></i><span></span><span class="gm-pill" style="margin-left: auto;"></span>`;
-    tile.querySelectorAll('span')[0].textContent = label;
-    tile.querySelectorAll('span')[1].textContent = status;
-    tile.addEventListener('click', () => {
-        console.debug('[gm] resource click (not implemented):', label);
-    });
-    return tile;
-}
-
 function renderFooter() {
     const footer = el('div', 'gm-footer');
     footer.append(
-        elText('span', '', 'TTRPG Tavern — Phase 4'),
+        elText('span', '', 'TTRPG Tavern'),
         elText('span', 'gm-pill', 'pre-alpha'),
     );
     return footer;
@@ -413,6 +423,12 @@ function iconButton(faIcon, title, onClick) {
     btn.innerHTML = `<i class="fa-solid ${faIcon}"></i>`;
     btn.addEventListener('click', onClick);
     return btn;
+}
+
+function loadingNode() {
+    const node = el('div', 'gm-empty-panel');
+    node.textContent = 'Loading…';
+    return node;
 }
 
 function formatRelative(iso) {

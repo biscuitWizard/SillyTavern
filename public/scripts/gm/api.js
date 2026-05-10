@@ -60,6 +60,12 @@ async function request(pathSuffix, init = {}) {
 
 /* -------- Rulesets (Phase 5) -------- */
 
+/** @returns {Promise<Array<{ id: string, name: string, source: 'user' | 'bundled' | 'fallback' }>>} */
+export async function listRulesets() {
+    const out = await request('/rulesets');
+    return out?.rulesets ?? [];
+}
+
 /**
  * @param {string} rulesetId
  * @returns {Promise<{ id: string, name: string, starter_stats: Record<string, number | string>, starter_skills: string[] } | null>}
@@ -986,6 +992,24 @@ export async function applyLorePack(args) {
         method: 'POST',
         body: JSON.stringify(body),
     });
+}
+
+/* -------- Lore packs browser (Library tab) -------- */
+
+/**
+ * Fetch the full lore pack definition by id (entries + characters).
+ *
+ * @param {string} id
+ * @returns {Promise<import('../../../src/gm-core/lore/schemas.js').LorePack | null>}
+ */
+export async function getLorePack(id) {
+    try {
+        const out = await request(`/rag/lore/seed-packs/${encodeURIComponent(id)}`);
+        return out?.pack ?? null;
+    } catch (err) {
+        if (err instanceof GmApiError && err.status === 404) return null;
+        throw err;
+    }
 }
 
 export { GmApiError };
