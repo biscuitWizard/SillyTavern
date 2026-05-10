@@ -22,8 +22,24 @@ import { writeStCardForCharacter, removeStCardForCharacter } from '../gm-core/in
 import { mirrorCharacterToPersona } from '../gm-core/integrations/st-persona-mirror.js';
 import { createLlmClient } from '../gm-core/llm/client.js';
 import { runTurn } from '../gm-core/director/loop.js';
+import { getRuleset } from '../gm-core/rulesets/index.js';
+import * as participants from '../gm-core/scenes/participants.js';
 
 export const router = express.Router();
+
+/* -------- Rulesets (Phase 5 seam) -------- */
+
+/**
+ * GET /api/gm/rulesets/:id
+ *
+ * Returns the in-memory ruleset record. Phase 6 swaps the registry for the
+ * YAML loader; the surface stays the same so the wizard / sheet panel keep
+ * working.
+ */
+router.get('/rulesets/:id', (request, response) => {
+    const ruleset = getRuleset(request.params.id);
+    return response.json({ ruleset });
+});
 
 /* -------- Campaigns -------- */
 
@@ -142,9 +158,28 @@ router.post('/campaigns/:cid/characters', (request, response) => {
             }
         }
 
+        // Seed the sheet from the campaign's ruleset when the caller did not
+        // ship one. Phase 5 moves the 5e-shaped defaults out of the schema
+        // module and into a per-ruleset starter pack so non-5e packs can
+        // ship their own conventional KV bag in Phase 6.
+        const ruleset = getRuleset(campaign.ruleset_id);
+        const incomingSheet = body.sheet && typeof body.sheet === 'object' ? body.sheet : {};
+        const seededSheet = {
+            stats: incomingSheet.stats && Object.keys(incomingSheet.stats).length > 0
+                ? incomingSheet.stats
+                : { ...ruleset.starter_stats },
+            statuses: incomingSheet.statuses || {},
+            items: Array.isArray(incomingSheet.items) ? incomingSheet.items : [],
+            skills: Array.isArray(incomingSheet.skills) && incomingSheet.skills.length > 0
+                ? incomingSheet.skills
+                : [...ruleset.starter_skills],
+            notes: typeof incomingSheet.notes === 'string' ? incomingSheet.notes : '',
+        };
+
         let character = characterStore.create(request.user.directories, campaign.id, {
             ...body,
             is_player: wantsPlayer,
+            sheet: seededSheet,
         });
 
         const stCardAvatar = writeStCardForCharacter(request.user.directories, character);
@@ -269,6 +304,11 @@ router.patch('/sheets/:char_id/stats/:key', (request, response) => {
     if (!Number.isFinite(delta)) return response.status(400).json({ error: 'delta must be a number' });
     return withCharacter(request, response, (dirs, cid, chid) =>
         sheetOps.adjustStat(dirs, cid, chid, request.params.key, delta));
+});
+
+router.delete('/sheets/:char_id/stats/:key', (request, response) => {
+    return withCharacter(request, response, (dirs, cid, chid) =>
+        sheetOps.clearStat(dirs, cid, chid, request.params.key));
 });
 
 router.put('/sheets/:char_id/statuses/:key', (request, response) => {
@@ -435,6 +475,56 @@ router.post('/scenes/:id/messages', async (request, response) => {
 });
 
 /**
+ * POST /api/gm/scenes/:id/participants
+ *
+ * Add a character to the scene's participant list. Body: `{ character_id }`.
+ * Idempotent: adding a participant who is already present returns 200 with
+ * the existing scene record. The PC is allowed (the right sidebar pre-fills
+ * with the PC anyway, but explicit add is a no-op).
+ */
+router.post('/scenes/:id/participants', (request, response) => {
+    const found = sceneStore.findById(request.user.directories, request.params.id);
+    if (!found) return response.status(404).json({ error: 'scene not found' });
+    if (found.scene.status === 'closed') return response.status(409).json({ error: 'scene is closed' });
+    const characterId = request.body?.character_id;
+    if (typeof characterId !== 'string' || characterId.length === 0) {
+        return response.status(400).json({ error: 'character_id is required' });
+    }
+    const character = characterStore.get(request.user.directories, found.campaign_id, characterId);
+    if (!character) return response.status(404).json({ error: 'character not found in this campaign' });
+    try {
+        const updated = participants.addParticipant(request.user.directories, found.campaign_id, found.scene.id, character.id);
+        return response.json({ scene: updated, character });
+    } catch (error) {
+        console.error('[gm] add participant failed', error);
+        return response.status(500).json({ error: 'failed to add participant' });
+    }
+});
+
+/**
+ * DELETE /api/gm/scenes/:id/participants/:char_id
+ *
+ * Remove a character from the scene's participant list. The PC cannot be
+ * removed (returns 409); other characters are removed idempotently.
+ */
+router.delete('/scenes/:id/participants/:char_id', (request, response) => {
+    const found = sceneStore.findById(request.user.directories, request.params.id);
+    if (!found) return response.status(404).json({ error: 'scene not found' });
+    if (found.scene.status === 'closed') return response.status(409).json({ error: 'scene is closed' });
+    const character = characterStore.get(request.user.directories, found.campaign_id, request.params.char_id);
+    if (character?.is_player) {
+        return response.status(409).json({ error: 'cannot remove the player character' });
+    }
+    try {
+        const updated = participants.removeParticipant(request.user.directories, found.campaign_id, found.scene.id, request.params.char_id);
+        return response.json({ scene: updated });
+    } catch (error) {
+        console.error('[gm] remove participant failed', error);
+        return response.status(500).json({ error: 'failed to remove participant' });
+    }
+});
+
+/**
  * POST /api/gm/scenes/:id/end
  *
  * Mark the scene `closed` and clear `Campaign.current_scene_id` if it pointed
@@ -496,6 +586,7 @@ router.post('/turn', async (request, response) => {
 
     const characters = characterStore.listAll(directories, campaign.id);
     const player = characters.find(c => c.is_player) || null;
+    const charactersById = new Map(characters.map(c => [c.id, c]));
 
     // Persist the player line FIRST so the transcript is never desynced.
     if (userInput) {
@@ -516,13 +607,22 @@ router.post('/turn', async (request, response) => {
         }
     }
 
-    // Build the TurnContext.
+    // Build the TurnContext. Scene participants are the actors the Director
+    // can call this turn; characters NOT in the scene are surfaced as a
+    // "library" the Director can `spawn_character` from. The PC is always
+    // first in the actor list.
     const recentLines = transcript.readLines(directories, campaign.id, found.scene.id, 0);
     const recentTranscript = formatTranscriptTail(recentLines, TRANSCRIPT_TAIL_CHARS);
+    const participantIds = new Set(found.scene.participants || []);
+    if (player) participantIds.add(player.id);
+    const inSceneActors = characters
+        .filter(c => participantIds.has(c.id))
+        .sort((a, b) => Number(b.is_player) - Number(a.is_player));
+    const offSceneCharacters = characters.filter(c => !participantIds.has(c.id) && !c.is_player);
     const ctx = {
         campaign: { id: campaign.id, name: campaign.name, brief: campaign.brief, ruleset_id: campaign.ruleset_id },
         scene: { id: found.scene.id, name: found.scene.name, location: found.scene.location, status: found.scene.status },
-        actors: characters.map(c => ({
+        actors: inSceneActors.map(c => ({
             id: c.id,
             name: c.name,
             is_player: c.is_player,
@@ -530,6 +630,11 @@ router.post('/turn', async (request, response) => {
             personality: c.personality,
             voice: c.voice,
             background: c.background,
+        })),
+        library_characters: offSceneCharacters.map(c => ({
+            id: c.id,
+            name: c.name,
+            appearance: c.appearance,
         })),
         recent_transcript: recentTranscript,
         user_input: userInput,
@@ -563,18 +668,55 @@ router.post('/turn', async (request, response) => {
         // Persist message events to the transcript.
         if (ev && ev.kind === 'message') {
             try {
+                const speaker = ev.actor && ev.actor !== 'narrator' && charactersById.has(ev.actor)
+                    ? charactersById.get(ev.actor)
+                    : null;
                 const line = {
                     name: ev.name || ev.actor || 'Narrator',
+                    force_avatar: speaker?.st_card_avatar
+                        ? `/characters/${encodeURIComponent(speaker.st_card_avatar)}`
+                        : undefined,
                     mes: ev.text || '',
                     is_user: false,
                     is_system: false,
                     send_date: new Date().toISOString(),
-                    extra: { role: ev.role || 'narrator', actor: ev.actor },
+                    extra: {
+                        role: ev.role || 'narrator',
+                        actor: ev.actor,
+                        actor_id: ev.actor_id || (ev.role === 'actor' ? ev.actor : undefined),
+                    },
                 };
                 await transcript.appendLine(directories, campaign.id, found.scene.id, line);
                 sceneStore.refreshMessageCount(directories, campaign.id, found.scene.id);
             } catch (persistErr) {
                 console.error('[gm] persist actor line failed', persistErr);
+            }
+        }
+        // Persist state events (spawn / remove) as system messages so the
+        // transcript is the single source of truth for scene history. The
+        // sidebar refresh is driven from the live event stream; reload of a
+        // closed scene reads these lines.
+        if (ev && ev.kind === 'state') {
+            try {
+                const verb = ev.change === 'spawn' ? 'entered' : 'left';
+                const line = {
+                    name: 'System',
+                    mes: `${ev.character_name || ev.character_id} ${verb} the scene.`,
+                    is_user: false,
+                    is_system: true,
+                    send_date: new Date().toISOString(),
+                    extra: {
+                        role: 'system',
+                        kind: 'state',
+                        change: ev.change,
+                        character_id: ev.character_id,
+                        character_name: ev.character_name,
+                    },
+                };
+                await transcript.appendLine(directories, campaign.id, found.scene.id, line);
+                sceneStore.refreshMessageCount(directories, campaign.id, found.scene.id);
+            } catch (persistErr) {
+                console.error('[gm] persist state line failed', persistErr);
             }
         }
     };
@@ -602,6 +744,15 @@ router.post('/turn', async (request, response) => {
             actorClient,
             emit,
             signal: abortController.signal,
+            findCharacter: (id) => charactersById.get(id) || null,
+            addParticipant: (id) => {
+                const updated = participants.addParticipant(directories, campaign.id, found.scene.id, id);
+                return updated ? charactersById.get(id) || null : null;
+            },
+            removeParticipant: (id) => {
+                const updated = participants.removeParticipant(directories, campaign.id, found.scene.id, id);
+                return updated ? charactersById.get(id) || null : null;
+            },
         });
     } catch (err) {
         console.error('[gm] turn loop crashed', err);

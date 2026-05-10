@@ -11,9 +11,14 @@
  * shows #chat by adding `body.tt-mode-scene`.
  */
 
-/* -------- Override sheld width so the Campaign Manager has room ---------- */
+/* -------- Sheld layout overrides ---------- */
 
 :root {
+    /* Outside scene mode (Campaign Manager / Campaign Main) #sheld owns
+       the whole viewport — we render our own 3-column grid inside. Scene
+       mode reclaims room on either side for the GM sidebars by re-using
+       ST's existing `.drawer-content.fillLeft / .fillRight` slots, which
+       compute their width from `--sheldWidth`. */
     --sheldWidth: 100vw;
     --gm-bg: #0f1218;
     --gm-bg-2: #0a0c12;
@@ -29,11 +34,26 @@
     --gm-accent-2: #4f8dff;
 }
 
-#sheld {
+body:not(.tt-mode-scene) #sheld {
     left: 0 !important;
     right: 0 !important;
     width: 100vw !important;
     max-width: 100vw !important;
+}
+
+/* In scene mode #sheld is the centre column, with a GM sidebar floating
+   on either side. ST already positions `.drawer-content.fillLeft` /
+   `.fillRight` correctly when `--sheldWidth` is < 100vw — we just need
+   to give it a sensible centre width for the chat surface. */
+body.tt-mode-scene {
+    --sheldWidth: min(720px, 60vw);
+}
+
+body.tt-mode-scene #sheld {
+    width: var(--sheldWidth) !important;
+    max-width: var(--sheldWidth) !important;
+    left: calc((100vw - var(--sheldWidth)) / 2) !important;
+    right: auto !important;
 }
 
 #sheldheader {
@@ -1118,3 +1138,423 @@ body.tt-mode-scene #send_form.no-connection #send_textarea {
     color: #fff;
     margin-top: 2px;
 }
+
+/* -------- Phase 5: 3-column grid + sidebars -------- */
+
+/* Campaign Main grid: a 280px sidebar on the left, content on the right.
+   Below 980px the sidebar collapses on top of the body — small viewports
+   are not the target experience but the layout shouldn't break. */
+.gm-three-col {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 24px;
+    padding: 0 24px;
+    align-items: start;
+}
+
+@media (max-width: 980px) {
+    .gm-three-col {
+        grid-template-columns: 1fr;
+    }
+}
+
+.gm-three-col-main {
+    min-width: 0;
+}
+
+/* Scene-mode sidebars are fixed-position columns flanking ST's `#sheld`.
+   The geometry mirrors ST's own `.fillLeft` / `.fillRight` math
+   (centre column width = `--sheldWidth`, side widths = the remainder
+   split in two) but we drive the layout directly from CSS rather than
+   ST's drawer system, which animates `height: 0 → 100%` only on
+   class-toggle and would leave a freshly-mounted element stuck at its
+   `min-height` floor. */
+.gm-scene-sidebar-host {
+    position: fixed;
+    top: var(--topBarBlockSize, 0px);
+    height: calc(100vh - var(--topBarBlockSize, 0px));
+    height: calc(100dvh - var(--topBarBlockSize, 0px));
+    width: calc((100vw - var(--sheldWidth) - 2px) / 2);
+    width: calc((100dvw - var(--sheldWidth) - 2px) / 2);
+    background: rgba(15, 18, 24, 0.94);
+    color: var(--gm-text);
+    padding: 16px;
+    overflow-y: auto;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    z-index: 999;
+}
+
+.gm-scene-sidebar-host-left {
+    left: 0;
+    border-right: 1px solid var(--gm-border);
+}
+
+.gm-scene-sidebar-host-right {
+    right: 0;
+    border-left: 1px solid var(--gm-border);
+}
+
+/* The inner sidebar element (rendered by sidebar-left.js / sidebar-right.js)
+   stretches to fill the host so its own scroll behaviour stays consistent
+   with the Campaign Main rendering. */
+.gm-scene-sidebar-host > .gm-sidebar {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+@media (max-width: 900px) {
+    /* On small viewports give the chat the whole row — the PC sheet
+       remains accessible via Campaign Main and (eventually) a Phase 10
+       gear menu. */
+    .gm-scene-sidebar-host {
+        display: none !important;
+    }
+    body.tt-mode-scene {
+        --sheldWidth: 100vw;
+    }
+}
+
+/* In Campaign Main the left sidebar is a normal grid child (no fixed
+   positioning) since there is no chat substrate to float around. */
+.gm-three-col > .gm-sidebar-left {
+    position: static;
+    width: auto;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--gm-border);
+    border-radius: 12px;
+    padding: 16px;
+}
+
+/* -------- Sidebar internals -------- */
+
+.gm-sidebar-empty {
+    text-align: center;
+    color: var(--gm-text-muted);
+    padding: 32px 8px;
+}
+
+.gm-sidebar-empty-title {
+    color: var(--gm-text-soft);
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
+.gm-sidebar-empty-body {
+    font-size: 13px;
+    color: var(--gm-text-muted);
+}
+
+.gm-sidebar-card {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.gm-sidebar-portrait {
+    width: 96px;
+    height: 96px;
+    border-radius: 50%;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.06);
+    margin: 0 auto;
+    display: grid;
+    place-items: center;
+    color: var(--gm-text-muted);
+    font-size: 48px;
+    border: 2px solid var(--gm-border-strong);
+}
+
+.gm-sidebar-portrait img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.gm-sidebar-ident {
+    text-align: center;
+}
+
+.gm-sidebar-name {
+    font-size: 16px;
+    font-weight: 600;
+    color: #fff;
+}
+
+.gm-sidebar-tag {
+    font-size: 11px;
+    color: var(--gm-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-top: 2px;
+}
+
+.gm-sidebar-blurb {
+    font-size: 12px;
+    color: var(--gm-text-soft);
+    margin-top: 8px;
+    line-height: 1.4;
+    display: -webkit-box;
+    -webkit-line-clamp: 4;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.gm-sidebar-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+}
+
+.gm-sidebar-stat {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--gm-border);
+    border-radius: 8px;
+    padding: 6px 4px;
+    text-align: center;
+}
+
+.gm-sidebar-stat-label {
+    font-size: 10px;
+    color: var(--gm-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.gm-sidebar-stat-value {
+    font-size: 15px;
+    font-weight: 600;
+    color: #fff;
+    margin-top: 2px;
+}
+
+.gm-sidebar-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+}
+
+.gm-sidebar-actions .gm-secondary-btn {
+    width: 100%;
+    justify-content: center;
+}
+
+/* -------- Right sidebar (in-scene roster) -------- */
+
+.gm-sidebar-header {
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--gm-border);
+}
+
+.gm-sidebar-title {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--gm-text-muted);
+}
+
+.gm-sidebar-roster {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 16px;
+}
+
+.gm-sidebar-roster-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--gm-border);
+    cursor: pointer;
+    transition: background 0.12s ease;
+}
+
+.gm-sidebar-roster-row:hover {
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.gm-sidebar-roster-row.is-player {
+    border-color: rgba(124, 92, 255, 0.35);
+    background: rgba(124, 92, 255, 0.06);
+}
+
+.gm-sidebar-roster-portrait {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.06);
+    display: grid;
+    place-items: center;
+    color: var(--gm-text-muted);
+    font-size: 18px;
+    flex-shrink: 0;
+}
+
+.gm-sidebar-roster-portrait img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.gm-sidebar-roster-body {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.gm-sidebar-roster-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: #fff;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.gm-sidebar-roster-role {
+    font-size: 10px;
+    color: var(--gm-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.gm-sidebar-remove {
+    color: rgba(255, 120, 120, 0.7);
+}
+
+.gm-sidebar-remove:hover {
+    color: #ff8a8a;
+}
+
+/* -------- Add picker -------- */
+
+.gm-picker-modal {
+    width: min(420px, 92vw);
+}
+
+.gm-picker-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 320px;
+    overflow-y: auto;
+    margin-bottom: 16px;
+}
+
+.gm-picker-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--gm-border);
+    border-radius: 8px;
+    color: var(--gm-text);
+    cursor: pointer;
+    text-align: left;
+}
+
+.gm-picker-row:hover {
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.gm-picker-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--gm-accent);
+    flex-shrink: 0;
+}
+
+.gm-picker-label {
+    font-weight: 600;
+    color: #fff;
+    margin-right: 6px;
+}
+
+.gm-picker-blurb {
+    font-size: 12px;
+    color: var(--gm-text-muted);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.gm-picker-sep {
+    text-align: center;
+    color: var(--gm-text-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin: 12px 0;
+    position: relative;
+}
+
+.gm-picker-sep::before,
+.gm-picker-sep::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    width: calc(50% - 24px);
+    height: 1px;
+    background: var(--gm-border);
+}
+
+.gm-picker-sep::before { left: 0; }
+.gm-picker-sep::after { right: 0; }
+
+/* -------- KV editor (wizard Stats step + sheet panel) -------- */
+
+.gm-kv-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 12px;
+}
+
+.gm-kv-row,
+.gm-kv-add-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto auto;
+    gap: 6px;
+    align-items: center;
+}
+
+.gm-kv-add-row {
+    grid-template-columns: 1fr 1fr auto;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--gm-border);
+}
+
+.gm-kv-key {
+    font-size: 12px;
+    color: var(--gm-text-soft);
+    padding: 6px 8px;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 6px;
+}
+
+.gm-kv-input {
+    width: 100%;
+}
+
+.gm-kv-add {
+    margin-top: 8px;
+    align-self: flex-start;
+}
+
+.gm-kv-section + .gm-kv-section {
+    margin-top: 16px;
+}
+

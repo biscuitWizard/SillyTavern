@@ -25,6 +25,8 @@
  */
 
 import { readSecret, SECRET_KEYS } from '../../endpoints/secrets.js';
+import { LlmError } from './errors.js';
+export { LlmError };
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 
@@ -122,18 +124,9 @@ const FORCE_TEXT_JSON = new Set([
     'koboldcpp',
 ]);
 
-export class LlmError extends Error {
-    /**
-     * @param {string} code
-     * @param {string} message
-     * @param {boolean} retryable
-     */
-    constructor(code, message, retryable = false) {
-        super(message);
-        this.code = code;
-        this.retryable = retryable;
-    }
-}
+// LlmError lives in `./errors.js` so callers (loop, prompts) can
+// `instanceof`-check without transitively importing the secrets stack.
+// Re-exported above for backward compatibility.
 
 /**
  * @typedef {object} LlmProfile

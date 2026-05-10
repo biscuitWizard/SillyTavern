@@ -58,6 +58,25 @@ export function adjustStat(directories, campaignId, characterId, key, delta) {
 }
 
 /**
+ * Remove an arbitrary stat key from the sheet. Phase 5 makes the stat bag
+ * fully KV-driven, so the editor needs a delete primitive parallel to
+ * `clearStatus`.
+ *
+ * @param {import('../../users.js').UserDirectoryList} directories
+ * @param {string} campaignId
+ * @param {string} characterId
+ * @param {string} key
+ */
+export function clearStat(directories, campaignId, characterId, key) {
+    return withSheet(directories, campaignId, characterId, (sheet) => {
+        if (!Object.prototype.hasOwnProperty.call(sheet.stats, key)) return sheet;
+        const next = { ...sheet.stats };
+        delete next[key];
+        return { ...sheet, stats: next };
+    });
+}
+
+/**
  * @param {import('../../users.js').UserDirectoryList} directories
  * @param {string} campaignId
  * @param {string} characterId

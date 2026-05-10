@@ -11,8 +11,8 @@ phases stack on them.
 | 1  | [Campaign-first shell](1-shell.md)               | Visual POC done |
 | 2  | [Character + sheet model](2-character-sheet.md)  | Pending        |
 | 3  | [Scene shell (no AI)](3-scene-shell.md)          | Pending        |
-| 4  | [Director + Narrator](4-director-narrator.md)    | Pending        |
-| 5  | [Multi-actor](5-multi-actor.md)                  | Pending        |
+| 4  | [Director + Narrator](4-director-narrator.md)    | Done           |
+| 5  | [Multi-actor](5-multi-actor.md)                  | Done           |
 | 6  | [Skill checks + ruleset](6-skill-checks.md)      | Pending        |
 | 7  | [RAG (Qdrant)](7-rag.md)                         | Pending        |
 | 8  | [Scene-end pipeline](8-scene-end.md)             | Pending        |

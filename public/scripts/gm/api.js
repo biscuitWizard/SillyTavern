@@ -58,6 +58,22 @@ async function request(pathSuffix, init = {}) {
     return body;
 }
 
+/* -------- Rulesets (Phase 5) -------- */
+
+/**
+ * @param {string} rulesetId
+ * @returns {Promise<{ id: string, name: string, starter_stats: Record<string, number | string>, starter_skills: string[] } | null>}
+ */
+export async function getRuleset(rulesetId) {
+    try {
+        const out = await request(`/rulesets/${encodeURIComponent(rulesetId)}`);
+        return out?.ruleset ?? null;
+    } catch (err) {
+        if (err instanceof GmApiError && err.status === 404) return null;
+        throw err;
+    }
+}
+
 /* -------- Campaigns -------- */
 
 /** @returns {Promise<CampaignSummary[]>} */
@@ -202,6 +218,92 @@ export async function appendSceneMessage(sceneId, line) {
 export async function endScene(sceneId) {
     const out = await request(`/scenes/${encodeURIComponent(sceneId)}/end`, { method: 'POST' });
     return out?.scene ?? null;
+}
+
+/**
+ * Add a character to the scene's participant list.
+ * @param {string} sceneId
+ * @param {string} characterId
+ */
+export async function addSceneParticipant(sceneId, characterId) {
+    const out = await request(`/scenes/${encodeURIComponent(sceneId)}/participants`, {
+        method: 'POST',
+        body: JSON.stringify({ character_id: characterId }),
+    });
+    return out;
+}
+
+/**
+ * Remove a character from the scene's participant list.
+ * @param {string} sceneId
+ * @param {string} characterId
+ */
+export async function removeSceneParticipant(sceneId, characterId) {
+    const out = await request(`/scenes/${encodeURIComponent(sceneId)}/participants/${encodeURIComponent(characterId)}`, {
+        method: 'DELETE',
+    });
+    return out;
+}
+
+/* -------- Sheet KV editing (Phase 5) -------- */
+
+/**
+ * @param {string} characterId
+ * @param {string} key
+ * @param {number | string} value
+ */
+export async function setStat(characterId, key, value) {
+    const out = await request(`/sheets/${encodeURIComponent(characterId)}/stats/${encodeURIComponent(key)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ value }),
+    });
+    return out?.character ?? null;
+}
+
+/**
+ * @param {string} characterId
+ * @param {string} key
+ */
+export async function clearStat(characterId, key) {
+    const out = await request(`/sheets/${encodeURIComponent(characterId)}/stats/${encodeURIComponent(key)}`, {
+        method: 'DELETE',
+    });
+    return out?.character ?? null;
+}
+
+/**
+ * @param {string} characterId
+ * @param {string} key
+ * @param {string} value
+ */
+export async function setStatus(characterId, key, value) {
+    const out = await request(`/sheets/${encodeURIComponent(characterId)}/statuses/${encodeURIComponent(key)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ value }),
+    });
+    return out?.character ?? null;
+}
+
+/**
+ * @param {string} characterId
+ * @param {string} key
+ */
+export async function clearStatus(characterId, key) {
+    const out = await request(`/sheets/${encodeURIComponent(characterId)}/statuses/${encodeURIComponent(key)}`, {
+        method: 'DELETE',
+    });
+    return out?.character ?? null;
+}
+
+/** @param {string} characterId */
+export async function getSheet(characterId) {
+    try {
+        const out = await request(`/sheets/${encodeURIComponent(characterId)}`);
+        return out?.character ?? null;
+    } catch (err) {
+        if (err instanceof GmApiError && err.status === 404) return null;
+        throw err;
+    }
 }
 
 /* -------- Turn (Phase 4) -------- */

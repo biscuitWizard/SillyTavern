@@ -173,6 +173,13 @@ When a character is called, the latest authoritative version of their
 sheet is rendered as YAML and included in their prompt. Sheets are
 not cached across calls; the prompt is built fresh each time.
 
+Sheets are key-value bags. `stats` and `statuses` accept arbitrary
+keys; conventional keys (`hp`, `max_hp`, `ac`, `proficiency_bonus`,
+…) are agreed by convention, not pinned by schema. New characters get
+their starter pack from the campaign's `ruleset_id` via the in-memory
+ruleset registry (Phase 5 seam; Phase 6 swaps this for a YAML
+loader). Sheet edits are CRUD on the KV bag — not a schema migration.
+
 RAG snippets are spliced into the prompt for that one call. They are
 **never persisted to the transcript**. After the actor responds, the
 context that included Amelia's memories about Jack's jumping abilities
@@ -186,6 +193,13 @@ are first-class objects in our schema. They are not SillyTavern group
 chats; we cannibalize ST's chat substrate (message renderer, input bar,
 JSONL transcript format) but the navigation, persistence, and
 participant model are ours.
+
+The in-scene roster is `scene.participants` — a list of character ids.
+The Director can `spawn_character: library` (pull a campaign character
+in) or `remove_character` (write them out); the player can do the
+same explicitly from the right sidebar. The PC sheet is always
+visible in the GM shell while a campaign is loaded — pinned in the
+left sidebar across both Campaign Main and Scene views.
 
 End Scene runs a pipeline:
 

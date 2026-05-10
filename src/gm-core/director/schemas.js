@@ -24,8 +24,13 @@
  * )} DirectorDecision
  */
 
-/** Variants the Phase-4 loop dispatcher actually executes. */
-export const SUPPORTED_ACTIONS = new Set(['speak', 'end_turn']);
+/** Variants the Phase-5 loop dispatcher actually executes. */
+export const SUPPORTED_ACTIONS = new Set([
+    'speak',
+    'spawn_character',
+    'remove_character',
+    'end_turn',
+]);
 
 /**
  * Hand-written JSON Schema (Draft 2020-12) for the DirectorDecision union.

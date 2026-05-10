@@ -1,11 +1,17 @@
 /**
- * Character + CharacterSheet schemas (Phase 2).
+ * Character + CharacterSheet schemas (Phase 2; KV-stat refactor in Phase 5).
  *
- * Phase 2 ships descriptive characters: the wizard captures name + appearance
- * + personality + voice + background and seeds a 5e-baseline sheet. The
- * stats are not the focus of this phase; the descriptive fields drive
- * Director / Narrator prompts and seed the world. Full sheet editing arrives
- * in Phase 5/10 territory.
+ * The sheet is a flat key-value bag, ported from `srstavern`'s model:
+ *
+ *   - `stats` — generic key/value store. Any JSON-serializable scalar. Keys
+ *     are agreed by convention (e.g. `strength`, `hp`, `max_hp`, `ac`,
+ *     `proficiency_bonus`, `level`) but never pinned by this schema. The
+ *     starter pack at create time comes from the campaign's
+ *     `ruleset_id` via `gm-core/rulesets/index.js`, not from this module.
+ *   - `statuses` — first-class but key-value as well.
+ *   - `items` — free-form list of `Item` records.
+ *   - `skills` — list of skill ids the character is proficient in.
+ *   - `notes` — free-form text.
  */
 
 /**
@@ -41,33 +47,17 @@
  * @property {string} updated_at
  */
 
-export const ABILITY_SCORES = ['strength', 'dexterity', 'constitution', 'intelligence', 'wisdom', 'charisma'];
-
-/** Default 5e baseline stats. */
-export function defaultStats() {
-    return {
-        strength: 10,
-        dexterity: 10,
-        constitution: 10,
-        intelligence: 10,
-        wisdom: 10,
-        charisma: 10,
-        hp: 10,
-        max_hp: 10,
-        ac: 10,
-        proficiency_bonus: 2,
-        level: 1,
-    };
-}
-
 /**
- * Build a fresh sheet, merging any caller overrides over the default stats.
+ * Build a fresh sheet. Phase 5 makes this purely additive — no stat keys are
+ * seeded by default. The caller (the create endpoint) seeds `stats` and
+ * `skills` from the active campaign's ruleset before invoking this helper.
+ *
  * @param {Partial<CharacterSheet>} [overrides]
  * @returns {CharacterSheet}
  */
 export function defaultSheet(overrides = {}) {
     return {
-        stats: { ...defaultStats(), ...(overrides.stats || {}) },
+        stats: { ...(overrides.stats || {}) },
         statuses: { ...(overrides.statuses || {}) },
         items: Array.isArray(overrides.items) ? [...overrides.items] : [],
         skills: Array.isArray(overrides.skills) ? [...overrides.skills] : [],
@@ -121,6 +111,20 @@ export function validateCharacterInput(body) {
     }
     if (body.is_player !== undefined && typeof body.is_player !== 'boolean') {
         return 'is_player must be a boolean';
+    }
+    if (body.sheet !== undefined) {
+        if (!body.sheet || typeof body.sheet !== 'object' || Array.isArray(body.sheet)) {
+            return 'sheet must be an object';
+        }
+        if (body.sheet.stats !== undefined && (typeof body.sheet.stats !== 'object' || Array.isArray(body.sheet.stats) || body.sheet.stats === null)) {
+            return 'sheet.stats must be an object';
+        }
+        if (body.sheet.statuses !== undefined && (typeof body.sheet.statuses !== 'object' || Array.isArray(body.sheet.statuses) || body.sheet.statuses === null)) {
+            return 'sheet.statuses must be an object';
+        }
+        if (body.sheet.skills !== undefined && !Array.isArray(body.sheet.skills)) {
+            return 'sheet.skills must be an array';
+        }
     }
     return null;
 }

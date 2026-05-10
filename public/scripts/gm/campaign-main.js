@@ -10,8 +10,8 @@ import { route } from './router.js';
 import * as api from './api.js';
 import { openStApiPanel } from './llm-profile.js';
 import { mountConnectionGate, getConnectionStatus } from './connection-gate.js';
-import { renderPartyPanel } from './party-panel.js';
 import { openCharacterWizard } from './character-wizard.js';
+import { renderLeftSidebar, teardownLeftSidebar } from './sidebar-left.js';
 
 /**
  * Per-tab set of campaign ids whose PC wizard we have already auto-opened in
@@ -51,16 +51,23 @@ export async function renderCampaignMain(mount, { campaignId }) {
     const scenes = await api.listScenes(campaignId).catch(() => []);
 
     const topbar = renderTopbar(campaign);
-    // We dim the hero + body + footer (everything below the topbar) when the
-    // gate is closed. Wrap them in a single container so the gate has one
-    // disable target and so the banner can sit between the topbar and the
-    // disabled content.
+    // The campaign hub uses a 3-column grid: left sidebar (PC + sheet) |
+    // main content (hero / scenes / footer) | (no right sidebar in
+    // Campaign Main; the right sidebar is scene-only). The grid lives
+    // inside `.gm-campaign-main-gated` so the connection gate can dim
+    // everything but the topbar in one go.
+    teardownLeftSidebar();
     const gateGroup = el('div', 'gm-campaign-main-gated');
-    gateGroup.append(
+    const grid = el('div', 'gm-three-col');
+    grid.append(renderLeftSidebar({ campaign, player }));
+    const main = el('div', 'gm-three-col-main');
+    main.append(
         renderHeroBanner(campaign, scenes),
         renderBody(campaign, { player, scenes }),
         renderFooter(),
     );
+    grid.append(main);
+    gateGroup.append(grid);
     mount.replaceChildren(topbar, gateGroup);
 
     if (activeGateTeardown) { activeGateTeardown(); activeGateTeardown = null; }
@@ -158,7 +165,8 @@ function renderBody(campaign, { player, scenes }) {
 
     page.append(top);
 
-    page.append(renderSection('Party', renderPartyPanel({ campaign, player })));
+    // The party panel lives in the left sidebar in Phase 5+; the body now
+    // focuses on scene history.
     page.append(renderSection('Scene history', renderSceneHistoryPanel(campaign, scenes)));
 
     return page;

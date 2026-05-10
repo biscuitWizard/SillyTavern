@@ -1,5 +1,5 @@
 /**
- * Character + CharacterSheet types (Phase 2).
+ * Character + CharacterSheet types (Phase 2; KV-stat refactor in Phase 5).
  */
 
 export interface Item {
@@ -32,8 +32,6 @@ export interface Character {
     updated_at: string;
 }
 
-export const ABILITY_SCORES: readonly string[];
-export function defaultStats(): Record<string, number>;
 export function defaultSheet(overrides?: Partial<CharacterSheet>): CharacterSheet;
 export function buildCharacter(input: Partial<Character> & { id: string; campaign_id: string; name: string }): Character;
 export function validateCharacterInput(body: Partial<Character>): string | null;

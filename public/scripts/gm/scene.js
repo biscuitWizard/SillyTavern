@@ -22,6 +22,9 @@ import {
     clearSceneState,
     currentSceneState,
 } from './st-bridge.js';
+import { handleTurnEvent as dispatchTurnEvent } from './turn-events.js';
+import { renderLeftSidebar, teardownLeftSidebar } from './sidebar-left.js';
+import { renderRightSidebar, teardownRightSidebar } from './sidebar-right.js';
 
 let abortCurrentTurn = null;
 
@@ -50,7 +53,7 @@ export async function renderScene(mount, { campaignId, sceneId, readOnly = false
     }
 
     const player = characters.find(c => c.is_player) || null;
-    setSceneState({ campaign, scene, player, readOnly });
+    setSceneState({ campaign, scene, player, readOnly, characters });
 
     enterSceneMode({
         scene,
@@ -59,9 +62,14 @@ export async function renderScene(mount, { campaignId, sceneId, readOnly = false
         transcript,
     });
 
-    // Topbar replaces gm-root's children — keeps the scene chrome inside
-    // sheld's natural flex column instead of floating fixed over the page.
+    // The scene topbar replaces #gm-root's children. The left + right
+    // sidebars sit outside #gm-root (and outside #sheld) so ST's chat
+    // substrate keeps occupying the centre column unchanged. We wrap the
+    // sidebars in a body-level overlay container that flexes around #sheld.
+    teardownLeftSidebar();
+    teardownRightSidebar();
     mount.replaceChildren(buildSceneTopbar(campaign, scene, { readOnly }));
+    mountSceneSidebars({ campaign, scene, player, characters });
 
     if (readOnly || scene.status === 'closed') {
         disableInput('Scene closed — read-only.');
@@ -173,6 +181,8 @@ async function onEndScene(campaign, scene) {
 function teardownSceneShell() {
     exitSceneMode();
     clearSceneState();
+    teardownLeftSidebar();
+    teardownRightSidebar();
     // The scene topbar lives inside #gm-root (this view's mount). The
     // router's next renderer will call mount.replaceChildren(...) so we
     // don't need to remove the bar here, but explicit cleanup keeps the
@@ -180,6 +190,42 @@ function teardownSceneShell() {
     // that doesn't repaint #gm-root immediately.
     const bar = document.getElementById('gm-scene-topbar');
     if (bar && bar.parentNode) bar.parentNode.removeChild(bar);
+    document.querySelectorAll('.gm-scene-sidebar-host').forEach(node => {
+        if (node.parentNode) node.parentNode.removeChild(node);
+    });
+}
+
+/**
+ * Mount the left + right sidebars as fixed-position columns flanking
+ * SillyTavern's `#sheld` chat surface. The same `--sheldWidth` variable
+ * ST uses for its own drawer math drives our column geometry: in scene
+ * mode `gm.css` shrinks `--sheldWidth` to a sensible centre size, and
+ * the sidebars compute their left/right offsets from that. We do NOT
+ * re-use ST's `.drawer-content.fillLeft.openDrawer` classes because
+ * those rely on ST's drawer JS to toggle `.openDrawer` (animating
+ * `height` from a starting-style of 0). Adding the class directly
+ * leaves the height stuck at the `min-height` floor and produces the
+ * 100px-tall band that the previous attempt rendered. Pure
+ * `position: fixed` math sidesteps that entirely.
+ *
+ * @param {{ campaign: any, scene: any, player: any, characters: any[] }} ctx
+ */
+function mountSceneSidebars({ campaign, scene, player, characters }) {
+    document.querySelectorAll('.gm-scene-sidebar-host').forEach(node => {
+        if (node.parentNode) node.parentNode.removeChild(node);
+    });
+
+    const leftHost = document.createElement('aside');
+    leftHost.id = 'gm-scene-sidebar-left';
+    leftHost.className = 'gm-scene-sidebar-host gm-scene-sidebar-host-left';
+    leftHost.append(renderLeftSidebar({ campaign, player }));
+
+    const rightHost = document.createElement('aside');
+    rightHost.id = 'gm-scene-sidebar-right';
+    rightHost.className = 'gm-scene-sidebar-host gm-scene-sidebar-host-right';
+    rightHost.append(renderRightSidebar({ campaign, scene, characters }));
+
+    document.body.append(leftHost, rightHost);
 }
 
 /* -------- Input enable / disable + chip helpers -------- */
@@ -332,7 +378,7 @@ async function handleSceneTurn(userInput) {
 
     const state = currentSceneState();
     if (!state) return;
-    const { campaign, scene, player, readOnly } = state;
+    const { campaign, scene, readOnly, characters } = state;
     if (readOnly || scene.status === 'closed') return;
 
     // Pre-flight: a SillyTavern connection profile must be selected before
@@ -370,7 +416,8 @@ async function handleSceneTurn(userInput) {
             director_profile: directorProfile,
             actor_profile: narratorProfile,
         }, controller.signal);
-        await consumeTurnStream(response, { player });
+        const charactersById = new Map((characters || []).map(c => [c.id, c]));
+        await consumeTurnStream(response, { characters: charactersById });
     } catch (err) {
         if (controller.signal.aborted) return;
         console.error('[gm] turn failed', err);
@@ -395,7 +442,7 @@ async function handleSceneTurn(userInput) {
  * @param {Response} response
  * @param {{ player: any | null }} ctx
  */
-async function consumeTurnStream(response, { player }) {
+async function consumeTurnStream(response, { characters }) {
     if (!response.body) {
         setChip('Turn complete (no body)');
         setTimeout(() => setChip(''), 1500);
@@ -404,6 +451,7 @@ async function consumeTurnStream(response, { player }) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    const ui = { setChip, characters };
     while (true) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -415,52 +463,13 @@ async function consumeTurnStream(response, { player }) {
             if (!line) continue;
             try {
                 const ev = JSON.parse(line);
-                handleTurnEvent(ev);
+                dispatchTurnEvent(ev, ui);
             } catch (parseErr) {
                 console.warn('[gm] bad NDJSON line', line, parseErr);
             }
         }
     }
     setChip('');
-}
-
-function handleTurnEvent(ev) {
-    if (!ev || typeof ev !== 'object') return;
-    if (ev.kind === 'status') {
-        const phase = ev.phase || '';
-        const labels = {
-            directing: 'Director thinking…',
-            awaiting_actor: 'Narrating…',
-            closing: 'Wrapping up…',
-            rolling: 'Rolling…',
-        };
-        setChip(labels[phase] || phase);
-        return;
-    }
-    if (ev.kind === 'message') {
-        appendActorLine({
-            actor: ev.actor,
-            name: ev.name || (ev.actor === 'narrator' ? 'Narrator' : ev.actor),
-            text: ev.text || '',
-            role: ev.role || (ev.actor === 'narrator' ? 'narrator' : 'actor'),
-            avatar: ev.avatar || null,
-        });
-        return;
-    }
-    if (ev.kind === 'error') {
-        console.error('[gm] turn error event', ev);
-        appendActorLine({
-            actor: 'system',
-            name: 'System',
-            text: `(error) ${ev.message || 'unknown error'}`,
-            role: 'system',
-        });
-        return;
-    }
-    if (ev.kind === 'end_of_turn') {
-        setChip('');
-        return;
-    }
 }
 
 window.__ttHandleSceneTurn = handleSceneTurn;
