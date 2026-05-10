@@ -4,18 +4,29 @@
 # (currently just Qdrant). Run the Node app on the host with `npm start`.
 #
 # Profile `app` brings up the full stack including the TTRPG Tavern Node app.
-# Profile `llm` brings up a local LLM provider (Ollama) on :11434 with GPU
-# acceleration. The GM core's LLM client speaks Ollama's OpenAI-compatible
-# `/v1/chat/completions` endpoint directly.
+#
+# LLM inference:
+#   When the prod stack (docker-compose.prod.yml) is running, dev reuses its
+#   LLM services — no need to spin up anything extra:
+#     - llama-server  (chat/RP)    → localhost:8180  (OpenAI-compatible /v1)
+#     - llama-director (structured) → localhost:8182  (OpenAI-compatible /v1)
+#     - ollama (RAG embeddings)     → localhost:11434
+#   Configure the llama.cpp endpoints in the ST web UI. Ollama embeddings
+#   work automatically when TTRPG_OLLAMA_URL is unset (defaults to
+#   localhost:11434).
+#
+# Profile `llm` (fallback):
+#   Brings up a local Ollama instance on :11434 with GPU acceleration for
+#   offline dev when the prod stack is not running. Do NOT run this profile
+#   while the prod stack is up — port 11434 will conflict.
 #
 # Usage:
 #   docker compose up qdrant                                    # only Qdrant (recommended for dev)
-#   docker compose --profile llm up -d ollama ollama-init       # local LLM, model auto-pulled
 #   docker compose --profile app up                             # full stack (Node app + Qdrant)
-#   docker compose --profile app --profile llm up               # full stack + local LLM
+#   docker compose --profile llm up -d ollama ollama-init       # local LLM fallback (prod stack down)
 #   docker compose down -v                                      # stop and wipe named volumes
 #
-# Notes on the `llm` profile:
+# Notes on the `llm` profile (fallback only — prefer the prod stack):
 #   - First boot of `ollama-init` pulls TTRPG_OLLAMA_MODEL (default
 #     `qwen2.5:14b`, ~9 GB). Qwen2.5 14B is currently the best balance of
 #     structured-output / tool-calling reliability vs. VRAM footprint for
@@ -81,9 +92,10 @@ services:
     networks:
       - ttrpgtavern
 
-  # Local LLM provider — Ollama, exposing OpenAI-compatible /v1/chat/completions
-  # at http://localhost:11434/v1. Pair with the `ollama-init` service to
-  # auto-pull a default model on first boot.
+  # Local LLM fallback — Ollama on :11434 with OpenAI-compatible /v1 endpoint.
+  # Only needed when the prod stack (docker-compose.prod.yml) is NOT running.
+  # The prod stack exposes llama-server, llama-director, and its own Ollama on
+  # the same port (11434), so do NOT run this profile while prod is up.
   ollama:
     profiles: ["llm"]
     image: ollama/ollama:latest
@@ -164,6 +176,11 @@ services:
       - SILLYTAVERN_WHITELISTMODE=false
       - SILLYTAVERN_BASICAUTHMODE=false
       - SILLYTAVERN_SECURITYOVERRIDE=true
+      # RAG embeddings via the prod stack's Ollama (host.docker.internal
+      # bridges from this container's network to the host-exposed port).
+      - TTRPG_RAG_EMBEDDER=ollama
+      - TTRPG_OLLAMA_URL=http://host.docker.internal:${OLLAMA_PORT:-11434}
+      - TTRPG_OLLAMA_EMBED_MODEL=nomic-embed-text
     volumes:
       - ./data:/home/node/app/data
       - ./plugins:/home/node/app/plugins

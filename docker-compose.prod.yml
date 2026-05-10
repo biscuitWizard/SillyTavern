@@ -1,0 +1,276 @@
+# TTRPG Tavern — Production Stack
+#
+# Deploy via Portainer (Stacks > Add stack > Repository) or standalone
+# `docker compose -f docker-compose.prod.yml up -d`.
+#
+# This file is fully isolated from the dev compose (docker-compose.yml):
+#   - Container names: ttrpgtavern-prod-*  (dev uses ttrpgtavern-*)
+#   - App host port:   8080                (dev uses 8000 / 8001)
+#   - Network:         ttrpgtavern-prod    (dev uses ttrpgtavern)
+#   - Volumes:         ttrpg-prod-*        (dev uses qdrant-data, ollama-data, ./data)
+#   - Qdrant:          internal only       (dev exposes 6333/6334 on host)
+#
+# LLM services (llama-server, llama-director, ollama) are exposed on the
+# host so the dev app (`npm start`) can share them. This is safe: llama.cpp
+# and Ollama are stateless inference servers — no data leaks between dev
+# and prod.
+#
+# Watchtower watches ONLY the ttrpgtavern app container (label-gated) and
+# auto-pulls new images from GHCR when the release branch CI pushes them.
+#
+# Environment variables (set in Portainer or .env):
+#   TTRPG_PROD_PORT          App host port              (default: 8080)
+#   MODELS_DIR               Host path to GGUF models   (default: /tank/data/Models)
+#   CHAT_MODEL_FILE           Chat model filename        (default: EVA-Qwen2.5-32B-v0.2-Q5_K_M.gguf)
+#   DIRECTOR_MODEL_FILE       Director model filename    (default: Qwen2.5-14B-Instruct-Q5_K_M.gguf)
+#   LLAMA_CTX                 Chat context size          (default: 32768)
+#   LLAMA_DIRECTOR_CTX        Director context size      (default: 32768)
+#   LLAMA_SERVER_PORT         Chat model host port       (default: 8180)
+#   LLAMA_DIRECTOR_PORT       Director model host port   (default: 8182)
+#   OLLAMA_PORT               Ollama host port           (default: 11434)
+#   WATCHTOWER_POLL_INTERVAL  Image poll interval in sec (default: 300)
+
+services:
+  ttrpgtavern:
+    image: ghcr.io/biscuitwizard/ttrpgtavern:release
+    container_name: ttrpgtavern-prod-app
+    restart: unless-stopped
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    ports:
+      - "${TTRPG_PROD_PORT:-8080}:8000"
+    environment:
+      - NODE_ENV=production
+      - TTRPG_QDRANT_URL=http://qdrant:6333
+      - TTRPG_RAG_EMBEDDER=ollama
+      - TTRPG_OLLAMA_URL=http://ollama:11434
+      - TTRPG_OLLAMA_EMBED_MODEL=nomic-embed-text
+      - SILLYTAVERN_WHITELISTMODE=false
+      - SILLYTAVERN_BASICAUTHMODE=false
+      - SILLYTAVERN_SECURITYOVERRIDE=true
+    volumes:
+      - ttrpg-prod-data:/home/node/app/data
+      - ttrpg-prod-plugins:/home/node/app/plugins
+      - ttrpg-prod-extensions:/home/node/app/public/scripts/extensions/third-party
+    networks:
+      - ttrpgtavern-prod
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    container_name: ttrpgtavern-prod-qdrant
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - ttrpg-prod-qdrant-data:/qdrant/storage
+      - ttrpg-prod-qdrant-snapshots:/qdrant/snapshots
+    healthcheck:
+      test: ["CMD", "sh", "-c", "grep -alq qdrant /proc/[0-9]*/comm 2>/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - ttrpgtavern-prod
+
+  # Actor / Narrator model — EVA-Qwen2.5-32B (RP-tuned prose)
+  llama-server:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: ttrpgtavern-prod-llama-server
+    restart: unless-stopped
+    command:
+      - --model
+      - /models/${CHAT_MODEL_FILE:-EVA-Qwen2.5-32B-v0.2-Q5_K_M.gguf}
+      - -c
+      - "${LLAMA_CTX:-32768}"
+      - --cache-type-k
+      - "${LLAMA_CACHE_TYPE_K:-q8_0}"
+      - --cache-type-v
+      - "${LLAMA_CACHE_TYPE_V:-q8_0}"
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --jinja
+      - --reasoning-format
+      - auto
+      - -ngl
+      - "999"
+    ports:
+      - "${LLAMA_SERVER_PORT:-8180}:8080"
+    volumes:
+      - ${MODELS_DIR:-/tank/data/Models}:/models:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+    networks:
+      - ttrpgtavern-prod
+
+  # Director model — Qwen2.5-14B-Instruct (structured output, tool-call discipline)
+  llama-director:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: ttrpgtavern-prod-llama-director
+    restart: unless-stopped
+    command:
+      - --model
+      - /models/${DIRECTOR_MODEL_FILE:-Qwen2.5-14B-Instruct-Q5_K_M.gguf}
+      - -c
+      - "${LLAMA_DIRECTOR_CTX:-32768}"
+      - --cache-type-k
+      - "${LLAMA_DIRECTOR_CACHE_TYPE_K:-q8_0}"
+      - --cache-type-v
+      - "${LLAMA_DIRECTOR_CACHE_TYPE_V:-q8_0}"
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8082"
+      - --jinja
+      - --reasoning-format
+      - auto
+      - -ngl
+      - "999"
+    ports:
+      - "${LLAMA_DIRECTOR_PORT:-8182}:8082"
+    volumes:
+      - ${MODELS_DIR:-/tank/data/Models}:/models:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8082/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+    networks:
+      - ttrpgtavern-prod
+
+  # Ollama — used ONLY for RAG embeddings (nomic-embed-text).
+  # Chat inference goes through llama.cpp above.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ttrpgtavern-prod-ollama
+    restart: unless-stopped
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_KEEP_ALIVE=30m
+    volumes:
+      - ttrpg-prod-ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+    networks:
+      - ttrpgtavern-prod
+
+  # Pull nomic-embed-text on first boot (tiny model, ~270 MB)
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: ttrpgtavern-prod-ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        echo "[ollama-init] ensuring nomic-embed-text";
+        if ollama list 2>/dev/null | awk 'NR>1{print $$1}' | grep -Fxq "nomic-embed-text:latest"; then
+          echo "[ollama-init] already cached";
+        else
+          echo "[ollama-init] pulling nomic-embed-text ...";
+          ollama pull nomic-embed-text;
+        fi;
+        echo "[ollama-init] done"
+    restart: "no"
+    networks:
+      - ttrpgtavern-prod
+
+  watchtower:
+    image: containrrr/watchtower
+    container_name: ttrpgtavern-prod-watchtower
+    restart: unless-stopped
+    environment:
+      - WATCHTOWER_LABEL_ENABLE=true
+      - WATCHTOWER_POLL_INTERVAL=${WATCHTOWER_POLL_INTERVAL:-300}
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_INCLUDE_STOPPED=false
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+networks:
+  ttrpgtavern-prod:
+    driver: bridge
+
+volumes:
+  ttrpg-prod-data:
+  ttrpg-prod-plugins:
+  ttrpg-prod-extensions:
+  ttrpg-prod-qdrant-data:
+  ttrpg-prod-qdrant-snapshots:
+  ttrpg-prod-ollama-data:
+
+# ---------------------------------------------------------------------------
+# GHCR Authentication (required if the GitHub package is private)
+# ---------------------------------------------------------------------------
+# Watchtower needs credentials to pull new images from ghcr.io.
+#
+# Option A — host docker login (recommended):
+#   1. Create a GitHub PAT (classic) with `read:packages` scope.
+#   2. Run on the host:
+#        echo "<PAT>" | docker login ghcr.io -u biscuitWizard --password-stdin
+#   3. Add this volume to the watchtower service above:
+#        - /home/bitmuse/.docker/config.json:/config.json:ro
+#      and this environment variable:
+#        - DOCKER_CONFIG=/
+#
+# Option B — env vars via Portainer:
+#   Set these in Portainer's stack environment (keeps the PAT out of files):
+#     REPO_USER=biscuitWizard
+#     REPO_PASS=<your PAT with read:packages>
+#   Then add to watchtower's environment section:
+#     - REPO_USER=${REPO_USER}
+#     - REPO_PASS=${REPO_PASS}
+#
+# ---------------------------------------------------------------------------
+# Portainer Deployment
+# ---------------------------------------------------------------------------
+# 1. Portainer UI → Stacks → Add stack
+# 2. Choose "Repository":
+#      - Repository URL: git@github.com:biscuitWizard/SillyTavern.git
+#      - Branch:         release
+#      - Compose path:   docker-compose.prod.yml
+#    This lets Portainer re-pull compose changes on release-branch updates,
+#    complementing Watchtower's image-level auto-updates.
+# 3. Set environment variables in the stack UI (see list at top of file).
+# 4. Deploy.
+#
+# Alternatively, use "Upload" or "Web editor" and paste this file directly.
