@@ -1558,3 +1558,242 @@ body.tt-mode-scene #send_form.no-connection #send_textarea {
     margin-top: 16px;
 }
 
+/* -------- Phase 6: Skill-check roll card -------- */
+
+/* The roll card is one combined chat bubble: a d20 icon, the actor + skill +
+   DC line, the breakdown expression, an outcome badge, an optional severity
+   pill (on failure), the adjudicator's one-sentence justification, and the
+   post-roll narration as the body. Bypasses ST's `.mes_text` container so
+   the card layout owns the bubble without fighting markdown styling.
+
+   Colour cues:
+     success         → cool green tint on border + verdict
+     failure         → warm amber (minor) → red (lethal) gradient via severity
+     crit-success    → bright gold halo + sparkle on the d20
+     crit-failure    → desaturated grey halo + crack on the d20
+
+   The card sits inside ST's `#chat`, so we re-use `.mes` margin / typography
+   defaults while overriding background and grid. */
+body.tt-mode-scene #chat .mes.gm-roll-card {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+    padding: 14px 16px;
+    margin: 12px 8px;
+    border-radius: 14px;
+    background: linear-gradient(
+        140deg,
+        rgba(15, 18, 24, 0.85) 0%,
+        rgba(20, 24, 32, 0.95) 100%);
+    border: 1px solid var(--gm-border-strong);
+    color: var(--gm-text);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+    position: relative;
+    overflow: hidden;
+}
+
+/* Outcome border tints — applied as a top-edge accent so the card stays
+   readable against ST's chat background. */
+body.tt-mode-scene #chat .mes.gm-roll-card::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: var(--gm-roll-accent, var(--gm-accent));
+}
+
+.gm-roll-card.outcome-success {
+    --gm-roll-accent: #66d49a;
+}
+
+.gm-roll-card.outcome-failure {
+    --gm-roll-accent: #e89460;
+}
+
+.gm-roll-card.outcome-failure.severity-severe {
+    --gm-roll-accent: #e8615a;
+}
+
+.gm-roll-card.outcome-failure.severity-lethal {
+    --gm-roll-accent: #c8323a;
+}
+
+.gm-roll-card.crit-success {
+    --gm-roll-accent: #ffd24a;
+    box-shadow: 0 6px 24px rgba(255, 210, 74, 0.18), 0 0 0 1px rgba(255, 210, 74, 0.18);
+}
+
+.gm-roll-card.crit-failure {
+    --gm-roll-accent: #6b6f7d;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(120, 124, 134, 0.18);
+}
+
+.gm-roll-card-head {
+    display: grid;
+    grid-template-columns: 44px 1fr auto;
+    align-items: center;
+    gap: 12px;
+}
+
+.gm-roll-card-die {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    display: grid;
+    place-items: center;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--gm-border-strong);
+    color: var(--gm-roll-accent, var(--gm-accent));
+    font-size: 22px;
+    flex-shrink: 0;
+    text-shadow: 0 0 18px var(--gm-roll-accent, transparent);
+}
+
+.gm-roll-card.outcome-success .gm-roll-card-die {
+    background: rgba(102, 212, 154, 0.10);
+    border-color: rgba(102, 212, 154, 0.35);
+}
+
+.gm-roll-card.outcome-failure .gm-roll-card-die {
+    background: rgba(232, 148, 96, 0.08);
+    border-color: rgba(232, 148, 96, 0.30);
+}
+
+.gm-roll-card.crit-success .gm-roll-card-die {
+    background: rgba(255, 210, 74, 0.16);
+    border-color: rgba(255, 210, 74, 0.45);
+}
+
+.gm-roll-card-headtext {
+    min-width: 0;
+}
+
+.gm-roll-card-title {
+    font-size: 14px;
+    color: #fff;
+    line-height: 1.3;
+}
+
+.gm-roll-card-title strong {
+    color: #fff;
+    font-weight: 700;
+}
+
+.gm-roll-card-expression {
+    margin-top: 4px;
+    font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    color: var(--gm-text-soft);
+    letter-spacing: 0.01em;
+}
+
+.gm-roll-card-badges {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.gm-roll-card-verdict {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+}
+
+.gm-roll-card-verdict-success {
+    color: #b3f0c8;
+    background: rgba(102, 212, 154, 0.14);
+    border-color: rgba(102, 212, 154, 0.35);
+}
+
+.gm-roll-card-verdict-failure {
+    color: #ffd0b3;
+    background: rgba(232, 148, 96, 0.14);
+    border-color: rgba(232, 148, 96, 0.35);
+}
+
+.gm-roll-card.crit-success .gm-roll-card-verdict {
+    color: #fff0b3;
+    background: rgba(255, 210, 74, 0.18);
+    border-color: rgba(255, 210, 74, 0.45);
+}
+
+.gm-roll-card.crit-failure .gm-roll-card-verdict {
+    color: #d6dae4;
+    background: rgba(120, 124, 134, 0.16);
+    border-color: rgba(120, 124, 134, 0.4);
+}
+
+.gm-roll-card-severity {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+}
+
+.gm-roll-card-severity-minor {
+    color: #b9c0cf;
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.10);
+}
+
+.gm-roll-card-severity-moderate {
+    color: #ffd0b3;
+    background: rgba(232, 148, 96, 0.12);
+    border-color: rgba(232, 148, 96, 0.32);
+}
+
+.gm-roll-card-severity-severe {
+    color: #ffaca6;
+    background: rgba(232, 97, 90, 0.14);
+    border-color: rgba(232, 97, 90, 0.40);
+}
+
+.gm-roll-card-severity-lethal {
+    color: #ff8e95;
+    background: rgba(200, 50, 58, 0.20);
+    border-color: rgba(200, 50, 58, 0.55);
+}
+
+.gm-roll-card-justification {
+    font-size: 12px;
+    color: var(--gm-text-muted);
+    font-style: italic;
+    line-height: 1.4;
+    padding: 0 2px;
+}
+
+.gm-roll-card-body {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--gm-border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    color: var(--gm-text);
+    font-size: 14px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+}
+
+@media (max-width: 600px) {
+    .gm-roll-card-head {
+        grid-template-columns: 40px 1fr;
+    }
+    .gm-roll-card-badges {
+        grid-column: 1 / -1;
+        flex-direction: row;
+        justify-content: flex-start;
+        align-items: center;
+        gap: 8px;
+    }
+}
+

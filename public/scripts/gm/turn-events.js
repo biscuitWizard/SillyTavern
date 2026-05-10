@@ -12,7 +12,7 @@
  * responsible for the live UI.
  */
 
-import { appendActorLine } from './st-bridge.js';
+import { appendActorLine, appendRollCard } from './st-bridge.js';
 
 /** @type {Set<(ev: any) => void>} */
 const stateListeners = new Set();
@@ -70,6 +70,21 @@ export function handleTurnEvent(ev, ui) {
             text: ev.text || '',
             role: ev.role || (ev.actor === 'narrator' ? 'narrator' : 'actor'),
             avatar,
+        });
+        return;
+    }
+
+    if (ev.kind === 'roll') {
+        const speaker = ev.actor_id && ui.characters?.get
+            ? ui.characters.get(ev.actor_id)
+            : null;
+        const avatar = speaker?.st_card_avatar
+            ? `/characters/${encodeURIComponent(speaker.st_card_avatar)}`
+            : null;
+        appendRollCard({
+            card: ev.card,
+            narration: ev.narration || '',
+            actorAvatar: avatar,
         });
         return;
     }

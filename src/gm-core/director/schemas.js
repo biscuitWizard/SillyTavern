@@ -24,9 +24,10 @@
  * )} DirectorDecision
  */
 
-/** Variants the Phase-5 loop dispatcher actually executes. */
+/** Variants the loop dispatcher actually executes (Phase 6 adds skill_check). */
 export const SUPPORTED_ACTIONS = new Set([
     'speak',
+    'skill_check',
     'spawn_character',
     'remove_character',
     'end_turn',
@@ -161,9 +162,12 @@ export function validateDirectorDecision(value) {
             if (typeof v.actor !== 'string' || !v.actor) return 'speak.actor required';
             if (typeof v.intent !== 'string') return 'speak.intent required';
             return null;
+        case 'skill_check':
+            if (typeof v.actor !== 'string' || !v.actor) return 'skill_check.actor required';
+            if (typeof v.intent !== 'string') return 'skill_check.intent required';
+            return null;
         case 'end_turn':
             return null;
-        case 'skill_check':
         case 'spawn_character':
         case 'remove_character':
         case 'add_lore':

@@ -1,16 +1,22 @@
 /**
  * Bounded Director loop for a single player turn.
  *
- * Phase 5 dispatcher table:
+ * Phase 6 dispatcher table:
  *   - `speak: narrator`       → Narrator client; emit a `message` (role:narrator).
  *   - `speak: <character_id>` → Actor client; emit a `message` (role:actor).
  *                               Per-actor scoped prompt — never sees other
  *                               actors' sheets.
+ *   - `skill_check`           → adjudicator decides skill/DC/severity, engine
+ *                               rolls the d20, narrator writes the post-roll
+ *                               beat. Emits ONE `roll` event combining the
+ *                               card + narration so the frontend renders a
+ *                               single styled bubble. `required:false` returns
+ *                               to the loop without forcing the narrator.
  *   - `spawn_character` (`from_source: 'library'`, `ref: <id>`) →
  *         add to `scene.participants`, emit a `state` (`change: 'spawn'`).
  *   - `spawn_character` (`from_source: 'new'`) →
  *         emit a structured `error` (`code: 'unsupported_source'`); the
- *         loop ends the turn. AI character generation is Phase 6/10.
+ *         loop ends the turn. AI character generation is Phase 10.
  *   - `remove_character`      → remove from `scene.participants`, emit a
  *                               `state` (`change: 'remove'`).
  *   - `end_turn`              → emit `end_of_turn`.
@@ -26,26 +32,34 @@ import { narratorSystemPrompt, narratorUserPrompt } from '../narrator/prompts.js
 import { actorSystemPrompt, actorUserPrompt } from '../actors/prompts.js';
 import { directorDecisionJsonSchema, validateDirectorDecision, SUPPORTED_ACTIONS } from './schemas.js';
 import { LlmError } from '../llm/errors.js';
+import * as skillEngine from '../skillcheck/engine.js';
+import { narratorPostRollUserPrompt } from '../skillcheck/prompts.js';
 
 // A well-behaved turn looks like: speak(narrator) -> end_turn. We give the
 // loop a small amount of slack so a Director that mis-classifies a beat can
-// still recover, but we never want to run away into a 5+ beat monologue. In
-// Phase 5 the Director can stack `spawn_character` + `speak: <actor>` in one
-// turn, so the cap rises slightly to absorb that path.
-const DEFAULT_MAX_STEPS = 6;
+// still recover, but we never want to run away into a 5+ beat monologue.
+// Phase 5 raised the cap to absorb `spawn_character` + `speak: <actor>` in
+// one turn; Phase 6 raises it again to absorb `skill_check` (one dispatch
+// step that internally also consumes adjudicator + narrator calls) followed
+// by an `end_turn`.
+const DEFAULT_MAX_STEPS = 8;
 
 /**
  * @typedef {object} TurnEvent
- * @property {('status'|'message'|'state'|'error'|'end_of_turn')} kind
- * @property {string} [phase]      for status: 'directing' | 'awaiting_actor' | 'closing'
+ * @property {('status'|'message'|'state'|'roll'|'error'|'end_of_turn')} kind
+ * @property {string} [phase]      for status: 'directing' | 'awaiting_actor' | 'rolling' | 'closing'
  * @property {string} [actor]      for message
  * @property {string} [name]       for message: display name
  * @property {string} [text]       for message
  * @property {string} [role]       for message: 'narrator' | 'actor' | 'system'
- * @property {string} [actor_id]   for message: stable id of the speaking actor (when role='actor')
+ * @property {string} [actor_id]   for message/roll: stable id of the speaking actor
+ * @property {string} [actor_name] for roll
  * @property {string} [change]     for state: 'spawn' | 'remove'
  * @property {string} [character_id]    for state
  * @property {string} [character_name]  for state
+ * @property {object} [card]       for roll: RollCard payload (skill, dc, breakdown, outcome, severity)
+ * @property {string} [narration]  for roll: post-roll narrator prose
+ * @property {string} [intent]     for roll: original director intent
  * @property {string} [code]       for error
  * @property {string} [message]    for error
  * @property {boolean} [retryable] for error
@@ -57,6 +71,9 @@ const DEFAULT_MAX_STEPS = 6;
  *   ctx: import('./prompts.js').TurnContext,
  *   directorClient: import('../llm/client.d.ts').LlmClient,
  *   actorClient:    import('../llm/client.d.ts').LlmClient,
+ *   adjudicatorClient?: import('../llm/client.d.ts').LlmClient,
+ *   ruleset?: import('../rulesets/schemas.d.ts').Ruleset | null,
+ *   rng?: () => number,
  *   emit: (ev: TurnEvent) => Promise<void> | void,
  *   addParticipant?: (characterId: string) => Promise<import('../library/schemas.js').Character | null> | import('../library/schemas.js').Character | null,
  *   removeParticipant?: (characterId: string) => Promise<import('../library/schemas.js').Character | null> | import('../library/schemas.js').Character | null,
@@ -69,6 +86,9 @@ export async function runTurn({
     ctx,
     directorClient,
     actorClient,
+    adjudicatorClient,
+    ruleset,
+    rng,
     emit,
     addParticipant,
     removeParticipant,
@@ -76,6 +96,10 @@ export async function runTurn({
     signal,
     maxSteps = DEFAULT_MAX_STEPS,
 }) {
+    // Adjudicator defaults to the Director's own client — both are
+    // structured-output-only and operate without RAG, per DESIGN.md's memory
+    // injection rules.
+    const adjudicator = adjudicatorClient || directorClient;
     let step = 0;
     while (step < maxSteps) {
         if (signal?.aborted) {
@@ -129,6 +153,25 @@ export async function runTurn({
                 ctx, decision, actorClient, emit, signal, findCharacter,
             });
             if (speakResult === 'end') {
+                await emit({ kind: 'end_of_turn', reason: 'error' });
+                return;
+            }
+            continue;
+        }
+
+        if (decision.action === 'skill_check') {
+            const result = await dispatchSkillCheck({
+                ctx,
+                decision,
+                ruleset: ruleset || null,
+                adjudicatorClient: adjudicator,
+                actorClient,
+                rng,
+                emit,
+                signal,
+                findCharacter,
+            });
+            if (result === 'end') {
                 await emit({ kind: 'end_of_turn', reason: 'error' });
                 return;
             }
@@ -263,6 +306,161 @@ async function dispatchSpeak({ ctx, decision, actorClient, emit, signal, findCha
         text,
     });
     appendToTail(ctx, character.name, text);
+    return;
+}
+
+/**
+ * Dispatch a `skill_check` decision.
+ *
+ * 1. Resolve the actor (PC or in-scene NPC); reject anyone outside the roster.
+ * 2. Emit a `rolling` status pill so the UI can show feedback.
+ * 3. Call `engine.decide(...)` — strict, structured, no RAG.
+ * 4. If the decision says no roll is needed, emit a status note and return
+ *    control to the loop (Director gets to pick the next beat).
+ * 5. Otherwise: roll the dice (pure), call the post-roll Narrator with the
+ *    outcome, emit ONE combined `kind: 'roll'` event with both the card and
+ *    the narration. Append a synthetic transcript-tail entry so subsequent
+ *    Director steps in the same turn can reason about the result.
+ *
+ * @param {{
+ *   ctx: import('./prompts.js').TurnContext,
+ *   decision: any,
+ *   ruleset: import('../rulesets/schemas.d.ts').Ruleset | null,
+ *   adjudicatorClient: import('../llm/client.d.ts').LlmClient,
+ *   actorClient: import('../llm/client.d.ts').LlmClient,
+ *   rng?: () => number,
+ *   emit: (ev: TurnEvent) => Promise<void> | void,
+ *   signal?: AbortSignal,
+ *   findCharacter?: (characterId: string) => import('../library/schemas.js').Character | null,
+ * }} args
+ */
+async function dispatchSkillCheck({ ctx, decision, ruleset, adjudicatorClient, actorClient, rng, emit, signal, findCharacter }) {
+    if (!ruleset) {
+        await emit({
+            kind: 'error',
+            code: 'no_ruleset',
+            message: 'skill_check: no ruleset is loaded for this campaign.',
+            retryable: false,
+        });
+        return 'end';
+    }
+
+    const actorId = decision.actor;
+    const inScene = (ctx.actors || []).some(a => a.id === actorId);
+    if (!actorId || !inScene) {
+        await emit({
+            kind: 'error',
+            code: 'unknown_actor',
+            message: `skill_check: actor "${actorId}" is not in the current scene roster.`,
+            retryable: false,
+        });
+        return 'end';
+    }
+    const character = findCharacter ? findCharacter(actorId) : null;
+    if (!character) {
+        await emit({
+            kind: 'error',
+            code: 'character_not_found',
+            message: `skill_check: could not load character "${actorId}".`,
+            retryable: false,
+        });
+        return 'end';
+    }
+
+    await emit({ kind: 'status', phase: 'rolling' });
+
+    let skillDecision;
+    try {
+        skillDecision = await skillEngine.decide({
+            ruleset,
+            intent: String(decision.intent || ''),
+            actorName: character.name,
+            client: adjudicatorClient,
+            signal,
+        });
+    } catch (err) {
+        await emitError(emit, err, 'adjudicator');
+        return 'end';
+    }
+
+    if (!skillDecision.required) {
+        // The adjudicator declined the roll. Surface a soft status so the
+        // player can see something happened, then return to the loop without
+        // forcing a narrator beat — the Director gets to pick the next move.
+        await emit({
+            kind: 'status',
+            phase: 'directing',
+            message: `No check needed: ${skillDecision.justification}`,
+        });
+        appendToTail(ctx, 'System', `[skill_check refused for ${character.name}: ${skillDecision.justification}]`);
+        return;
+    }
+
+    /** @type {import('../skillcheck/schemas.d.ts').RollOutcome} */
+    let outcome;
+    try {
+        outcome = skillEngine.roll({ ruleset, character, decision: skillDecision, rng });
+    } catch (err) {
+        await emit({
+            kind: 'error',
+            code: 'roll_failed',
+            message: `skill_check roll: ${err?.message || err}`,
+            retryable: false,
+        });
+        return 'end';
+    }
+
+    // Build the chat-side card before we kick off the narrator so we can
+    // pass the rendered details into the prose prompt.
+    const card = skillEngine.renderRollCard({
+        ruleset,
+        character,
+        decision: skillDecision,
+        outcome,
+        intent: String(decision.intent || ''),
+    });
+
+    let narration = '';
+    try {
+        const prose = await actorClient.chat({
+            system: narratorSystemPrompt(),
+            user: narratorPostRollUserPrompt(ctx, {
+                actor_name: character.name,
+                skill_name: card.skill_name,
+                ability_name: card.ability_name,
+                dc: card.dc,
+                total: outcome.total,
+                d20: outcome.d20,
+                success: outcome.success,
+                severity: skillDecision.failure_severity,
+                crit: outcome.crit,
+                intent: String(decision.intent || ''),
+            }),
+            signal,
+        });
+        narration = String(prose || '').trim();
+    } catch (err) {
+        await emitError(emit, err, 'narrator:post_roll');
+        return 'end';
+    }
+
+    await emit({
+        kind: 'roll',
+        actor_id: character.id,
+        actor_name: character.name,
+        intent: String(decision.intent || ''),
+        card,
+        narration,
+    });
+
+    // Synthesise a single recent-transcript line so subsequent Director steps
+    // in the same turn can reason about what happened. We do NOT echo the
+    // dice math — just the outcome and the prose, since that's what an
+    // observer at the table would carry forward.
+    const verdict = outcome.success ? 'succeeded' : 'failed';
+    appendToTail(ctx, 'System', `[${character.name} ${verdict} their ${card.skill_name} check vs DC ${card.dc}]`);
+    appendToTail(ctx, 'Narrator', narration);
+    ctx.user_input = '[A roll just resolved. Decide whether the player needs another beat or end the turn.]';
     return;
 }
 

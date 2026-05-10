@@ -34,15 +34,18 @@ RUN \
   echo "*** Run Webpack ***" && \
   node "./docker/build-lib.js"
 
-# Set the entrypoint script and cleanup
+# Stage the entrypoint script.
+#
+# Some build hosts (ZFS / NFS / certain overlay stacks) refuse to `mv` or
+# `rm -rf` directories that came in via COPY with EINVAL on Alpine's
+# busybox. We sidestep both: copy the file out with `cp` and leave the
+# `./docker/` directory in place — its contents are harmless inside the
+# image, and trying to remove it crashes the build on those hosts.
 RUN \
-  echo "*** Cleanup ***" && \
-  mv "./docker/docker-entrypoint.sh" "./" && \
-  echo "*** Make docker-entrypoint.sh executable ***" && \
+  echo "*** Stage entrypoint ***" && \
+  cp "./docker/docker-entrypoint.sh" "./docker-entrypoint.sh" && \
   chmod +x "./docker-entrypoint.sh" && \
-  echo "*** Convert line endings to Unix format ***" && \
-  dos2unix "./docker-entrypoint.sh" && \
-  rm -rf "./docker"
+  dos2unix "./docker-entrypoint.sh"
 
 # Fix extension repos permissions
 RUN git config --global --add safe.directory "*"

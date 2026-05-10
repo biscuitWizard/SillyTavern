@@ -64,6 +64,19 @@ export function enterSceneMode({ campaign: _campaign, scene: _scene, player, tra
 
     if (Array.isArray(transcript)) {
         for (const line of transcript) {
+            const extraKind = line?.extra?.kind;
+            if (extraKind === 'roll' && line?.extra?.card) {
+                // Roll cards bypass `addOneMessage` so the rich layout
+                // survives a reload. We still push a placeholder into chat[]
+                // so ST's index-based handlers don't shift under us.
+                appendRollCard({
+                    card: line.extra.card,
+                    narration: line.extra.narration || line.mes || '',
+                    actorAvatar: line.force_avatar || null,
+                    persistInChat: true,
+                });
+                continue;
+            }
             const mes = normalizeTranscriptLine(line, player);
             chat.push(mes);
             try {
@@ -135,6 +148,137 @@ export function appendActorLine({ actor, name, text, role, avatar = null }) {
         console.error('[gm] addOneMessage failed for actor line', err);
     }
     scrollChatToBottom();
+}
+
+/**
+ * Append a styled roll card directly into `#chat`, bypassing ST's
+ * `addOneMessage`. The card is one combined bubble (per the user's UX):
+ * d20 icon, actor + skill header, breakdown line, success/fail badge,
+ * severity pill (on failure), and the post-roll narration as the body.
+ *
+ * We push a placeholder entry into `chat[]` so ST's index-based handlers
+ * (delete, swipe, edit) don't desync. The placeholder is `is_system: true`
+ * with `extra.kind: 'roll'` so transcript-replay code can recognise it.
+ *
+ * @param {{
+ *   card: any,
+ *   narration: string,
+ *   actorAvatar?: string | null,
+ *   persistInChat?: boolean,
+ * }} args
+ */
+export function appendRollCard({ card, narration, actorAvatar = null, persistInChat = true }) {
+    if (!card || typeof card !== 'object') return;
+    if (persistInChat) {
+        chat.push({
+            name: card.actor_name || 'Roll',
+            is_user: false,
+            is_system: true,
+            send_date: new Date().toISOString(),
+            mes: narration || '',
+            extra: { role: 'roll', kind: 'roll', card, narration },
+            force_avatar: actorAvatar || undefined,
+        });
+    }
+    document.querySelectorAll('#chat').forEach(chatEl => {
+        const node = buildRollCardElement({ card, narration, actorAvatar });
+        chatEl.appendChild(node);
+    });
+    scrollChatToBottom();
+}
+
+/**
+ * @param {{ card: any, narration: string, actorAvatar?: string | null }} args
+ * @returns {HTMLElement}
+ */
+function buildRollCardElement({ card, narration, actorAvatar }) {
+    const outcome = card.outcome === 'success' ? 'success' : 'failure';
+    const severity = (card.severity || '').toLowerCase();
+    const wrap = document.createElement('div');
+    // Mark as a `mes` so ST's chat container styling sets the spacing
+    // correctly, then layer our own classes on top.
+    wrap.className = `mes gm-roll-card outcome-${outcome}`;
+    if (severity) wrap.classList.add(`severity-${severity}`);
+    if (card.crit === 'natural_20') wrap.classList.add('crit-success');
+    else if (card.crit === 'natural_1') wrap.classList.add('crit-failure');
+
+    const head = document.createElement('div');
+    head.className = 'gm-roll-card-head';
+
+    const die = document.createElement('div');
+    die.className = 'gm-roll-card-die';
+    die.innerHTML = '<i class="fa-solid fa-dice-d20" aria-hidden="true"></i>';
+    head.appendChild(die);
+
+    const headText = document.createElement('div');
+    headText.className = 'gm-roll-card-headtext';
+
+    const title = document.createElement('div');
+    title.className = 'gm-roll-card-title';
+    title.append(strongSpan(card.actor_name || 'Someone'));
+    title.append(document.createTextNode(' rolled '));
+    title.append(strongSpan(card.skill_name || 'a check'));
+    title.append(document.createTextNode(` vs DC ${card.dc}`));
+    headText.appendChild(title);
+
+    const expr = document.createElement('div');
+    expr.className = 'gm-roll-card-expression';
+    expr.textContent = card.expression || '';
+    headText.appendChild(expr);
+
+    head.appendChild(headText);
+
+    const badges = document.createElement('div');
+    badges.className = 'gm-roll-card-badges';
+
+    const verdict = document.createElement('span');
+    verdict.className = `gm-roll-card-verdict gm-roll-card-verdict-${outcome}`;
+    if (card.crit === 'natural_20') {
+        verdict.textContent = 'Critical Success';
+    } else if (card.crit === 'natural_1') {
+        verdict.textContent = 'Critical Failure';
+    } else {
+        verdict.textContent = outcome === 'success' ? 'Success' : 'Failure';
+    }
+    badges.appendChild(verdict);
+
+    if (severity && outcome === 'failure') {
+        const sev = document.createElement('span');
+        sev.className = `gm-roll-card-severity gm-roll-card-severity-${severity}`;
+        sev.textContent = capitalise(severity);
+        badges.appendChild(sev);
+    }
+
+    head.appendChild(badges);
+    wrap.appendChild(head);
+
+    if (card.justification) {
+        const just = document.createElement('div');
+        just.className = 'gm-roll-card-justification';
+        just.textContent = card.justification;
+        wrap.appendChild(just);
+    }
+
+    const body = document.createElement('div');
+    body.className = 'gm-roll-card-body';
+    body.textContent = (narration || '').trim();
+    wrap.appendChild(body);
+
+    if (actorAvatar) {
+        wrap.dataset.actorAvatar = String(actorAvatar);
+    }
+    return wrap;
+}
+
+function strongSpan(text) {
+    const s = document.createElement('strong');
+    s.textContent = text;
+    return s;
+}
+
+function capitalise(s) {
+    if (!s) return '';
+    return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 /**

@@ -5,11 +5,14 @@
  * world-knowledge fragments — only the `TurnContext` (campaign brief, scene
  * frame, party, recent transcript). Phase 5 widens the dispatched action
  * surface to include `speak: <character_id>`, `spawn_character` (library),
- * and `remove_character`.
+ * and `remove_character`. Phase 6 adds `skill_check`: the Director picks
+ * who attempts and what they're trying to do; the engine adjudicates the
+ * skill, DC, and severity, rolls the dice, and forces a post-roll narrator
+ * beat — all in one dispatch step.
  *
  * Other variants exist in the schema but are not yet dispatched:
- * `skill_check` (Phase 6), `add_lore` and `propose_scene` (Phase 7+). The
- * dispatcher rejects them with a structured `error` event.
+ * `add_lore` and `propose_scene` (Phase 7+). The dispatcher rejects them
+ * with a structured `error` event.
  */
 
 /**
@@ -30,9 +33,10 @@ export function directorSystemPrompt(_ctx) {
         '',
         'You are called once per beat inside a single player turn. Each call you return exactly one DirectorDecision JSON object — no prose, no commentary, no markdown.',
         '',
-        '# Available actions (Phase 5)',
+        '# Available actions (Phase 6)',
         '- `speak` with `actor: "narrator"` — give the World Narrator an `intent` describing the *single* beat to convey. The Narrator writes the prose; you do not.',
         '- `speak` with `actor: "<character_id>"` — invite a specific NPC in the scene to speak/act in character. The character id must come from the actor list below; you may NOT pick the player character.',
+        '- `skill_check` with `actor: "<character_id>"` and `intent: "<short description of what they\'re trying to do>"` — when an action has uncertain outcome and real consequence (climbing, sneaking, persuading, fighting through a hazard, casting a risky spell, etc.). The engine picks the skill, DC, severity, rolls the dice, and the Narrator describes the consequence. You do NOT pick the skill or DC. Pick this BEFORE asking the Narrator to describe an attempt with stakes — let the dice land first.',
         '- `spawn_character` with `from_source: "library"` and `ref: "<character_id>"` — bring an existing campaign character into the scene. Use only when the story clearly calls for them.',
         '- `remove_character` with `character_id: "<character_id>"` — write a non-player participant out of the scene when their narrative beat is done.',
         '- `end_turn` — hand control back to the player.',
@@ -48,6 +52,7 @@ export function directorSystemPrompt(_ctx) {
         '4. If the player\'s input is silent or ambiguous, end the turn with no beat at all — let them try again.',
         '5. Never `speak` for the player character. The player drives the player.',
         '6. Only spawn or remove a character when the narrative demands it. Do not stage a roster change to "set up" something — let it happen organically.',
+        '7. When the player\'s input describes an attempt with uncertain outcome AND real consequence ("Jack jumps the ledge", "I try to convince the guard", "I sneak past the wolf"), pick `skill_check` rather than asking the Narrator to describe the attempt. The dice decide the consequence; the Narrator narrates afterward in the same step. After a `skill_check` resolves, the Director should usually `end_turn` — the player\'s next turn drives what happens next.',
         '',
         '# Anti-patterns (do not do these)',
         '- Stacking 3+ narrator beats in one turn.',

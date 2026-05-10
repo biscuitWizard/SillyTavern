@@ -44,12 +44,15 @@ services:
     volumes:
       - qdrant-data:/qdrant/storage
     healthcheck:
-      # Use TCP probe (slim image lacks curl/wget). Verifies REST port is open.
-      test: ["CMD", "sh", "-c", "exec 3<>/dev/tcp/localhost/6333 && echo > /dev/null"]
+      # The qdrant image's `sh` does not support /dev/tcp redirection and
+      # the slim image has no curl/wget/nc. Walk /proc looking for the
+      # `qdrant` binary instead — it's always spawned by the entrypoint
+      # script. Tolerant, dependency-free, and fast.
+      test: ["CMD", "sh", "-c", "grep -alq qdrant /proc/[0-9]*/comm 2>/dev/null"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 5s
+      start_period: 10s
     networks:
       - ttrpgtavern
 
@@ -125,8 +128,11 @@ services:
     depends_on:
       qdrant:
         condition: service_healthy
+    # Host port is configurable via `TTRPG_HOST_PORT`; defaults to 8001 to
+    # avoid clashing with hosts that already expose Portainer / dev services
+    # on 8000. The container always listens on 8000 internally.
     ports:
-      - "8000:8000"
+      - "${TTRPG_HOST_PORT:-8001}:8000"
     environment:
       - NODE_ENV=production
       - TTRPG_QDRANT_URL=http://qdrant:6333
@@ -134,6 +140,12 @@ services:
       - ./data:/home/node/app/data
       - ./plugins:/home/node/app/plugins
       - ./public/scripts/extensions/third-party:/home/node/app/public/scripts/extensions/third-party
+      # Mount the host's config.yaml so per-environment toggles (whitelist
+      # ranges for the docker bridge, model defaults) survive container
+      # rebuilds. The Dockerfile leaves `config.yaml` as a symlink to
+      # `./config/config.yaml`; the entrypoint copies the bundled default
+      # if neither is present.
+      - ./config.yaml:/home/node/app/config/config.yaml
     networks:
       - ttrpgtavern
 

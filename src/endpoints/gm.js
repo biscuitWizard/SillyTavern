@@ -22,22 +22,40 @@ import { writeStCardForCharacter, removeStCardForCharacter } from '../gm-core/in
 import { mirrorCharacterToPersona } from '../gm-core/integrations/st-persona-mirror.js';
 import { createLlmClient } from '../gm-core/llm/client.js';
 import { runTurn } from '../gm-core/director/loop.js';
-import { getRuleset } from '../gm-core/rulesets/index.js';
+import { getRuleset, getRulesetFor, listRulesetSummaries } from '../gm-core/rulesets/index.js';
 import * as participants from '../gm-core/scenes/participants.js';
 
 export const router = express.Router();
 
-/* -------- Rulesets (Phase 5 seam) -------- */
+/* -------- Rulesets (Phase 6: YAML-backed) -------- */
+
+/**
+ * GET /api/gm/rulesets
+ *
+ * List every ruleset id discoverable on disk (user pack ids shadow bundled
+ * ones of the same name). The wizard uses this to populate its picker once
+ * Phase 10 ships custom-pack support; until then it surfaces the bundled
+ * `dnd5e` entry.
+ */
+router.get('/rulesets', (request, response) => {
+    try {
+        const summaries = listRulesetSummaries(request.user.directories);
+        return response.json({ rulesets: summaries });
+    } catch (error) {
+        console.error('[gm] list rulesets failed', error);
+        return response.status(500).json({ error: 'failed to list rulesets' });
+    }
+});
 
 /**
  * GET /api/gm/rulesets/:id
  *
- * Returns the in-memory ruleset record. Phase 6 swaps the registry for the
- * YAML loader; the surface stays the same so the wizard / sheet panel keep
- * working.
+ * Returns the full Ruleset record (abilities, skills, DC bands, severity
+ * ladder, plus `starter_stats` / `starter_skills` for the wizard). Honours
+ * per-user packs at `{handle}/rulesets/{id}/` overriding the bundled file.
  */
 router.get('/rulesets/:id', (request, response) => {
-    const ruleset = getRuleset(request.params.id);
+    const ruleset = getRulesetFor(request.user.directories, request.params.id);
     return response.json({ ruleset });
 });
 
@@ -692,6 +710,42 @@ router.post('/turn', async (request, response) => {
                 console.error('[gm] persist actor line failed', persistErr);
             }
         }
+        // Persist roll events as a single transcript line carrying both the
+        // card payload (in `extra.card`) and the post-roll narration (`mes`).
+        // We mark them `is_system: true` so SillyTavern does not render them
+        // through the default chat-bubble renderer; the frontend's roll-card
+        // branch picks up the line via `extra.kind === 'roll'` and replaces
+        // it with a styled card.
+        if (ev && ev.kind === 'roll') {
+            try {
+                const speaker = ev.actor_id && charactersById.has(ev.actor_id)
+                    ? charactersById.get(ev.actor_id)
+                    : null;
+                const line = {
+                    name: ev.actor_name || speaker?.name || 'System',
+                    force_avatar: speaker?.st_card_avatar
+                        ? `/characters/${encodeURIComponent(speaker.st_card_avatar)}`
+                        : undefined,
+                    mes: ev.narration || '',
+                    is_user: false,
+                    is_system: true,
+                    send_date: new Date().toISOString(),
+                    extra: {
+                        role: 'roll',
+                        kind: 'roll',
+                        card: ev.card,
+                        narration: ev.narration,
+                        actor_id: ev.actor_id,
+                        actor_name: ev.actor_name,
+                        intent: ev.intent,
+                    },
+                };
+                await transcript.appendLine(directories, campaign.id, found.scene.id, line);
+                sceneStore.refreshMessageCount(directories, campaign.id, found.scene.id);
+            } catch (persistErr) {
+                console.error('[gm] persist roll line failed', persistErr);
+            }
+        }
         // Persist state events (spawn / remove) as system messages so the
         // transcript is the single source of truth for scene history. The
         // sidebar refresh is driven from the live event stream; reload of a
@@ -737,11 +791,18 @@ router.post('/turn', async (request, response) => {
         return;
     }
 
+    // Resolve the ruleset once per turn. Phase 6 keeps the adjudicator on the
+    // same client as the Director (both are structured-output-only); a
+    // dedicated `gm-adjudicator-model` profile slot is a Phase 10 concern.
+    const ruleset = getRulesetFor(directories, campaign.ruleset_id);
+
     try {
         await runTurn({
             ctx,
             directorClient,
             actorClient,
+            adjudicatorClient: directorClient,
+            ruleset,
             emit,
             signal: abortController.signal,
             findCharacter: (id) => charactersById.get(id) || null,
