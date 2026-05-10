@@ -161,6 +161,9 @@ services:
     environment:
       - NODE_ENV=production
       - TTRPG_QDRANT_URL=http://qdrant:6333
+      - SILLYTAVERN_WHITELISTMODE=false
+      - SILLYTAVERN_BASICAUTHMODE=false
+      - SILLYTAVERN_SECURITYOVERRIDE=true
     volumes:
       - ./data:/home/node/app/data
       - ./plugins:/home/node/app/plugins
