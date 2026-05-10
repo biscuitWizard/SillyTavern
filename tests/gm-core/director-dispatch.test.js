@@ -95,10 +95,11 @@ describe('director dispatch: speak', () => {
         expect(events.some(e => e.kind === 'end_of_turn' && e.reason === 'director')).toBe(true);
     });
 
-    test('speak: <pc_id> is rejected — Director cannot speak for the player', async () => {
+    test('speak: <pc_id> is rejected as a recoverable tool_error — Director cannot speak for the player', async () => {
         const ctx = baseCtx();
         const director = makeDirector([
             { action: 'speak', actor: 'jack', intent: 'speak as the PC', rationale: 'oops' },
+            { action: 'end_turn', rationale: 'recover' },
         ]);
         const actor = makeActor(() => 'should not be called');
         const events = [];
@@ -109,17 +110,23 @@ describe('director dispatch: speak', () => {
             emit: (e) => events.push(e),
             findCharacter: (id) => ({ jack, amelia, bran })[id] || null,
         });
-        const errors = events.filter(e => e.kind === 'error');
-        expect(errors).toHaveLength(1);
-        expect(errors[0].code).toBe('cannot_speak_for_player');
+        const toolErrors = events.filter(e => e.kind === 'tool_error');
+        expect(toolErrors).toHaveLength(1);
+        expect(toolErrors[0].code).toBe('cannot_speak_for_player');
+        expect(events.filter(e => e.kind === 'error')).toHaveLength(0);
         expect(actor.chat).not.toHaveBeenCalled();
-        expect(events[events.length - 1]).toEqual(expect.objectContaining({ kind: 'end_of_turn', reason: 'error' }));
+        expect(events[events.length - 1]).toEqual(expect.objectContaining({ kind: 'end_of_turn', reason: 'director' }));
     });
 
-    test('speak: <unknown_id> not in scene rejected with unknown_actor', async () => {
+    test('speak: <unknown_id> not in scene emits a recoverable tool_error with suggestions and continues', async () => {
         const ctx = baseCtx();
+        // Add an off-stage character so the suggestions can include a library hint.
+        ctx.library_characters = [{ id: 'bran', name: 'Bran', appearance: 'a stout dwarf' }];
         const director = makeDirector([
-            { action: 'speak', actor: 'bran', intent: 'wave', rationale: 'oops' },
+            // First step: hallucinate "bartender" (not in scene, not in library).
+            { action: 'speak', actor: 'bartender', intent: 'greet the player', rationale: 'oops' },
+            // After the tool_error LAST BEAT, Director recovers by ending the turn.
+            { action: 'end_turn', rationale: 'no recovery available' },
         ]);
         const actor = makeActor(() => 'should not be called');
         const events = [];
@@ -130,8 +137,94 @@ describe('director dispatch: speak', () => {
             emit: (e) => events.push(e),
             findCharacter: (id) => ({ jack, amelia, bran })[id] || null,
         });
-        const errors = events.filter(e => e.kind === 'error');
-        expect(errors[0].code).toBe('unknown_actor');
+        // Recoverable error: surfaced as `tool_error`, NOT `error`. Loop continued.
+        expect(events.filter(e => e.kind === 'error')).toHaveLength(0);
+        const toolErrors = events.filter(e => e.kind === 'tool_error');
+        expect(toolErrors).toHaveLength(1);
+        expect(toolErrors[0].code).toBe('unknown_actor');
+        expect(toolErrors[0].tool).toBe('speak');
+        expect(toolErrors[0].suggestions.length).toBeGreaterThan(0);
+        expect(actor.chat).not.toHaveBeenCalled();
+        // Director was called twice — once for the bad speak, once for the recovery.
+        expect(director.structured).toHaveBeenCalledTimes(2);
+        // Loop ended cleanly via the recovery, not via a hard error.
+        expect(events[events.length - 1]).toEqual(expect.objectContaining({
+            kind: 'end_of_turn', reason: 'director',
+        }));
+        // ctx.last_beat should carry the tool error for the second director call.
+        expect(ctx.last_beat).toContain('Tool error from `speak`');
+        expect(ctx.last_beat).toContain('unknown_actor');
+    });
+
+    test('quota: a Director that picks speak: <same actor> twice gets force-ended after one beat', async () => {
+        // Local LLMs (qwen2.5:14b et al) routinely chain speak on the same
+        // actor even when the prompt says not to. The loop's per-actor
+        // speak quota (MAX_SPEAKS_PER_ACTOR=1) is the hard backstop: a
+        // second speak for the same actor in the same turn is converted
+        // into an end_turn before the actor LLM is called.
+        const ctx = baseCtx();
+        const director = makeDirector([
+            { action: 'speak', actor: 'amelia', intent: 'first reply', rationale: 'NPC turn' },
+            // Director ignores LAST BEAT and tries to fire Amelia again:
+            { action: 'speak', actor: 'amelia', intent: 'follow-up monologue', rationale: 'oops' },
+            // Should never be reached — the loop ends the turn at the quota check.
+            { action: 'end_turn', rationale: 'unreachable' },
+        ]);
+        const actor = makeActor(() => 'I look up from my drink.');
+        const events = [];
+        await runTurn({
+            ctx,
+            directorClient: director,
+            actorClient: actor,
+            emit: (e) => events.push(e),
+            findCharacter: (id) => ({ jack, amelia, bran })[id] || null,
+        });
+        // Exactly ONE actor message, NOT two.
+        expect(events.filter(e => e.kind === 'message')).toHaveLength(1);
+        expect(actor.chat).toHaveBeenCalledTimes(1);
+        // The Director was called twice (initial + repeat); the repeat
+        // triggered the quota and ended the turn.
+        expect(director.structured).toHaveBeenCalledTimes(2);
+        // A status event explains the quota close.
+        const closing = events.find(e => e.kind === 'status' && e.phase === 'closing');
+        expect(closing).toBeDefined();
+        expect(closing.message).toMatch(/Speak quota for amelia/i);
+        expect(events[events.length - 1]).toEqual(expect.objectContaining({
+            kind: 'end_of_turn', reason: 'cap',
+        }));
+    });
+
+    test('speak: <character_id> sets ctx.last_beat (no longer mutates user_input) so Director can decide to end_turn', async () => {
+        // Regression test for the runaway-loop bug: previously the actor
+        // branch never updated ctx.user_input, so the Director kept seeing
+        // the same player input and kept dispatching speak: <actor>.
+        const ctx = baseCtx();
+        const originalInput = ctx.user_input;
+        const director = makeDirector([
+            { action: 'speak', actor: 'amelia', intent: 'react to the player', rationale: 'NPC turn' },
+            { action: 'end_turn', rationale: 'amelia spoke' },
+        ]);
+        const actor = makeActor(() => 'I look up from my drink.');
+        const events = [];
+        await runTurn({
+            ctx,
+            directorClient: director,
+            actorClient: actor,
+            emit: (e) => events.push(e),
+            findCharacter: (id) => ({ jack, amelia, bran })[id] || null,
+        });
+        // ctx.user_input must be untouched — actors and narrator should always
+        // see the original player input, not a synthetic loop marker.
+        expect(ctx.user_input).toBe(originalInput);
+        // ctx.last_beat must carry a "spoke" summary so the Director knows
+        // not to fire the same actor again.
+        expect(ctx.last_beat).toContain('Amelia');
+        expect(ctx.last_beat).toContain('just spoke');
+        // Exactly one message emitted (no runaway).
+        expect(events.filter(e => e.kind === 'message')).toHaveLength(1);
+        expect(events[events.length - 1]).toEqual(expect.objectContaining({
+            kind: 'end_of_turn', reason: 'director',
+        }));
     });
 });
 
@@ -166,7 +259,11 @@ describe('director dispatch: spawn_character', () => {
         expect(events[events.length - 1]).toEqual(expect.objectContaining({ kind: 'end_of_turn', reason: 'director' }));
     });
 
-    test('spawn_character: new emits unsupported_source error and ends the turn', async () => {
+    test('spawn_character: new without `name` is rejected by the schema validator', async () => {
+        // The full spawn_character: new flow is covered in
+        // director-dynamic-spawn.test.js; here we just lock in that the
+        // schema validator catches missing `name`/`brief` BEFORE the
+        // dispatcher runs, so addParticipant is never called.
         const ctx = baseCtx();
         const director = makeDirector([
             { action: 'spawn_character', from_source: 'new', brief: 'a new face', rationale: 'invent' },
@@ -184,7 +281,8 @@ describe('director dispatch: spawn_character', () => {
         });
         const errors = events.filter(e => e.kind === 'error');
         expect(errors).toHaveLength(1);
-        expect(errors[0].code).toBe('unsupported_source');
+        expect(errors[0].code).toBe('invalid_decision');
+        expect(errors[0].message).toMatch(/spawn_character\.name required/);
         expect(addParticipant).not.toHaveBeenCalled();
         expect(events[events.length - 1]).toEqual(expect.objectContaining({ kind: 'end_of_turn', reason: 'error' }));
     });
@@ -241,10 +339,11 @@ describe('director dispatch: remove_character', () => {
         expect(ctx.actors.some(a => a.id === 'amelia')).toBe(false);
     });
 
-    test('remove_character with player id is rejected', async () => {
+    test('remove_character with player id is rejected as a recoverable tool_error', async () => {
         const ctx = baseCtx();
         const director = makeDirector([
             { action: 'remove_character', character_id: 'jack', rationale: 'oops' },
+            { action: 'end_turn', rationale: 'recover' },
         ]);
         const actor = makeActor(() => 'never');
         const events = [];
@@ -257,8 +356,11 @@ describe('director dispatch: remove_character', () => {
             findCharacter: (id) => ({ jack, amelia, bran })[id] || null,
             removeParticipant,
         });
-        const errors = events.filter(e => e.kind === 'error');
-        expect(errors[0].code).toBe('cannot_remove_player');
+        const toolErrors = events.filter(e => e.kind === 'tool_error');
+        expect(toolErrors).toHaveLength(1);
+        expect(toolErrors[0].code).toBe('cannot_remove_player');
+        expect(events.filter(e => e.kind === 'error')).toHaveLength(0);
         expect(removeParticipant).not.toHaveBeenCalled();
+        expect(events[events.length - 1]).toEqual(expect.objectContaining({ kind: 'end_of_turn', reason: 'director' }));
     });
 });

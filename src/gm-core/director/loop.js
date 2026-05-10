@@ -1,26 +1,49 @@
 /**
  * Bounded Director loop for a single player turn.
  *
- * Phase 6 dispatcher table:
+ * Dispatcher table:
  *   - `speak: narrator`       → Narrator client; emit a `message` (role:narrator).
  *   - `speak: <character_id>` → Actor client; emit a `message` (role:actor).
  *                               Per-actor scoped prompt — never sees other
- *                               actors' sheets.
+ *                               actors' sheets. If the id is not in the
+ *                               scene roster, the loop emits a recoverable
+ *                               `tool_error` with closest matches and a
+ *                               `LAST BEAT` summary so the Director can
+ *                               recover (`search_library`,
+ *                               `spawn_character`, or end the turn) on the
+ *                               next step.
  *   - `skill_check`           → adjudicator decides skill/DC/severity, engine
  *                               rolls the d20, narrator writes the post-roll
  *                               beat. Emits ONE `roll` event combining the
  *                               card + narration so the frontend renders a
  *                               single styled bubble. `required:false` returns
  *                               to the loop without forcing the narrator.
+ *   - `search_library`        → in-memory fuzzy search over off-stage
+ *                               characters. No state mutation. Returns the
+ *                               match list as a `LAST BEAT` tool result.
  *   - `spawn_character` (`from_source: 'library'`, `ref: <id>`) →
  *         add to `scene.participants`, emit a `state` (`change: 'spawn'`).
- *   - `spawn_character` (`from_source: 'new'`) →
- *         emit a structured `error` (`code: 'unsupported_source'`); the
- *         loop ends the turn. AI character generation is Phase 10.
+ *   - `spawn_character` (`from_source: 'new'`, `name`, `brief`) →
+ *         create a transient (in-memory only) character; mirror into
+ *         `ctx.actors`; emit a `state` (`change: 'spawn'`, `ephemeral: true`).
+ *         Persistence is deferred until the character first speaks
+ *         (promote-on-speak). If they never speak in this turn, they vanish.
  *   - `remove_character`      → remove from `scene.participants`, emit a
  *                               `state` (`change: 'remove'`).
+ *   - `add_lore`              → write a generated world-lore entry.
  *   - `end_turn`              → emit `end_of_turn`.
  *   - everything else         → `error: unsupported_action`, force end.
+ *
+ * # Between-step communication
+ *
+ * The loop talks to itself across iterations through `ctx.last_beat`. After
+ * every non-terminal dispatch the loop sets `ctx.last_beat` to a short
+ * summary of what happened (or, for tool actions, a structured tool result).
+ * The Director's user prompt renders this in a `# LAST BEAT` block. This
+ * replaces the older pattern of mutating `ctx.user_input` (which leaked
+ * loop-internal hacks into the narrator/actor prompts and, more
+ * importantly, kept making the Director think the player was still waiting
+ * on a fresh response).
  *
  * The loop emits TurnEvent objects via the supplied `emit(ev)` callback;
  * the HTTP handler is responsible for serialising those to NDJSON. This
@@ -49,9 +72,20 @@ import { extractAndWriteNarratorContinuity } from '../rag/writers/narrator-conti
 // by an `end_turn`.
 const DEFAULT_MAX_STEPS = 8;
 
+// Per-speaker speak quotas inside a single turn. Small local models
+// (qwen2.5:14b and friends) routinely ignore the system prompt's "default
+// to end_turn after a speak" guidance and keep firing `speak: <same actor>`
+// — and an actor LLM that reads its own prior message in the transcript
+// tail will then regurgitate the same prose. The loop enforces these
+// quotas hard: when the Director picks speak for a saturated actor, the
+// loop converts the beat into an end_turn instead. This is a guardrail,
+// not a budget — the prompt still asks the Director to stop earlier.
+const MAX_SPEAKS_PER_ACTOR = 1;
+const MAX_SPEAKS_NARRATOR  = 2;
+
 /**
  * @typedef {object} TurnEvent
- * @property {('status'|'message'|'state'|'roll'|'error'|'end_of_turn')} kind
+ * @property {('status'|'message'|'state'|'roll'|'error'|'tool_error'|'end_of_turn')} kind
  * @property {string} [phase]      for status: 'directing' | 'awaiting_actor' | 'rolling' | 'closing'
  * @property {string} [actor]      for message
  * @property {string} [name]       for message: display name
@@ -62,12 +96,16 @@ const DEFAULT_MAX_STEPS = 8;
  * @property {string} [change]     for state: 'spawn' | 'remove'
  * @property {string} [character_id]    for state
  * @property {string} [character_name]  for state
+ * @property {boolean} [ephemeral]      for state.spawn: character is held in-memory until first speak
+ * @property {boolean} [promoted]       for state.spawn: a previously transient character was just persisted
  * @property {object} [card]       for roll: RollCard payload (skill, dc, breakdown, outcome, severity)
  * @property {string} [narration]  for roll: post-roll narrator prose
  * @property {string} [intent]     for roll: original director intent
- * @property {string} [code]       for error
- * @property {string} [message]    for error
+ * @property {string} [code]       for error/tool_error
+ * @property {string} [message]    for error/tool_error
  * @property {boolean} [retryable] for error
+ * @property {string} [tool]       for tool_error: action name that errored (e.g. 'speak', 'spawn_character')
+ * @property {string[]} [suggestions]   for tool_error: short human-readable recovery hints
  * @property {string} [reason]     for end_of_turn: 'director' | 'cap' | 'error' | 'aborted'
  */
 
@@ -83,6 +121,7 @@ const DEFAULT_MAX_STEPS = 8;
  *   addParticipant?: (characterId: string) => Promise<import('../library/schemas.js').Character | null> | import('../library/schemas.js').Character | null,
  *   removeParticipant?: (characterId: string) => Promise<import('../library/schemas.js').Character | null> | import('../library/schemas.js').Character | null,
  *   findCharacter?: (characterId: string) => import('../library/schemas.js').Character | null,
+ *   createCharacter?: (input: Partial<import('../library/schemas.js').Character> & { name: string }) => Promise<import('../library/schemas.js').Character> | import('../library/schemas.js').Character,
  *   signal?: AbortSignal,
  *   maxSteps?: number,
  *   memoryService?: import('../rag/service.d.ts').MemoryService | null,
@@ -100,6 +139,7 @@ export async function runTurn({
     addParticipant,
     removeParticipant,
     findCharacter,
+    createCharacter,
     signal,
     maxSteps = DEFAULT_MAX_STEPS,
     memoryService = null,
@@ -112,6 +152,30 @@ export async function runTurn({
     const cid = ctx.campaign?.id;
     let step = 0;
     let lastMemoryWriteId = 0;
+
+    // Per-turn transient character store. The Director's `spawn_character`
+    // with `from_source: 'new'` parks a new NPC here; we mirror them into
+    // `ctx.actors` so subsequent steps can `speak` them. The character is
+    // promoted to disk only when they actually speak (promote-on-speak), so
+    // a typo'd spawn that's never followed up by a speak vanishes at end of
+    // turn. Map<id, Character>.
+    /** @type {Map<string, import('../library/schemas.js').Character>} */
+    const transientCharacters = new Map();
+    /** @type {Set<string>} */
+    const promotedTransients = new Set();
+
+    /** @param {string} id */
+    const resolveCharacter = (id) => {
+        if (!id) return null;
+        if (transientCharacters.has(id)) return transientCharacters.get(id) || null;
+        return findCharacter ? findCharacter(id) : null;
+    };
+
+    // Per-turn speak quotas keyed by actor id (or 'narrator'). See
+    // MAX_SPEAKS_PER_ACTOR / MAX_SPEAKS_NARRATOR above.
+    /** @type {Map<string, number>} */
+    const speakCounts = new Map();
+
     while (step < maxSteps) {
         if (signal?.aborted) {
             await emit({ kind: 'end_of_turn', reason: 'aborted' });
@@ -205,12 +269,14 @@ export async function runTurn({
                         title: decision.title,
                     });
                     appendToTail(ctx, 'System', `[lore added: ${decision.title}]`);
+                    ctx.last_beat = `add_lore committed: "${decision.title}". Decide the next beat (typically end_turn unless the player is still owed a response).`;
                 } else {
                     await emit({
                         kind: 'status',
                         phase: 'directing',
                         message: 'add_lore: no memory service available; recording skipped.',
                     });
+                    ctx.last_beat = 'add_lore: no memory service available; the lore was NOT recorded. Continue with the next beat.';
                 }
             } else {
                 await emit({
@@ -218,18 +284,47 @@ export async function runTurn({
                     phase: 'directing',
                     message: 'add_lore: no memory service available; recording skipped.',
                 });
+                ctx.last_beat = 'add_lore: no memory service available; the lore was NOT recorded. Continue with the next beat.';
             }
             continue;
         }
 
         if (decision.action === 'speak') {
+            // Quota check BEFORE dispatch: if this actor has already
+            // saturated their per-turn budget, swallow the speak and end
+            // the turn. Local LLMs routinely chain `speak: <same actor>`
+            // even when the prompt says not to; this is the loop's hard
+            // backstop against runaway monologues.
+            const actorKey = decision.actor === 'narrator' ? 'narrator' : decision.actor;
+            const cap = decision.actor === 'narrator' ? MAX_SPEAKS_NARRATOR : MAX_SPEAKS_PER_ACTOR;
+            const used = speakCounts.get(actorKey) || 0;
+            if (used >= cap) {
+                await emit({
+                    kind: 'status',
+                    phase: 'closing',
+                    message: `Speak quota for ${actorKey} reached (${used}/${cap}); ending the turn.`,
+                });
+                await emit({ kind: 'end_of_turn', reason: 'cap' });
+                return;
+            }
             const speakResult = await dispatchSpeak({
-                ctx, decision, actorClient, emit, signal, findCharacter,
+                ctx, decision, actorClient, emit, signal,
+                resolveCharacter,
+                transientCharacters,
+                promotedTransients,
+                createCharacter,
+                addParticipant,
                 memoryService, cid, sceneIndex,
             });
             if (speakResult === 'end') {
                 await emit({ kind: 'end_of_turn', reason: 'error' });
                 return;
+            }
+            // Only count an actual emitted speak. dispatchSpeak returns
+            // undefined on a tool_error (e.g. unknown actor) without
+            // having called the LLM — those don't count against the quota.
+            if (speakResult === 'spoke') {
+                speakCounts.set(actorKey, used + 1);
             }
             continue;
         }
@@ -244,7 +339,7 @@ export async function runTurn({
                 rng,
                 emit,
                 signal,
-                findCharacter,
+                findCharacter: resolveCharacter,
                 memoryService,
                 cid,
                 sceneIndex,
@@ -256,9 +351,17 @@ export async function runTurn({
             continue;
         }
 
+        if (decision.action === 'search_library') {
+            await dispatchSearchLibrary({ ctx, decision });
+            continue;
+        }
+
         if (decision.action === 'spawn_character') {
             const result = await dispatchSpawn({
-                ctx, decision, emit, addParticipant, findCharacter,
+                ctx, decision, emit,
+                addParticipant,
+                resolveCharacter,
+                transientCharacters,
             });
             if (result === 'end') {
                 await emit({ kind: 'end_of_turn', reason: 'error' });
@@ -269,7 +372,10 @@ export async function runTurn({
 
         if (decision.action === 'remove_character') {
             const result = await dispatchRemove({
-                ctx, decision, emit, removeParticipant, findCharacter,
+                ctx, decision, emit, removeParticipant,
+                findCharacter: resolveCharacter,
+                transientCharacters,
+                promotedTransients,
             });
             if (result === 'end') {
                 await emit({ kind: 'end_of_turn', reason: 'error' });
@@ -305,8 +411,14 @@ function pickQueryText(ctx) {
 }
 
 /**
- * Dispatch a `speak` decision. Returns 'end' if the loop should terminate
- * (an unrecoverable error was emitted) or undefined to continue.
+ * Dispatch a `speak` decision. Return values:
+ *   - 'spoke' — the actor LLM was called and a `message` event was
+ *     emitted. The caller increments the per-turn speak quota.
+ *   - 'end'   — an unrecoverable error was emitted; the loop should
+ *     terminate.
+ *   - undefined — a recoverable tool_error was emitted (e.g. unknown
+ *     actor id). The Director gets a `LAST BEAT` summary and the loop
+ *     continues so it can recover.
  *
  * @param {{
  *   ctx: import('./prompts.js').TurnContext,
@@ -314,10 +426,19 @@ function pickQueryText(ctx) {
  *   actorClient: import('../llm/client.d.ts').LlmClient,
  *   emit: (ev: TurnEvent) => Promise<void> | void,
  *   signal?: AbortSignal,
- *   findCharacter?: (characterId: string) => import('../library/schemas.js').Character | null,
+ *   resolveCharacter?: (characterId: string) => import('../library/schemas.js').Character | null,
+ *   transientCharacters?: Map<string, import('../library/schemas.js').Character>,
+ *   promotedTransients?: Set<string>,
+ *   createCharacter?: (input: Partial<import('../library/schemas.js').Character> & { name: string }) => Promise<import('../library/schemas.js').Character> | import('../library/schemas.js').Character,
+ *   addParticipant?: (characterId: string) => Promise<import('../library/schemas.js').Character | null> | import('../library/schemas.js').Character | null,
  * }} args
  */
-async function dispatchSpeak({ ctx, decision, actorClient, emit, signal, findCharacter, memoryService, cid, sceneIndex }) {
+async function dispatchSpeak({
+    ctx, decision, actorClient, emit, signal,
+    resolveCharacter, transientCharacters, promotedTransients,
+    createCharacter, addParticipant,
+    memoryService, cid, sceneIndex,
+}) {
     await emit({ kind: 'status', phase: 'awaiting_actor' });
 
     const isNarrator = decision.actor === 'narrator';
@@ -362,7 +483,8 @@ async function dispatchSpeak({ ctx, decision, actorClient, emit, signal, findCha
             text,
         });
         appendToTail(ctx, 'Narrator', text);
-        ctx.user_input = '[The narrator has just spoken. Decide whether another beat is needed; if not, emit `end_turn`.]';
+        ctx.last_beat = `Narrator just delivered the beat (intent: "${truncateForBeat(decision.intent)}"). The player has been responded to. Default to end_turn unless the player\'s input clearly demanded another beat.`;
+        // Return value below is assigned after the memory hooks fire.
 
         if (memoryService && cid) {
             // Fire-and-forget continuity extractor. Its writes emit their own
@@ -382,41 +504,63 @@ async function dispatchSpeak({ ctx, decision, actorClient, emit, signal, findCha
                 }
             }).catch(() => {});
         }
-        return;
+        return 'spoke';
     }
 
     // Per-actor scoped speak. The Director picked an actor id; resolve the
-    // character record via the loop's character lookup. The loop validates
-    // membership in `ctx.actors` (the scene roster) before calling out so a
-    // hallucinated id can't sneak through.
-    const inScene = (ctx.actors || []).some(a => a.id === decision.actor && !a.is_player_only_marker);
+    // character record via the loop's character lookup (which transparently
+    // checks transient characters first). If the id is not in the scene
+    // roster, surface a helpful tool_error and continue the loop so the
+    // Director can recover via search_library / spawn_character / end_turn.
+    const inScene = (ctx.actors || []).some(a => a.id === decision.actor);
     if (!inScene) {
+        const suggestions = buildUnknownActorSuggestions(ctx, decision.actor);
         await emit({
-            kind: 'error',
+            kind: 'tool_error',
+            tool: 'speak',
             code: 'unknown_actor',
             message: `Actor "${decision.actor}" is not in the current scene roster.`,
-            retryable: false,
+            suggestions,
         });
-        return 'end';
+        ctx.last_beat = formatToolError({
+            tool: 'speak',
+            code: 'unknown_actor',
+            message: `Actor "${decision.actor}" is not in the current scene roster.`,
+            suggestions,
+        });
+        return;
     }
-    const character = findCharacter ? findCharacter(decision.actor) : null;
+    const character = resolveCharacter ? resolveCharacter(decision.actor) : null;
     if (!character) {
+        const suggestions = buildUnknownActorSuggestions(ctx, decision.actor);
         await emit({
-            kind: 'error',
+            kind: 'tool_error',
+            tool: 'speak',
             code: 'character_not_found',
             message: `Could not load character "${decision.actor}".`,
-            retryable: false,
+            suggestions,
         });
-        return 'end';
+        ctx.last_beat = formatToolError({
+            tool: 'speak',
+            code: 'character_not_found',
+            message: `Could not load character "${decision.actor}".`,
+            suggestions,
+        });
+        return;
     }
     if (character.is_player) {
         await emit({
-            kind: 'error',
+            kind: 'tool_error',
+            tool: 'speak',
             code: 'cannot_speak_for_player',
             message: 'The Director cannot speak for the player character. Pick the narrator or an NPC.',
-            retryable: false,
         });
-        return 'end';
+        ctx.last_beat = formatToolError({
+            tool: 'speak',
+            code: 'cannot_speak_for_player',
+            message: `Tried to speak as the player character "${character.name}". The player drives the player. Pick narrator or an NPC; if no NPC fits, end_turn.`,
+        });
+        return;
     }
 
     // Per-actor MEMORIES block. Built per-call so the prior Director-side
@@ -454,6 +598,46 @@ async function dispatchSpeak({ ctx, decision, actorClient, emit, signal, findCha
     }
     ctx.memories_block = previousMemoriesBlock;
     const text = (prose || '').trim();
+
+    // Promote-on-speak: if the speaking character is a transient (created
+    // via spawn_character: from_source: 'new'), persist them now and add to
+    // scene.participants. This way a typo'd / abandoned spawn vanishes at
+    // end of turn — only characters who actually said something become
+    // permanent campaign records.
+    let promotedNow = false;
+    if (transientCharacters && transientCharacters.has(character.id) && !promotedTransients?.has(character.id)) {
+        const promoted = await promoteTransient({
+            transient: character,
+            createCharacter,
+            addParticipant,
+        });
+        if (promoted) {
+            // Replace the transient with the persisted record across ctx.
+            transientCharacters.set(promoted.id, promoted);
+            promotedTransients?.add(promoted.id);
+            const idx = (ctx.actors || []).findIndex(a => a.id === character.id);
+            if (idx >= 0) {
+                ctx.actors[idx] = {
+                    id: promoted.id,
+                    name: promoted.name,
+                    is_player: promoted.is_player,
+                    appearance: promoted.appearance,
+                    personality: promoted.personality,
+                    voice: promoted.voice,
+                    background: promoted.background,
+                };
+            }
+            promotedNow = true;
+            await emit({
+                kind: 'state',
+                change: 'spawn',
+                character_id: promoted.id,
+                character_name: promoted.name,
+                promoted: true,
+            });
+        }
+    }
+
     await emit({
         kind: 'message',
         actor: character.id,
@@ -463,10 +647,14 @@ async function dispatchSpeak({ ctx, decision, actorClient, emit, signal, findCha
         text,
     });
     appendToTail(ctx, character.name, text);
+    ctx.last_beat = `${character.name} (id: \`${character.id}\`) just spoke in response to the player's input${promotedNow ? ' (and was promoted from transient to a persistent campaign character)' : ''}. Default to end_turn unless the player's input clearly addressed multiple characters.`;
 
-    if (memoryService && cid) {
+    if (memoryService && cid && !promotedNow) {
         // Fire-and-forget opinion extractor. Bounded by the schema (max 2
         // memories) and the false-positive guard `is_significant`.
+        // Skip on the first speak of a freshly promoted character: there's
+        // no character_memory collection for them yet to populate, and the
+        // RAG service may be initialising the new collection.
         extractAndWriteOpinion({
             memoryService,
             client: actorClient,
@@ -483,7 +671,121 @@ async function dispatchSpeak({ ctx, decision, actorClient, emit, signal, findCha
             }
         }).catch(() => {});
     }
-    return;
+    return 'spoke';
+}
+
+/**
+ * Promote a transient character to disk + scene participants. Returns the
+ * persisted record on success, or null if persistence isn't wired (in
+ * which case the transient stays transient and the speak still went out
+ * with the in-memory identity — better than failing the beat).
+ *
+ * @param {{
+ *   transient: import('../library/schemas.js').Character,
+ *   createCharacter?: (input: Partial<import('../library/schemas.js').Character> & { name: string }) => Promise<import('../library/schemas.js').Character> | import('../library/schemas.js').Character,
+ *   addParticipant?: (characterId: string) => Promise<import('../library/schemas.js').Character | null> | import('../library/schemas.js').Character | null,
+ * }} args
+ */
+async function promoteTransient({ transient, createCharacter, addParticipant }) {
+    if (!createCharacter) return null;
+    try {
+        const persisted = await createCharacter({
+            name: transient.name,
+            is_player: false,
+            appearance: transient.appearance || '',
+            personality: transient.personality || '',
+            voice: transient.voice || '',
+            background: transient.background || '',
+            sheet: transient.sheet,
+        });
+        if (!persisted) return null;
+        if (addParticipant) {
+            try {
+                await addParticipant(persisted.id);
+            } catch (err) {
+                console.warn('[loop.promote] addParticipant failed', err?.message || err);
+            }
+        }
+        return persisted;
+    } catch (err) {
+        console.warn('[loop.promote] createCharacter failed', err?.message || err);
+        return null;
+    }
+}
+
+/** @param {string} s */
+function truncateForBeat(s) {
+    if (typeof s !== 'string') return '';
+    return s.length > 120 ? `${s.slice(0, 117)}…` : s;
+}
+
+/**
+ * Fuzzy match an unknown actor id/name against the current scene roster
+ * and the off-stage library. Returns short hint strings the Director can
+ * use to recover.
+ *
+ * @param {import('./prompts.js').TurnContext} ctx
+ * @param {string} unknownId
+ * @returns {string[]}
+ */
+function buildUnknownActorSuggestions(ctx, unknownId) {
+    const needle = String(unknownId || '').toLowerCase();
+    /** @type {string[]} */
+    const out = [];
+    const inSceneNonPc = (ctx.actors || []).filter(a => !a.is_player);
+    const inSceneMatches = inSceneNonPc
+        .filter(a => fuzzyMatch(a.id, needle) || fuzzyMatch(a.name, needle))
+        .slice(0, 3);
+    if (inSceneMatches.length) {
+        out.push(`Closest in-scene actors: ${inSceneMatches.map(a => `\`${a.id}\` (${a.name})`).join(', ')}`);
+    } else if (inSceneNonPc.length) {
+        out.push(`In-scene NPCs you can speak as: ${inSceneNonPc.slice(0, 5).map(a => `\`${a.id}\` (${a.name})`).join(', ')}`);
+    }
+    const lib = ctx.library_characters || [];
+    const libMatches = lib
+        .filter(a => fuzzyMatch(a.id, needle) || fuzzyMatch(a.name, needle))
+        .slice(0, 3);
+    if (libMatches.length) {
+        out.push(`Possible library matches (use \`spawn_character\` from_source: "library", ref: <id> first): ${libMatches.map(a => `\`${a.id}\` (${a.name})`).join(', ')}`);
+    } else if (lib.length) {
+        out.push('No close library matches. Try `search_library` with a query string, or `spawn_character` with from_source: "new", name, brief.');
+    } else {
+        out.push('No off-stage library characters. Use `spawn_character` with from_source: "new", name, brief — or end the turn.');
+    }
+    return out;
+}
+
+/**
+ * Crude case-insensitive substring + token-overlap match. Good enough for
+ * "bartender" matching "the_bartender" / "Old Bartender" / etc.
+ *
+ * @param {string} candidate
+ * @param {string} needle    already lower-cased
+ */
+function fuzzyMatch(candidate, needle) {
+    if (!candidate || !needle) return false;
+    const c = String(candidate).toLowerCase();
+    if (c.includes(needle) || needle.includes(c)) return true;
+    const cTokens = c.split(/[\s_\-]+/).filter(Boolean);
+    const nTokens = needle.split(/[\s_\-]+/).filter(Boolean);
+    return cTokens.some(t => nTokens.some(n => t === n || t.includes(n) || n.includes(t)));
+}
+
+/**
+ * Render a tool error for the Director's `# LAST BEAT` block.
+ *
+ * @param {{ tool: string, code: string, message: string, suggestions?: string[] }} err
+ */
+function formatToolError({ tool, code, message, suggestions }) {
+    const lines = [
+        `Tool error from \`${tool}\` (code: ${code}): ${message}`,
+    ];
+    if (suggestions && suggestions.length) {
+        lines.push('Suggestions:');
+        for (const s of suggestions) lines.push(`- ${s}`);
+    }
+    lines.push('Pick a different action — DO NOT repeat the same call. End the turn if no recovery makes sense.');
+    return lines.join('\n');
 }
 
 /**
@@ -673,57 +975,136 @@ async function dispatchSkillCheck({ ctx, decision, ruleset, adjudicatorClient, a
     const verdict = outcome.success ? 'succeeded' : 'failed';
     appendToTail(ctx, 'System', `[${character.name} ${verdict} their ${card.skill_name} check vs DC ${card.dc}]`);
     appendToTail(ctx, 'Narrator', narration);
-    ctx.user_input = '[A roll just resolved. Decide whether the player needs another beat or end the turn.]';
+    ctx.last_beat = `${character.name} ${verdict} a ${card.skill_name} check vs DC ${card.dc} (d20=${outcome.d20}, total=${outcome.total}). The Narrator already described the consequence. Default to end_turn — the player\'s next turn drives what happens next.`;
     return;
 }
 
 /**
+ * Dispatch a `search_library` decision. No state mutation. Filters
+ * `ctx.library_characters` (off-stage) by a free-text query against id,
+ * name, and the short appearance/role blurb the HTTP wrapper attaches.
+ * Result goes back via `ctx.last_beat` so the Director can decide what to
+ * do with the matches on its next step.
+ *
+ * @param {{ ctx: import('./prompts.js').TurnContext, decision: any }} args
+ */
+async function dispatchSearchLibrary({ ctx, decision }) {
+    const query = String(decision.query || '').trim();
+    if (!query) {
+        ctx.last_beat = formatToolError({
+            tool: 'search_library',
+            code: 'empty_query',
+            message: 'search_library was called with an empty query.',
+            suggestions: ['Try `search_library` again with a non-empty query, or `spawn_character` with from_source: "new", name, brief.'],
+        });
+        return;
+    }
+    const lib = ctx.library_characters || [];
+    if (!lib.length) {
+        ctx.last_beat = `Tool result from \`search_library\` (query: "${query}"): the campaign library has no off-stage characters. Use \`spawn_character\` with from_source: "new", name: "...", brief: "..." to invent one — or end the turn.`;
+        return;
+    }
+    const needle = query.toLowerCase();
+    const tokens = needle.split(/[\s_\-]+/).filter(Boolean);
+    const scored = lib
+        .map(c => {
+            const hay = `${c.id || ''} ${c.name || ''} ${c.appearance || ''}`.toLowerCase();
+            let score = 0;
+            if (hay.includes(needle)) score += 5;
+            for (const t of tokens) if (t && hay.includes(t)) score += 1;
+            return { c, score };
+        })
+        .filter(x => x.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 5)
+        .map(x => x.c);
+    if (!scored.length) {
+        ctx.last_beat = `Tool result from \`search_library\` (query: "${query}"): no off-stage characters matched. Either invent one with \`spawn_character\` (from_source: "new", name, brief) or end the turn.`;
+        return;
+    }
+    const lines = [`Tool result from \`search_library\` (query: "${query}"): ${scored.length} match${scored.length === 1 ? '' : 'es'}:`];
+    for (const c of scored) {
+        const blurb = c.appearance ? ` — ${truncateForBeat(c.appearance)}` : '';
+        lines.push(`- \`${c.id}\` — **${c.name}**${blurb}`);
+    }
+    lines.push('Use `spawn_character` with from_source: "library", ref: "<id>" to bring one of these characters on-stage, then `speak` them.');
+    ctx.last_beat = lines.join('\n');
+}
+
+/**
+ * Dispatch `spawn_character`. Two paths:
+ *
+ *   - `from_source: 'library'` — bring an existing campaign character into
+ *     the scene; persisted immediately via `addParticipant`.
+ *   - `from_source: 'new'` — invent a transient character (in-memory only).
+ *     They appear in `ctx.actors` so the Director can `speak` them next,
+ *     but persistence is deferred to first speak (promote-on-speak in
+ *     `dispatchSpeak`). If they never speak this turn, they vanish.
+ *
  * @param {{
  *   ctx: import('./prompts.js').TurnContext,
  *   decision: any,
  *   emit: (ev: TurnEvent) => Promise<void> | void,
  *   addParticipant?: (characterId: string) => Promise<import('../library/schemas.js').Character | null> | import('../library/schemas.js').Character | null,
- *   findCharacter?: (characterId: string) => import('../library/schemas.js').Character | null,
+ *   resolveCharacter?: (characterId: string) => import('../library/schemas.js').Character | null,
+ *   transientCharacters?: Map<string, import('../library/schemas.js').Character>,
  * }} args
  */
-async function dispatchSpawn({ ctx, decision, emit, addParticipant, findCharacter }) {
+async function dispatchSpawn({ ctx, decision, emit, addParticipant, resolveCharacter, transientCharacters }) {
     if (decision.from_source === 'new') {
-        await emit({
-            kind: 'error',
-            code: 'unsupported_source',
-            message: 'Generating a brand new character is not yet wired (Phase 6/10). Use a campaign character via from_source: "library".',
-            retryable: false,
-        });
-        return 'end';
+        return dispatchSpawnNew({ ctx, decision, emit, transientCharacters });
     }
     if (decision.from_source !== 'library') {
+        const message = `spawn_character.from_source must be "library" or "new"; got "${decision.from_source}".`;
         await emit({
-            kind: 'error',
+            kind: 'tool_error',
+            tool: 'spawn_character',
             code: 'invalid_source',
-            message: `spawn_character from_source must be "library" or "new"; got "${decision.from_source}".`,
-            retryable: false,
+            message,
         });
-        return 'end';
+        ctx.last_beat = formatToolError({
+            tool: 'spawn_character',
+            code: 'invalid_source',
+            message,
+            suggestions: ['Use from_source: "library" with a `ref` from the library list, or from_source: "new" with `name` and `brief`.'],
+        });
+        return;
     }
     const ref = decision.ref;
     if (!ref || typeof ref !== 'string') {
+        const message = 'spawn_character from_source: "library" requires a `ref` (character id).';
         await emit({
-            kind: 'error',
+            kind: 'tool_error',
+            tool: 'spawn_character',
             code: 'missing_ref',
-            message: 'spawn_character from_source: "library" requires a `ref` (character id).',
-            retryable: false,
+            message,
         });
-        return 'end';
+        ctx.last_beat = formatToolError({
+            tool: 'spawn_character',
+            code: 'missing_ref',
+            message,
+            suggestions: ['Use `search_library` first if you need to discover the right id.'],
+        });
+        return;
     }
-    const character = findCharacter ? findCharacter(ref) : null;
+    const character = resolveCharacter ? resolveCharacter(ref) : null;
     if (!character) {
+        const message = `Character "${ref}" is not in this campaign.`;
+        const suggestions = ['Try `search_library` with a query string, or `spawn_character` from_source: "new" with name and brief.'];
         await emit({
-            kind: 'error',
+            kind: 'tool_error',
+            tool: 'spawn_character',
             code: 'character_not_found',
-            message: `Character "${ref}" is not in this campaign.`,
-            retryable: false,
+            message,
+            suggestions,
         });
-        return 'end';
+        ctx.last_beat = formatToolError({
+            tool: 'spawn_character',
+            code: 'character_not_found',
+            message,
+            suggestions,
+        });
+        return;
     }
     const already = (ctx.actors || []).some(a => a.id === ref);
     if (already) {
@@ -733,6 +1114,7 @@ async function dispatchSpawn({ ctx, decision, emit, addParticipant, findCharacte
             phase: 'directing',
             message: `${character.name} is already in the scene.`,
         });
+        ctx.last_beat = `${character.name} (id: \`${character.id}\`) was already in the scene; no roster change. Continue.`;
         return;
     }
     if (!addParticipant) {
@@ -774,7 +1156,109 @@ async function dispatchSpawn({ ctx, decision, emit, addParticipant, findCharacte
         character_id: character.id,
         character_name: character.name,
     });
+    ctx.last_beat = `${character.name} (id: \`${character.id}\`) entered the scene. Decide whether to \`speak\` as them next or hand the floor back via \`end_turn\`.`;
     return;
+}
+
+/**
+ * Spawn a brand new character into the scene as a TRANSIENT — held only in
+ * the loop's `transientCharacters` map and mirrored into `ctx.actors`.
+ * Never written to disk here; persistence is deferred until the character
+ * first speaks (see `promoteTransient` in `dispatchSpeak`).
+ *
+ * @param {{
+ *   ctx: import('./prompts.js').TurnContext,
+ *   decision: any,
+ *   emit: (ev: TurnEvent) => Promise<void> | void,
+ *   transientCharacters?: Map<string, import('../library/schemas.js').Character>,
+ * }} args
+ */
+async function dispatchSpawnNew({ ctx, decision, emit, transientCharacters }) {
+    const name = String(decision.name || '').trim();
+    const brief = String(decision.brief || '').trim();
+    if (!name || !brief) {
+        const message = 'spawn_character from_source: "new" requires both `name` and `brief`.';
+        await emit({
+            kind: 'tool_error',
+            tool: 'spawn_character',
+            code: 'missing_fields',
+            message,
+        });
+        ctx.last_beat = formatToolError({
+            tool: 'spawn_character',
+            code: 'missing_fields',
+            message,
+            suggestions: ['Retry with `name`: short display name, and `brief`: a one-sentence description (appearance, role, voice).'],
+        });
+        return;
+    }
+    if (!transientCharacters) {
+        await emit({
+            kind: 'error',
+            code: 'no_transient_store',
+            message: 'spawn_character (new): transient character store not configured.',
+            retryable: false,
+        });
+        return 'end';
+    }
+    const usedIds = new Set([
+        ...(ctx.actors || []).map(a => a.id),
+        ...(ctx.library_characters || []).map(c => c.id),
+        ...transientCharacters.keys(),
+    ]);
+    const id = generateTransientId(name, usedIds);
+    const now = new Date().toISOString();
+    /** @type {import('../library/schemas.js').Character} */
+    const transient = {
+        id,
+        campaign_id: ctx.campaign?.id || '',
+        name,
+        is_player: false,
+        appearance: brief,
+        personality: '',
+        voice: '',
+        background: '',
+        sheet: { stats: {}, statuses: {}, items: [], skills: [], notes: '' },
+        st_card_avatar: null,
+        created_at: now,
+        updated_at: now,
+    };
+    transientCharacters.set(id, transient);
+    ctx.actors = [...(ctx.actors || []), {
+        id,
+        name,
+        is_player: false,
+        appearance: brief,
+    }];
+    await emit({
+        kind: 'state',
+        change: 'spawn',
+        character_id: id,
+        character_name: name,
+        ephemeral: true,
+    });
+    ctx.last_beat = `Transient character "${name}" (id: \`${id}\`) spawned into the scene with brief: "${brief}". They will become a permanent campaign character only if you \`speak\` as them this turn. Decide whether to \`speak\` them next.`;
+    return;
+}
+
+/**
+ * Generate a slug-style id from a name, suffixed if it collides.
+ *
+ * @param {string} name
+ * @param {Set<string>} usedIds
+ */
+function generateTransientId(name, usedIds) {
+    const base = String(name)
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 40) || 'npc';
+    if (!usedIds.has(base)) return base;
+    for (let i = 2; i < 1000; i++) {
+        const candidate = `${base}_${i}`;
+        if (!usedIds.has(candidate)) return candidate;
+    }
+    return `${base}_${Date.now()}`;
 }
 
 /**
@@ -784,37 +1268,45 @@ async function dispatchSpawn({ ctx, decision, emit, addParticipant, findCharacte
  *   emit: (ev: TurnEvent) => Promise<void> | void,
  *   removeParticipant?: (characterId: string) => Promise<import('../library/schemas.js').Character | null> | import('../library/schemas.js').Character | null,
  *   findCharacter?: (characterId: string) => import('../library/schemas.js').Character | null,
+ *   transientCharacters?: Map<string, import('../library/schemas.js').Character>,
+ *   promotedTransients?: Set<string>,
  * }} args
  */
-async function dispatchRemove({ ctx, decision, emit, removeParticipant, findCharacter }) {
+async function dispatchRemove({ ctx, decision, emit, removeParticipant, findCharacter, transientCharacters, promotedTransients }) {
     const id = decision.character_id;
     if (!id || typeof id !== 'string') {
+        const message = 'remove_character requires a `character_id`.';
         await emit({
-            kind: 'error',
+            kind: 'tool_error',
+            tool: 'remove_character',
             code: 'missing_character_id',
-            message: 'remove_character requires a `character_id`.',
-            retryable: false,
+            message,
         });
-        return 'end';
+        ctx.last_beat = formatToolError({ tool: 'remove_character', code: 'missing_character_id', message });
+        return;
     }
     const character = findCharacter ? findCharacter(id) : null;
     if (!character) {
+        const message = `Character "${id}" is not in this campaign.`;
         await emit({
-            kind: 'error',
+            kind: 'tool_error',
+            tool: 'remove_character',
             code: 'character_not_found',
-            message: `Character "${id}" is not in this campaign.`,
-            retryable: false,
+            message,
         });
-        return 'end';
+        ctx.last_beat = formatToolError({ tool: 'remove_character', code: 'character_not_found', message });
+        return;
     }
     if (character.is_player) {
+        const message = 'The player character cannot be removed from a scene.';
         await emit({
-            kind: 'error',
+            kind: 'tool_error',
+            tool: 'remove_character',
             code: 'cannot_remove_player',
-            message: 'The player character cannot be removed from a scene.',
-            retryable: false,
+            message,
         });
-        return 'end';
+        ctx.last_beat = formatToolError({ tool: 'remove_character', code: 'cannot_remove_player', message });
+        return;
     }
     const present = (ctx.actors || []).some(a => a.id === id);
     if (!present) {
@@ -823,8 +1315,26 @@ async function dispatchRemove({ ctx, decision, emit, removeParticipant, findChar
             phase: 'directing',
             message: `${character.name} is not in the scene.`,
         });
+        ctx.last_beat = `${character.name} (id: \`${character.id}\`) was not in the scene; nothing changed. Continue.`;
         return;
     }
+
+    // Transient (un-promoted) characters live only in the loop's transient
+    // map. Removing them is a memory-only op — no participant writer call.
+    const isTransient = transientCharacters && transientCharacters.has(character.id) && !promotedTransients?.has(character.id);
+    if (isTransient) {
+        transientCharacters.delete(character.id);
+        ctx.actors = (ctx.actors || []).filter(a => a.id !== id);
+        await emit({
+            kind: 'state',
+            change: 'remove',
+            character_id: character.id,
+            character_name: character.name,
+        });
+        ctx.last_beat = `${character.name} (transient) removed before they ever spoke; they're gone with no campaign record. Continue.`;
+        return;
+    }
+
     if (!removeParticipant) {
         await emit({
             kind: 'error',
@@ -854,6 +1364,7 @@ async function dispatchRemove({ ctx, decision, emit, removeParticipant, findChar
         character_id: character.id,
         character_name: character.name,
     });
+    ctx.last_beat = `${character.name} (id: \`${character.id}\`) left the scene. Continue or end_turn.`;
     return;
 }
 

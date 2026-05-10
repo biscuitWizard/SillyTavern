@@ -1036,7 +1036,13 @@ router.post('/turn', async (request, response) => {
         // transcript is the single source of truth for scene history. The
         // sidebar refresh is driven from the live event stream; reload of a
         // closed scene reads these lines.
-        if (ev && ev.kind === 'state') {
+        //
+        // We skip persistence for `ephemeral: true` spawn events — those
+        // are transient characters that will only become real once they
+        // speak (the loop emits a second `state.spawn` event with
+        // `promoted: true` at that point, which IS persisted). This way an
+        // abandoned spawn leaves no trace in the transcript.
+        if (ev && ev.kind === 'state' && !ev.ephemeral) {
             try {
                 const verb = ev.change === 'spawn' ? 'entered' : 'left';
                 const line = {
@@ -1051,12 +1057,38 @@ router.post('/turn', async (request, response) => {
                         change: ev.change,
                         character_id: ev.character_id,
                         character_name: ev.character_name,
+                        promoted: ev.promoted || undefined,
                     },
                 };
                 await transcript.appendLine(directories, campaign.id, found.scene.id, line);
                 sceneStore.refreshMessageCount(directories, campaign.id, found.scene.id);
             } catch (persistErr) {
                 console.error('[gm] persist state line failed', persistErr);
+            }
+        }
+        // Persist tool_error events as a system note so the player can see
+        // what the Director tried (and what it'll recover from). Marked
+        // distinctly so the frontend can style them less alarmingly than a
+        // hard error.
+        if (ev && ev.kind === 'tool_error') {
+            try {
+                const line = {
+                    name: 'System',
+                    mes: `(Director recovered from a tool error: ${ev.message})`,
+                    is_user: false,
+                    is_system: true,
+                    send_date: new Date().toISOString(),
+                    extra: {
+                        role: 'system',
+                        kind: 'tool_error',
+                        tool: ev.tool,
+                        code: ev.code,
+                    },
+                };
+                await transcript.appendLine(directories, campaign.id, found.scene.id, line);
+                sceneStore.refreshMessageCount(directories, campaign.id, found.scene.id);
+            } catch (persistErr) {
+                console.error('[gm] persist tool_error line failed', persistErr);
             }
         }
     };
@@ -1113,6 +1145,16 @@ router.post('/turn', async (request, response) => {
             removeParticipant: (id) => {
                 const updated = participants.removeParticipant(directories, campaign.id, found.scene.id, id);
                 return updated ? charactersById.get(id) || null : null;
+            },
+            // Promote-on-speak: when the loop's transient character first
+            // speaks, we persist them as a real campaign character via the
+            // standard library store. After persistence, the loop calls
+            // `addParticipant` with the new id so the right-sidebar roster
+            // refreshes from disk on the next reload.
+            createCharacter: (input) => {
+                const persisted = characterStore.create(directories, campaign.id, input);
+                if (persisted) charactersById.set(persisted.id, persisted);
+                return persisted;
             },
             memoryService,
             sceneIndex,

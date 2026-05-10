@@ -91,15 +91,36 @@ export function handleTurnEvent(ev, ui) {
     }
 
     if (ev.kind === 'state') {
-        const verb = ev.change === 'spawn' ? 'entered' : 'left';
-        const name = ev.character_name || ev.character_id || 'Someone';
+        // Ephemeral spawns (transient new characters that haven't spoken
+        // yet) are not announced in chat — they're held tentatively by the
+        // loop and may vanish at end-of-turn if never used. The companion
+        // `state.spawn` event with `promoted: true` (emitted on first
+        // speak) IS rendered.
+        if (!ev.ephemeral) {
+            const verb = ev.change === 'spawn' ? 'entered' : 'left';
+            const name = ev.character_name || ev.character_id || 'Someone';
+            appendActorLine({
+                actor: 'system',
+                name: 'System',
+                text: `${name} ${verb} the scene.`,
+                role: 'system',
+            });
+        }
+        emitState(ev);
+        return;
+    }
+
+    if (ev.kind === 'tool_error') {
+        // The Director recovers from these on its next step; we surface a
+        // muted system line so the player knows something happened without
+        // the alarming "(error) ..." red flag.
+        console.warn('[gm] director tool error', ev);
         appendActorLine({
             actor: 'system',
             name: 'System',
-            text: `${name} ${verb} the scene.`,
+            text: `(Director recovered from a tool error: ${ev.message || ev.code || 'unknown'})`,
             role: 'system',
         });
-        emitState(ev);
         return;
     }
 

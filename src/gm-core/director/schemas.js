@@ -16,7 +16,8 @@
  * @typedef {(
  *  | { action: 'speak', actor: 'narrator' | string, intent: string, rationale: string }
  *  | { action: 'skill_check', actor: string, intent: string, rationale: string }
- *  | { action: 'spawn_character', from_source: 'library' | 'new', ref?: string, brief?: string, on_join_message?: string, rationale: string }
+ *  | { action: 'search_library', query: string, rationale: string }
+ *  | { action: 'spawn_character', from_source: 'library' | 'new', ref?: string, name?: string, brief?: string, on_join_message?: string, rationale: string }
  *  | { action: 'remove_character', character_id: string, on_leave_message?: string, rationale: string }
  *  | { action: 'add_lore', title: string, body: string, tags: string[], rationale: string }
  *  | { action: 'propose_scene', name: string, setting: string, suggested_participants: string[], hooks: string[], rationale: string }
@@ -26,10 +27,14 @@
 
 /** Variants the loop dispatcher actually executes. Phase 7 adds `add_lore`,
  * which records a generated world-lore entry into the campaign-scoped
- * `world_lore__{cid}` collection (origin: 'generated'). */
+ * `world_lore__{cid}` collection (origin: 'generated'). The
+ * `search_library` and `spawn_character: from_source='new'` paths are
+ * Phase 5/6 follow-on work that turns "the player named someone off-stage"
+ * from a hard error into a recoverable tool flow. */
 export const SUPPORTED_ACTIONS = new Set([
     'speak',
     'skill_check',
+    'search_library',
     'spawn_character',
     'remove_character',
     'add_lore',
@@ -80,13 +85,37 @@ export const directorDecisionJsonSchema = {
             additionalProperties: false,
         },
         {
+            title: 'SearchLibrary',
+            type: 'object',
+            properties: {
+                action: { type: 'string', const: 'search_library' },
+                query: {
+                    type: 'string',
+                    description: 'Free-text query searched against off-stage character name, appearance, and background.',
+                },
+                rationale: { type: 'string' },
+            },
+            required: ['action', 'query', 'rationale'],
+            additionalProperties: false,
+        },
+        {
             title: 'SpawnCharacter',
             type: 'object',
             properties: {
                 action: { type: 'string', const: 'spawn_character' },
                 from_source: { type: 'string', enum: ['library', 'new'] },
-                ref: { type: 'string' },
-                brief: { type: 'string' },
+                ref: {
+                    type: 'string',
+                    description: 'For from_source: "library", the character id to bring on-stage.',
+                },
+                name: {
+                    type: 'string',
+                    description: 'For from_source: "new", the short display name of the character (e.g. "Mira", "the bartender").',
+                },
+                brief: {
+                    type: 'string',
+                    description: 'For from_source: "new", a one-sentence description of who they are and how they read (appearance, role, voice).',
+                },
                 on_join_message: { type: 'string' },
                 rationale: { type: 'string' },
             },
@@ -178,9 +207,17 @@ export function validateDirectorDecision(value) {
             if (typeof v.actor !== 'string' || !v.actor) return 'skill_check.actor required';
             if (typeof v.intent !== 'string') return 'skill_check.intent required';
             return null;
+        case 'search_library':
+            if (typeof v.query !== 'string' || !v.query.trim()) return 'search_library.query required';
+            return null;
         case 'end_turn':
             return null;
         case 'spawn_character':
+            if (v.from_source === 'new') {
+                if (typeof v.name !== 'string' || !v.name.trim()) return 'spawn_character.name required when from_source is "new"';
+                if (typeof v.brief !== 'string' || !v.brief.trim()) return 'spawn_character.brief required when from_source is "new"';
+            }
+            return null;
         case 'remove_character':
         case 'add_lore':
         case 'propose_scene':
