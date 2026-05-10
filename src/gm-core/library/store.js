@@ -125,7 +125,11 @@ export function listAll(directories, campaignId) {
  */
 export function create(directories, campaignId, input) {
     ensureDir(charactersDir(directories, campaignId));
-    const id = uniqueId(input.name, listIds(directories, campaignId));
+    // Honour an explicit id when provided (e.g. from lore-pack seeding);
+    // fall back to uniqueId(name) for wizard-created characters.
+    const id = (typeof input.id === 'string' && input.id.trim())
+        ? input.id.trim()
+        : uniqueId(input.name, listIds(directories, campaignId));
     const character = buildCharacter({ ...input, id, campaign_id: campaignId });
     writeJson(characterFile(directories, campaignId, character.id), character);
     cache.set(cacheKey(directories.root, campaignId, character.id), character);
