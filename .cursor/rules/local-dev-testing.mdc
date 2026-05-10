@@ -1,0 +1,86 @@
+---
+description: How to run and test the TTRPG Tavern dev instance locally, including LLM services from the prod stack and browser-based verification.
+alwaysApply: true
+---
+
+# Local Dev Testing
+
+## Starting the dev environment
+
+1. **Qdrant** (always needed):
+   ```
+   docker compose up qdrant -d
+   ```
+
+2. **App on host** (recommended for dev):
+   ```
+   npm start
+   ```
+   The app listens on `http://localhost:8000`.
+
+3. **App in container** (alternative):
+   ```
+   docker compose --profile app up
+   ```
+   The app listens on `http://localhost:8001`.
+
+## LLM services
+
+The prod stack (`docker-compose.prod.yml`, managed by Portainer) provides all LLM inference. When it is running, these endpoints are available on the host:
+
+| Service          | URL                          | Purpose                    |
+|------------------|------------------------------|----------------------------|
+| llama-server     | `http://localhost:8180/v1`   | Chat / RP model (EVA-Qwen) |
+| llama-director   | `http://localhost:8182/v1`   | Director (structured output)|
+| ollama           | `http://localhost:11434`     | RAG embeddings (nomic-embed-text) |
+
+- The `--profile app` container auto-connects to prod Ollama for embeddings via `host.docker.internal:11434`.
+- For `npm start`, Ollama embeddings work automatically (defaults to `localhost:11434`).
+- llama-server and llama-director endpoints are configured in the **ST web UI** under Text Completion API settings, not via env vars.
+- Do **not** run `--profile llm` while the prod stack is up (port 11434 conflict).
+
+## Browser-based testing with Cursor
+
+Use the `cursor-ide-browser` MCP tools to verify UI changes without leaving the editor. Typical flow:
+
+1. **Navigate** to the running dev instance:
+   ```
+   browser_navigate → http://localhost:8000
+   ```
+
+2. **Snapshot** to inspect page structure and get element refs:
+   ```
+   browser_snapshot
+   ```
+
+3. **Interact** with specific elements using refs from the snapshot (click, fill, type, select).
+
+4. **Screenshot** for visual verification:
+   ```
+   browser_take_screenshot
+   ```
+
+5. **Lock/unlock** when doing multi-step interactions:
+   ```
+   browser_lock (action: "lock")   → before interaction sequence
+   browser_lock (action: "unlock") → when done
+   ```
+
+Always `browser_navigate` first (a tab must exist before you can lock), then `browser_lock`, then interact, then `browser_lock` unlock.
+
+### Checking API endpoints
+
+Use `browser_navigate` to hit API routes directly (e.g., `http://localhost:8000/api/gm/rag/reconcile`) or use the Shell tool with `curl` for non-browser API testing.
+
+## Port reference
+
+| Port  | Owner            | Notes                        |
+|-------|------------------|------------------------------|
+| 8000  | Dev app (host)   | `npm start`                  |
+| 8001  | Dev app (docker) | `--profile app`              |
+| 6333  | Dev Qdrant REST  | Always running               |
+| 6334  | Dev Qdrant gRPC  | Always running               |
+| 8080  | Prod app         | Portainer stack              |
+| 8180  | Prod llama-server| Shared with dev              |
+| 8182  | Prod llama-director | Shared with dev           |
+| 11434 | Prod Ollama      | Shared with dev              |
