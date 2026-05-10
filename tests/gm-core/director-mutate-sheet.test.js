@@ -13,9 +13,10 @@
  *      covered.
  *   2. Dispatch applies each op in order via the supplied `mutateSheet`
  *      callback, emits ONE `sheet_mutated` event carrying the per-op
- *      results and the final sheet snapshot, and threads
- *      `ctx.last_beat` so the Director's next step can decide whether
- *      to follow up with a speak or end_turn.
+ *      results and the final sheet snapshot, and returns a `continue`
+ *      summary so the loop appends a tool-result message into the
+ *      Director's history — the Director's next call sees what changed
+ *      and can decide whether to follow up with a speak or end_turn.
  *   3. Unknown / out-of-scene `character_id` is a recoverable
  *      `tool_error` — never silently mutates and never ends the turn
  *      with an `error`.
@@ -78,13 +79,18 @@ function baseCtx() {
 
 function makeDirector(decisions) {
     const queue = [...decisions];
-    return {
-        structured: jest.fn(async () => {
+    /** @type {Array<Array<{ role: string, content: string }>>} */
+    const calls = [];
+    const client = {
+        structured: jest.fn(async ({ messages }) => {
+            calls.push((messages || []).map(m => ({ role: m.role, content: m.content })));
             if (queue.length === 0) throw new Error('director queue exhausted');
             return queue.shift();
         }),
         chat: jest.fn(async () => 'unused'),
+        calls,
     };
+    return client;
 }
 
 function makeActor() {
@@ -295,7 +301,7 @@ describe('mutate_sheet schema', () => {
 // =====================================================================
 
 describe('mutate_sheet dispatch', () => {
-    test('applies ops in order, emits sheet_mutated, sets ctx.last_beat, and the loop continues to end_turn', async () => {
+    test('applies ops in order, emits sheet_mutated, threads the result back via the Director\'s history, and the loop continues to end_turn', async () => {
         const jack = makeChar({ id: 'jack', name: 'Jack', is_player: true, stats: { hp: 12, max_hp: 12 } });
         const amelia = makeChar({ id: 'amelia', name: 'Amelia' });
         const store = makeStore([jack, amelia]);
@@ -345,10 +351,17 @@ describe('mutate_sheet dispatch', () => {
         expect(finalJack.sheet.statuses.poisoned).toBe('minor');
         expect(finalJack.sheet.items.map(i => i.name)).toEqual(['Antidote Vial']);
 
-        expect(ctx.last_beat).toContain('Sheet for Jack');
-        expect(ctx.last_beat).toContain('adjust_stat hp -4');
-        expect(ctx.last_beat).toContain('set_status poisoned');
-        expect(ctx.last_beat).toContain('add_item');
+        // The follow-up Director call must have seen the per-op result in
+        // its messages[] history — the loop appends a synthetic
+        // `Tool result for `mutate_sheet`:` user message after dispatch.
+        const followupCall = director.calls[1];
+        expect(followupCall).toBeDefined();
+        const lastUser = [...followupCall].reverse().find(m => m.role === 'user');
+        expect(lastUser).toBeDefined();
+        expect(lastUser.content).toContain('Sheet for Jack');
+        expect(lastUser.content).toContain('adjust_stat hp -4');
+        expect(lastUser.content).toContain('set_status poisoned');
+        expect(lastUser.content).toContain('add_item');
 
         expect(events[events.length - 1]).toEqual(expect.objectContaining({
             kind: 'end_of_turn',
@@ -425,7 +438,11 @@ describe('mutate_sheet dispatch', () => {
         expect(toolErrors[0].tool).toBe('mutate_sheet');
         expect(toolErrors[0].code).toBe('unknown_character');
         expect(store.mutateSheet).not.toHaveBeenCalled();
-        expect(ctx.last_beat).toContain('Tool error from `mutate_sheet`');
+        // Recovery call must have seen the tool error in its history.
+        const followupCall = director.calls[1];
+        expect(followupCall).toBeDefined();
+        const lastUser = [...followupCall].reverse().find(m => m.role === 'user');
+        expect(lastUser.content).toContain('Tool error from `mutate_sheet`');
         // Loop ended cleanly via the recovery, not via a hard error.
         expect(events[events.length - 1]).toEqual(expect.objectContaining({
             kind: 'end_of_turn', reason: 'director',
@@ -470,8 +487,13 @@ describe('mutate_sheet dispatch', () => {
         expect(sheetMutated.ops_applied[1]).toEqual(expect.objectContaining({ op: 'remove_item', ok: false }));
         // The successful op still landed.
         expect(store.findCharacter('jack').sheet.stats.hp).toBe(7);
-        expect(ctx.last_beat).toMatch(/1 op applied, 1 failed/);
-        expect(ctx.last_beat).toContain('Some ops failed');
+        // The follow-up Director call sees the partial-failure summary
+        // in its history so it knows what landed and what didn't.
+        const followupCall = director.calls[1];
+        expect(followupCall).toBeDefined();
+        const lastUser = [...followupCall].reverse().find(m => m.role === 'user');
+        expect(lastUser.content).toMatch(/1 op applied, 1 failed/);
+        expect(lastUser.content).toContain('Some ops failed');
     });
 
     test('missing mutateSheet callback → unrecoverable error, ends turn with reason=error', async () => {

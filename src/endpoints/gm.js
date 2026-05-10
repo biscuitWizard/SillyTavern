@@ -1362,13 +1362,14 @@ const TRANSCRIPT_TAIL_CHARS = 4000;
  * Body shape:
  *   {
  *     campaign_id, scene_id, user_input,
- *     director_profile: LlmProfile,
- *     actor_profile:    LlmProfile,
+ *     director_profile:    LlmProfile,
+ *     actor_profile:       LlmProfile,
+ *     summarizer_profile?: LlmProfile,   // collapses long agent-loop history
  *   }
  */
 router.post('/turn', async (request, response) => {
     const body = request.body ?? {};
-    const { campaign_id, scene_id, user_input, director_profile, actor_profile } = body;
+    const { campaign_id, scene_id, user_input, director_profile, actor_profile, summarizer_profile } = body;
     const userInput = typeof user_input === 'string' ? user_input.trim() : '';
 
     if (!campaign_id || !scene_id) {
@@ -1559,10 +1560,24 @@ router.post('/turn', async (request, response) => {
         }
     };
 
-    let directorClient, actorClient;
+    let directorClient, actorClient, summarizerClient = null;
     try {
         directorClient = createLlmClient({ userDirectories: directories, profile: director_profile });
         actorClient = createLlmClient({ userDirectories: directories, profile: actor_profile });
+        // The summariser role is optional. When the frontend ships a
+        // `summarizer_profile` we build a dedicated client; otherwise the
+        // loop transparently falls back to the Director's client. We don't
+        // hard-fail here on a bad summariser profile — summarisation is a
+        // quality optimisation, and we'd rather run the turn than block
+        // the player on a misconfiguration in a non-critical role.
+        if (summarizer_profile && typeof summarizer_profile === 'object') {
+            try {
+                summarizerClient = createLlmClient({ userDirectories: directories, profile: summarizer_profile });
+            } catch (sumErr) {
+                console.warn('[gm] summarizer_profile invalid; falling back to director client', sumErr?.message || sumErr);
+                summarizerClient = null;
+            }
+        }
     } catch (err) {
         await emit({
             kind: 'error',
@@ -1600,6 +1615,7 @@ router.post('/turn', async (request, response) => {
             directorClient,
             actorClient,
             adjudicatorClient: directorClient,
+            summarizerClient: summarizerClient || undefined,
             ruleset,
             emit,
             signal: abortController.signal,

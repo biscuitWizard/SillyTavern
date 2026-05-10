@@ -461,6 +461,7 @@ async function handleSceneTurn(userInput) {
     abortCurrentTurn = controller;
     setChip('Director thinking…');
 
+    const summarizerProfile = currentLlmProfile('summarizer');
     try {
         const response = await api.startTurn({
             campaign_id: campaign.id,
@@ -468,6 +469,7 @@ async function handleSceneTurn(userInput) {
             user_input: input,
             director_profile: directorProfile,
             actor_profile: narratorProfile,
+            summarizer_profile: summarizerProfile,
         }, controller.signal);
         const charactersById = new Map((characters || []).map(c => [c.id, c]));
         await consumeTurnStream(response, { characters: charactersById });

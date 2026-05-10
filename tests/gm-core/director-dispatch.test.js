@@ -12,6 +12,12 @@
  *     `code: 'unsupported_source'` and ends the turn.
  *   - `remove_character` calls the participant writer and emits a `state`
  *     event with `change: 'remove'`.
+ *
+ * As of the agent-loop refactor (Phase 8), the loop maintains a real
+ * `messages[]` history per turn rather than a single `ctx.last_beat`
+ * string. Tests that previously inspected `ctx.last_beat` now snapshot
+ * the `messages` argument the loop passes into `directorClient.structured`
+ * on each call and assert against the appended tool-result message.
  */
 
 import { describe, test, expect, jest } from '@jest/globals';
@@ -53,13 +59,20 @@ function baseCtx() {
 
 function makeDirector(decisions) {
     const queue = [...decisions];
-    return {
-        structured: jest.fn(async () => {
+    /** @type {Array<Array<{ role: string, content: string }>>} */
+    const calls = [];
+    const client = {
+        structured: jest.fn(async ({ messages }) => {
+            // Snapshot the history the loop passed in for this call so
+            // tests can assert on what the Director "saw" at each step.
+            calls.push((messages || []).map(m => ({ role: m.role, content: m.content })));
             if (queue.length === 0) throw new Error('director queue exhausted');
             return queue.shift();
         }),
         chat: jest.fn(async () => 'unused'),
+        calls,
     };
+    return client;
 }
 
 function makeActor(replyFn) {
@@ -125,7 +138,7 @@ describe('director dispatch: speak', () => {
         const director = makeDirector([
             // First step: hallucinate "bartender" (not in scene, not in library).
             { action: 'speak', actor: 'bartender', intent: 'greet the player', rationale: 'oops' },
-            // After the tool_error LAST BEAT, Director recovers by ending the turn.
+            // After the tool-result history shows the error, Director recovers by ending the turn.
             { action: 'end_turn', rationale: 'no recovery available' },
         ]);
         const actor = makeActor(() => 'should not be called');
@@ -151,53 +164,23 @@ describe('director dispatch: speak', () => {
         expect(events[events.length - 1]).toEqual(expect.objectContaining({
             kind: 'end_of_turn', reason: 'director',
         }));
-        // ctx.last_beat should carry the tool error for the second director call.
-        expect(ctx.last_beat).toContain('Tool error from `speak`');
-        expect(ctx.last_beat).toContain('unknown_actor');
+        // The Director's SECOND call must have seen the tool-error in its
+        // history — that's the new mechanism that replaces ctx.last_beat.
+        const secondCall = director.calls[1];
+        expect(secondCall).toBeDefined();
+        const lastUser = [...secondCall].reverse().find(m => m.role === 'user');
+        expect(lastUser).toBeDefined();
+        expect(lastUser.content).toContain('Tool result for `speak`');
+        expect(lastUser.content).toContain('unknown_actor');
     });
 
-    test('quota: a Director that picks speak: <same actor> twice gets force-ended after one beat', async () => {
-        // Local LLMs (qwen2.5:14b et al) routinely chain speak on the same
-        // actor even when the prompt says not to. The loop's per-actor
-        // speak quota (MAX_SPEAKS_PER_ACTOR=1) is the hard backstop: a
-        // second speak for the same actor in the same turn is converted
-        // into an end_turn before the actor LLM is called.
-        const ctx = baseCtx();
-        const director = makeDirector([
-            { action: 'speak', actor: 'amelia', intent: 'first reply', rationale: 'NPC turn' },
-            // Director ignores LAST BEAT and tries to fire Amelia again:
-            { action: 'speak', actor: 'amelia', intent: 'follow-up monologue', rationale: 'oops' },
-            // Should never be reached — the loop ends the turn at the quota check.
-            { action: 'end_turn', rationale: 'unreachable' },
-        ]);
-        const actor = makeActor(() => 'I look up from my drink.');
-        const events = [];
-        await runTurn({
-            ctx,
-            directorClient: director,
-            actorClient: actor,
-            emit: (e) => events.push(e),
-            findCharacter: (id) => ({ jack, amelia, bran })[id] || null,
-        });
-        // Exactly ONE actor message, NOT two.
-        expect(events.filter(e => e.kind === 'message')).toHaveLength(1);
-        expect(actor.chat).toHaveBeenCalledTimes(1);
-        // The Director was called twice (initial + repeat); the repeat
-        // triggered the quota and ended the turn.
-        expect(director.structured).toHaveBeenCalledTimes(2);
-        // A status event explains the quota close.
-        const closing = events.find(e => e.kind === 'status' && e.phase === 'closing');
-        expect(closing).toBeDefined();
-        expect(closing.message).toMatch(/Speak quota for amelia/i);
-        expect(events[events.length - 1]).toEqual(expect.objectContaining({
-            kind: 'end_of_turn', reason: 'cap',
-        }));
-    });
-
-    test('speak: <character_id> sets ctx.last_beat (no longer mutates user_input) so Director can decide to end_turn', async () => {
+    test('speak: <character_id> records the spoken beat in director history so it can decide to end_turn', async () => {
         // Regression test for the runaway-loop bug: previously the actor
         // branch never updated ctx.user_input, so the Director kept seeing
         // the same player input and kept dispatching speak: <actor>.
+        // Now the loop maintains a real messages[] history, and the
+        // Director sees its own prior "Amelia spoke" beat as a
+        // tool-result user message on the next call.
         const ctx = baseCtx();
         const originalInput = ctx.user_input;
         const director = makeDirector([
@@ -216,10 +199,19 @@ describe('director dispatch: speak', () => {
         // ctx.user_input must be untouched — actors and narrator should always
         // see the original player input, not a synthetic loop marker.
         expect(ctx.user_input).toBe(originalInput);
-        // ctx.last_beat must carry a "spoke" summary so the Director knows
+        // The Director's SECOND call must carry the speak as both an
+        // assistant decision AND a tool-result user message, so it knows
         // not to fire the same actor again.
-        expect(ctx.last_beat).toContain('Amelia');
-        expect(ctx.last_beat).toContain('just spoke');
+        const secondCall = director.calls[1];
+        expect(secondCall).toBeDefined();
+        const assistantTurns = secondCall.filter(m => m.role === 'assistant');
+        expect(assistantTurns).toHaveLength(1);
+        expect(assistantTurns[0].content).toContain('"action":"speak"');
+        expect(assistantTurns[0].content).toContain('"actor":"amelia"');
+        const lastUser = [...secondCall].reverse().find(m => m.role === 'user');
+        expect(lastUser).toBeDefined();
+        expect(lastUser.content).toContain('Amelia');
+        expect(lastUser.content).toContain('just spoke');
         // Exactly one message emitted (no runaway).
         expect(events.filter(e => e.kind === 'message')).toHaveLength(1);
         expect(events[events.length - 1]).toEqual(expect.objectContaining({

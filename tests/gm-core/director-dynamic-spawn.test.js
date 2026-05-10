@@ -2,7 +2,9 @@
  * Director dispatch tests for the dynamic-spawn flow:
  *
  *   - `search_library` returns a tool result with matched off-stage
- *     characters via `ctx.last_beat` and emits no chat events.
+ *     characters via the messages[] history (a synthetic user-role
+ *     "Tool result for `search_library`" message visible to the next
+ *     Director call) and emits no chat events.
  *   - `spawn_character` with `from_source: 'new'` creates a transient
  *     in-memory character: visible in `ctx.actors`, NOT persisted yet,
  *     emits a `state` event marked `ephemeral: true`.
@@ -57,13 +59,18 @@ function baseCtx() {
 
 function makeDirector(decisions) {
     const queue = [...decisions];
-    return {
-        structured: jest.fn(async () => {
+    /** @type {Array<Array<{ role: string, content: string }>>} */
+    const calls = [];
+    const client = {
+        structured: jest.fn(async ({ messages }) => {
+            calls.push((messages || []).map(m => ({ role: m.role, content: m.content })));
             if (queue.length === 0) throw new Error('director queue exhausted');
             return queue.shift();
         }),
         chat: jest.fn(async () => 'unused'),
+        calls,
     };
+    return client;
 }
 
 function makeActor(replyFn) {
@@ -74,7 +81,7 @@ function makeActor(replyFn) {
 }
 
 describe('search_library', () => {
-    test('returns matched off-stage characters via ctx.last_beat without emitting chat events', async () => {
+    test('returns matched off-stage characters via the messages[] history without emitting chat events', async () => {
         const ctx = baseCtx();
         const director = makeDirector([
             { action: 'search_library', query: 'bartender', rationale: 'check if one already exists' },
@@ -94,17 +101,23 @@ describe('search_library', () => {
         expect(events.filter(e => e.kind === 'message')).toHaveLength(0);
         expect(events.filter(e => e.kind === 'state')).toHaveLength(0);
         expect(events.filter(e => e.kind === 'tool_error')).toHaveLength(0);
-        // The Director sees the matches via last_beat on its next call.
-        expect(ctx.last_beat).toContain('search_library');
-        expect(ctx.last_beat).toContain('old_bartender');
-        expect(ctx.last_beat).toContain('Greta the Bartender');
+        // The Director sees the matches via the second call's messages[]
+        // history — the loop appended a synthetic user "Tool result for
+        // `search_library`" message after the dispatcher returned.
+        const secondCall = director.calls[1];
+        expect(secondCall).toBeDefined();
+        const lastUser = [...secondCall].reverse().find(m => m.role === 'user');
+        expect(lastUser).toBeDefined();
+        expect(lastUser.content).toContain('search_library');
+        expect(lastUser.content).toContain('old_bartender');
+        expect(lastUser.content).toContain('Greta the Bartender');
         // Loop terminates cleanly.
         expect(events[events.length - 1]).toEqual(expect.objectContaining({
             kind: 'end_of_turn', reason: 'director',
         }));
     });
 
-    test('empty library yields a "no matches, invent one" tool result', async () => {
+    test('empty library yields a "no matches, invent one" tool result in the next call\'s history', async () => {
         const ctx = baseCtx();
         ctx.library_characters = [];
         const director = makeDirector([
@@ -120,8 +133,10 @@ describe('search_library', () => {
             emit: (e) => events.push(e),
             findCharacter: () => null,
         });
-        expect(ctx.last_beat).toMatch(/no off-stage characters/i);
-        expect(ctx.last_beat).toContain('spawn_character');
+        const secondCall = director.calls[1];
+        const lastUser = [...secondCall].reverse().find(m => m.role === 'user');
+        expect(lastUser.content).toMatch(/no off-stage characters/i);
+        expect(lastUser.content).toContain('spawn_character');
     });
 });
 

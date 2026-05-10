@@ -97,12 +97,24 @@ function baseCtx() {
 
 function makeDirector(decisions) {
     const queue = [...decisions];
+    // The agent-loop refactor moved Director invocation onto a `messages[]`
+    // history. We flatten back to `{system, user}` shape for the test's
+    // existing assertions: `system` is the (single) system message,
+    // `user` is the concatenation of every user-role message in the call.
     /** @type {{ system: string, user: string }[]} */
     const calls = [];
     return {
         calls,
-        structured: async ({ system, user }) => {
-            calls.push({ system, user });
+        structured: async ({ messages, system, user }) => {
+            const msgs = Array.isArray(messages) && messages.length
+                ? messages
+                : [
+                    ...(typeof system === 'string' ? [{ role: 'system', content: system }] : []),
+                    ...(typeof user === 'string' ? [{ role: 'user', content: user }] : []),
+                ];
+            const sys = msgs.filter(m => m.role === 'system').map(m => m.content).join('\n');
+            const usr = msgs.filter(m => m.role === 'user').map(m => m.content).join('\n');
+            calls.push({ system: sys, user: usr });
             if (queue.length === 0) throw new Error('director queue exhausted');
             return queue.shift();
         },

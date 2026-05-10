@@ -26,7 +26,7 @@ const TEXTGEN_LOCAL_SOURCES = new Set([
 ]);
 
 /**
- * @typedef {'director' | 'narrator' | 'actor'} GmRole
+ * @typedef {'director' | 'narrator' | 'actor' | 'summarizer'} GmRole
  */
 
 /**

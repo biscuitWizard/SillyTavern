@@ -630,7 +630,14 @@ export async function removeRelationship(characterId, otherId) {
  * Start a turn. Returns the raw `Response` so the caller can stream the
  * NDJSON body line-by-line.
  *
- * @param {object} body
+ * @param {{
+ *   campaign_id: string,
+ *   scene_id: string,
+ *   user_input: string,
+ *   director_profile: object,
+ *   actor_profile: object,
+ *   summarizer_profile?: object | null,
+ * }} body
  * @param {AbortSignal} [signal]
  * @returns {Promise<Response>}
  */

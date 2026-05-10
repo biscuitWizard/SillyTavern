@@ -27,10 +27,6 @@
  * @property {Array<{ id: string, name: string, appearance?: string }>} [library_characters]
  * @property {string} recent_transcript    a tail of the JSONL, formatted for the LLM
  * @property {string} user_input           the player's original input for this turn (immutable across the loop)
- * @property {string} [last_beat]          loop-internal: what the previous Director step produced (a beat
- *                                          summary, a tool result, or a recoverable error). Set by the loop
- *                                          after each non-terminal dispatch so the Director can decide what
- *                                          to do next without re-firing the same beat.
  * @property {string} [memories_block]     pre-rendered MEMORIES block from MemoryService (Phase 7).
  *                                          The HTTP wrapper builds it before dispatch and the
  *                                          prompt builder splices it; do NOT pass raw MemoryService.
@@ -38,6 +34,14 @@
  *                                          Merged sheet layout (M1). The actor prompt builder
  *                                          reads this to render the per-actor sheet YAML grouped
  *                                          by category. Set once by `runTurn` from `ruleset.sheet_layout`.
+ *
+ * Inter-step Director communication used to flow through `ctx.last_beat`,
+ * a single string mutated after every dispatch. That field is gone — the
+ * Director loop now keeps a real `messages[]` history (see `loop.js` and
+ * `history.js`) where each prior decision and its tool result live as
+ * proper assistant + user turns. Dispatchers return `{kind, summary}`
+ * directly; the loop wraps the summary into a tool-result message via
+ * `formatToolResult`.
  */
 
 /**
@@ -47,11 +51,11 @@ export function directorSystemPrompt(_ctx) {
     return [
         'You are the Director of an interactive TTRPG. You exist to serve the player at the table — not to write a novel for them.',
         '',
-        'You are called once per beat inside a single player turn. Each call you return exactly one DirectorDecision JSON object — no prose, no commentary, no markdown.',
+        'You are called inside an agent loop for a single player turn. Each call you return exactly one DirectorDecision JSON object — no prose, no commentary, no markdown.',
         '',
         '# How a turn works',
         'A turn = "the player did/said X. What does the player see/hear in immediate response, and then it is their turn again."',
-        'You will be re-invoked after each beat with a `LAST BEAT` summary describing what just happened (or a tool result for a tool action). Use it to decide whether to end the turn.',
+        'You see the FULL history of your prior decisions and the engine\'s tool results inside the same turn (assistant turns are your past decisions; user turns starting with `Tool result for ...` are the engine\'s response to each one). Use that history to decide whether to chain another beat or to `end_turn`.',
         'Default to ending the turn fast. The player came here to *play*, not to read.',
         '',
         '# Speaking actions (produce visible output)',
@@ -78,7 +82,7 @@ export function directorSystemPrompt(_ctx) {
         '- `end_turn` — hand control back to the player. Emit this as soon as the player\'s input has had a response.',
         '',
         '# Recovering from tool errors',
-        'If a `LAST BEAT` says a tool errored (e.g. "Actor \\"X\\" is not in the current scene roster"), DO NOT repeat the same call. Read the suggestions in the error and pick one of:',
+        'If a tool result says the call errored (e.g. "Tool error from `speak` (code: unknown_actor): Actor \\"X\\" is not in the current scene roster"), DO NOT repeat the same call. Read the suggestions in the error and pick one of:',
         '  - the closest in-scene actor id, if that\'s who the player meant;',
         '  - `search_library` if the character may already exist off-stage;',
         '  - `spawn_character` with `from_source: "new"` if no match exists and the character should plausibly be in the location.',
@@ -168,14 +172,7 @@ export function directorUserPrompt(ctx) {
     lines.push(ctx.user_input || '(empty)');
     lines.push('');
 
-    if (ctx.last_beat && ctx.last_beat.trim()) {
-        lines.push('# LAST BEAT (what your previous step produced)');
-        lines.push(ctx.last_beat.trim());
-        lines.push('');
-        lines.push('Decide the next single beat. If the player\'s input has already been responded to, emit `end_turn`. If LAST BEAT reports a tool error, DO NOT repeat the same call — pick a recovery action per the system prompt. Return one DirectorDecision JSON object.');
-    } else {
-        lines.push('Decide the next single beat. If the latest beat already responded to the player, emit `end_turn`. Return one DirectorDecision JSON object.');
-    }
+    lines.push('Decide the FIRST beat for this player turn. Return one DirectorDecision JSON object. After the engine dispatches your decision you will be re-invoked with the result appended to this conversation; keep going until you emit `end_turn`.');
     return lines.join('\n');
 }
 

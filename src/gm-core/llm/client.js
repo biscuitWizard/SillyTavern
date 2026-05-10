@@ -12,12 +12,21 @@
  *
  * Two methods:
  *
- *   - `chat({ system, user, signal })`: returns the assistant text.
- *   - `structured({ system, user, schema, schemaName, signal })`: returns
- *     a parsed JSON object that conforms to `schema`. Uses the provider's
- *     native structured-output mode where available (`response_format` for
- *     OpenAI-family, forced tool-use for Claude); falls back to text-mode
- *     JSON with a single retry on parse failure.
+ *   - `chat({ system, user, messages?, onUsage?, signal })`: returns the
+ *     assistant text. Either pass `{system, user}` for a single-turn call
+ *     or `messages` for a multi-turn agent loop. When `messages` is set,
+ *     `system`/`user` are ignored.
+ *   - `structured({ system, user, messages?, schema, schemaName, onUsage?, signal })`:
+ *     returns a parsed JSON object that conforms to `schema`. Uses the
+ *     provider's native structured-output mode where available
+ *     (`response_format` for OpenAI-family, forced tool-use for Claude);
+ *     falls back to text-mode JSON with a single retry on parse failure.
+ *
+ * Both methods accept an optional `onUsage(usage)` callback that fires once
+ * per call with `{prompt_tokens, completion_tokens, total_tokens}` parsed
+ * from the upstream response (or `null` when the provider doesn't surface
+ * a usage object — some Ollama versions omit it). The Director loop uses
+ * this to drive history summarisation without a client-side token estimator.
  *
  * On any non-2xx upstream response or parse failure the client throws a
  * `LlmError { code, message, retryable }` so the Director loop can decide
@@ -143,11 +152,49 @@ const FORCE_TEXT_JSON = new Set([
  */
 
 /**
+ * @typedef {object} ChatMessage
+ * @property {'system'|'user'|'assistant'} role
+ * @property {string} content
+ */
+
+/**
+ * @typedef {object} ChatUsage
+ * @property {number} prompt_tokens
+ * @property {number} completion_tokens
+ * @property {number} total_tokens
+ */
+
+/**
  * @typedef {object} LlmClient
- * @property {(args: { system: string, user: string, signal?: AbortSignal }) => Promise<string>} chat
- * @property {(args: { system: string, user: string, schema: object, schemaName: string, signal?: AbortSignal }) => Promise<any>} structured
+ * @property {(args: { system?: string, user?: string, messages?: ChatMessage[], onUsage?: (usage: ChatUsage | null) => void, signal?: AbortSignal }) => Promise<string>} chat
+ * @property {(args: { system?: string, user?: string, messages?: ChatMessage[], schema: object, schemaName: string, onUsage?: (usage: ChatUsage | null) => void, signal?: AbortSignal }) => Promise<any>} structured
  * @property {LlmProfile} profile
  */
+
+/**
+ * Build a normalised messages[] array from caller args. Either `messages`
+ * (preferred for agent loops) or `{system, user}` (legacy single-turn path).
+ *
+ * @param {{ system?: string, user?: string, messages?: ChatMessage[] }} args
+ * @returns {ChatMessage[]}
+ */
+function resolveMessages({ system, user, messages }) {
+    if (Array.isArray(messages) && messages.length) {
+        return messages;
+    }
+    /** @type {ChatMessage[]} */
+    const out = [];
+    if (typeof system === 'string' && system.length) {
+        out.push({ role: 'system', content: system });
+    }
+    if (typeof user === 'string') {
+        out.push({ role: 'user', content: user });
+    }
+    if (!out.length) {
+        throw new LlmError('bad_request', 'no messages, system, or user provided', false);
+    }
+    return out;
+}
 
 /**
  * @param {{ userDirectories: import('../../users.js').UserDirectoryList, profile: LlmProfile }} args
@@ -177,14 +224,15 @@ export function createLlmClient({ userDirectories, profile }) {
     return {
         profile,
 
-        async chat({ system, user, signal } = /** @type {any} */({})) {
+        async chat({ system, user, messages, onUsage, signal } = /** @type {any} */({})) {
             const { signal: s, cancel } = withTimeout(signal);
+            const msgs = resolveMessages({ system, user, messages });
             try {
                 if (profile.source === 'claude') {
-                    return await claudeChat({ baseUrl, apiKey, profile, system, user, signal: s });
+                    return await claudeChat({ baseUrl, apiKey, profile, messages: msgs, onUsage, signal: s });
                 }
                 if (OPENAI_FAMILY.has(profile.source)) {
-                    return await openaiChat({ baseUrl, apiKey, profile, system, user, signal: s });
+                    return await openaiChat({ baseUrl, apiKey, profile, messages: msgs, onUsage, signal: s });
                 }
                 throw new LlmError('unsupported_source', `source not supported: ${profile.source}`, false);
             } finally {
@@ -192,14 +240,15 @@ export function createLlmClient({ userDirectories, profile }) {
             }
         },
 
-        async structured({ system, user, schema, schemaName, signal } = /** @type {any} */({})) {
+        async structured({ system, user, messages, schema, schemaName, onUsage, signal } = /** @type {any} */({})) {
             const { signal: s, cancel } = withTimeout(signal);
+            const msgs = resolveMessages({ system, user, messages });
             try {
                 if (profile.source === 'claude') {
-                    return await claudeStructured({ baseUrl, apiKey, profile, system, user, schema, schemaName, signal: s });
+                    return await claudeStructured({ baseUrl, apiKey, profile, messages: msgs, schema, schemaName, onUsage, signal: s });
                 }
                 if (OPENAI_FAMILY.has(profile.source)) {
-                    return await openaiStructured({ baseUrl, apiKey, profile, system, user, schema, schemaName, signal: s });
+                    return await openaiStructured({ baseUrl, apiKey, profile, messages: msgs, schema, schemaName, onUsage, signal: s });
                 }
                 throw new LlmError('unsupported_source', `source not supported: ${profile.source}`, false);
             } finally {
@@ -281,26 +330,27 @@ function stripTrailingSlash(s) {
 /* -------- OpenAI-family transport -------- */
 
 /**
- * @param {{ baseUrl: string, apiKey: string, profile: LlmProfile, system: string, user: string, signal: AbortSignal }} args
+ * @param {{ baseUrl: string, apiKey: string, profile: LlmProfile, messages: ChatMessage[], onUsage?: (usage: ChatUsage | null) => void, signal: AbortSignal }} args
  */
-async function openaiChat({ baseUrl, apiKey, profile, system, user, signal }) {
-    const body = openaiBaseBody({ profile, system, user });
+async function openaiChat({ baseUrl, apiKey, profile, messages, onUsage, signal }) {
+    const body = openaiBaseBody({ profile, messages });
     const json = await openaiRequest({ baseUrl, apiKey, profile, body, signal });
+    if (onUsage) onUsage(normaliseUsage(json, 'openai'));
     return extractOpenaiText(json);
 }
 
 /**
- * @param {{ baseUrl: string, apiKey: string, profile: LlmProfile, system: string, user: string, schema: object, schemaName: string, signal: AbortSignal }} args
+ * @param {{ baseUrl: string, apiKey: string, profile: LlmProfile, messages: ChatMessage[], schema: object, schemaName: string, onUsage?: (usage: ChatUsage | null) => void, signal: AbortSignal }} args
  */
-async function openaiStructured({ baseUrl, apiKey, profile, system, user, schema, schemaName, signal }) {
+async function openaiStructured({ baseUrl, apiKey, profile, messages, schema, schemaName, onUsage, signal }) {
     // Local providers (Ollama, llama.cpp, koboldcpp) don't reliably support
     // `response_format` on their OpenAI compatibility endpoints — go straight
     // to the text-mode JSON path which embeds the schema in the system prompt.
     if (FORCE_TEXT_JSON.has(profile.source)) {
-        return await openaiStructuredFallback({ baseUrl, apiKey, profile, system, user, schema, schemaName, signal });
+        return await openaiStructuredFallback({ baseUrl, apiKey, profile, messages, schema, schemaName, onUsage, signal });
     }
 
-    const body = openaiBaseBody({ profile, system, user });
+    const body = openaiBaseBody({ profile, messages });
     body.response_format = {
         type: 'json_schema',
         json_schema: {
@@ -310,25 +360,27 @@ async function openaiStructured({ baseUrl, apiKey, profile, system, user, schema
         },
     };
 
-    let raw;
+    let raw, json;
     try {
-        const json = await openaiRequest({ baseUrl, apiKey, profile, body, signal });
+        json = await openaiRequest({ baseUrl, apiKey, profile, body, signal });
         raw = extractOpenaiText(json);
     } catch (err) {
         // Some providers (e.g. plain OpenRouter routes) reject `response_format`.
         // Drop the schema and try once more in plain text mode, asking for JSON.
         if (err instanceof LlmError && err.code === 'http_400') {
-            return await openaiStructuredFallback({ baseUrl, apiKey, profile, system, user, schema, schemaName, signal });
+            return await openaiStructuredFallback({ baseUrl, apiKey, profile, messages, schema, schemaName, onUsage, signal });
         }
         throw err;
     }
     try {
-        return parseJsonOrThrow(raw, schemaName);
+        const parsed = parseJsonOrThrow(raw, schemaName);
+        if (onUsage) onUsage(normaliseUsage(json, 'openai'));
+        return parsed;
     } catch (parseErr) {
         // Provider accepted `response_format` but produced unparseable output —
         // re-ask once in text-mode JSON before surfacing the error.
         try {
-            return await openaiStructuredFallback({ baseUrl, apiKey, profile, system, user, schema, schemaName, signal });
+            return await openaiStructuredFallback({ baseUrl, apiKey, profile, messages, schema, schemaName, onUsage, signal });
         } catch (_) {
             throw parseErr;
         }
@@ -339,17 +391,25 @@ async function openaiStructured({ baseUrl, apiKey, profile, system, user, schema
  * Fallback for sources that reject `response_format`: we ask for a JSON object
  * matching the schema and parse the text. One retry on malformed output.
  *
- * @param {{ baseUrl: string, apiKey: string, profile: LlmProfile, system: string, user: string, schema: object, schemaName: string, signal: AbortSignal }} args
+ * The schema reminder is appended to the FIRST system message so the model
+ * still sees it when the caller passed a multi-turn `messages` array. If
+ * there's no system message we synthesise one.
+ *
+ * @param {{ baseUrl: string, apiKey: string, profile: LlmProfile, messages: ChatMessage[], schema: object, schemaName: string, onUsage?: (usage: ChatUsage | null) => void, signal: AbortSignal }} args
  */
-async function openaiStructuredFallback({ baseUrl, apiKey, profile, system, user, schema, schemaName, signal }) {
-    const augmentedSystem = `${system}\n\nReply with a single JSON object that matches this schema:\n${JSON.stringify(schema)}\nNo prose, no markdown fences.`;
-    const body = openaiBaseBody({ profile, system: augmentedSystem, user });
+async function openaiStructuredFallback({ baseUrl, apiKey, profile, messages, schema, schemaName, onUsage, signal }) {
+    const reminder = `\n\nReply with a single JSON object that matches this schema:\n${JSON.stringify(schema)}\nNo prose, no markdown fences.`;
+    const augmented = augmentSystemMessage(messages, reminder);
+    const body = openaiBaseBody({ profile, messages: augmented });
     let lastErr;
+    let lastJson;
     for (let attempt = 0; attempt < 2; attempt++) {
-        const json = await openaiRequest({ baseUrl, apiKey, profile, body, signal });
-        const raw = extractOpenaiText(json);
+        lastJson = await openaiRequest({ baseUrl, apiKey, profile, body, signal });
+        const raw = extractOpenaiText(lastJson);
         try {
-            return parseJsonOrThrow(raw, schemaName);
+            const parsed = parseJsonOrThrow(raw, schemaName);
+            if (onUsage) onUsage(normaliseUsage(lastJson, 'openai'));
+            return parsed;
         } catch (err) {
             lastErr = err;
         }
@@ -358,16 +418,33 @@ async function openaiStructuredFallback({ baseUrl, apiKey, profile, system, user
 }
 
 /**
- * @param {{ profile: LlmProfile, system: string, user: string }} args
+ * Splice a reminder into the first system message of a messages[] array,
+ * or prepend a new system message if none exists. Returns a NEW array;
+ * does not mutate the caller's input.
+ *
+ * @param {ChatMessage[]} messages
+ * @param {string} reminder
+ * @returns {ChatMessage[]}
  */
-function openaiBaseBody({ profile, system, user }) {
+function augmentSystemMessage(messages, reminder) {
+    const out = messages.map(m => ({ ...m }));
+    const idx = out.findIndex(m => m.role === 'system');
+    if (idx === -1) {
+        out.unshift({ role: 'system', content: reminder.trimStart() });
+    } else {
+        out[idx] = { ...out[idx], content: `${out[idx].content}${reminder}` };
+    }
+    return out;
+}
+
+/**
+ * @param {{ profile: LlmProfile, messages: ChatMessage[] }} args
+ */
+function openaiBaseBody({ profile, messages }) {
     /** @type {Record<string, unknown>} */
     const body = {
         model: profile.model,
-        messages: [
-            { role: 'system', content: system },
-            { role: 'user', content: user },
-        ],
+        messages,
         stream: false,
     };
     if (typeof profile.temperature === 'number') body.temperature = profile.temperature;
@@ -432,19 +509,20 @@ function extractOpenaiText(json) {
 /* -------- Claude transport -------- */
 
 /**
- * @param {{ baseUrl: string, apiKey: string, profile: LlmProfile, system: string, user: string, signal: AbortSignal }} args
+ * @param {{ baseUrl: string, apiKey: string, profile: LlmProfile, messages: ChatMessage[], onUsage?: (usage: ChatUsage | null) => void, signal: AbortSignal }} args
  */
-async function claudeChat({ baseUrl, apiKey, profile, system, user, signal }) {
-    const body = claudeBaseBody({ profile, system, user });
+async function claudeChat({ baseUrl, apiKey, profile, messages, onUsage, signal }) {
+    const body = claudeBaseBody({ profile, messages });
     const json = await claudeRequest({ baseUrl, apiKey, body, signal });
+    if (onUsage) onUsage(normaliseUsage(json, 'claude'));
     return extractClaudeText(json);
 }
 
 /**
- * @param {{ baseUrl: string, apiKey: string, profile: LlmProfile, system: string, user: string, schema: object, schemaName: string, signal: AbortSignal }} args
+ * @param {{ baseUrl: string, apiKey: string, profile: LlmProfile, messages: ChatMessage[], schema: object, schemaName: string, onUsage?: (usage: ChatUsage | null) => void, signal: AbortSignal }} args
  */
-async function claudeStructured({ baseUrl, apiKey, profile, system, user, schema, schemaName, signal }) {
-    const body = claudeBaseBody({ profile, system, user });
+async function claudeStructured({ baseUrl, apiKey, profile, messages, schema, schemaName, onUsage, signal }) {
+    const body = claudeBaseBody({ profile, messages });
     const tool = {
         name: schemaName || 'output',
         description: 'Well-formed JSON object',
@@ -454,6 +532,7 @@ async function claudeStructured({ baseUrl, apiKey, profile, system, user, schema
     body.tool_choice = { type: 'tool', name: tool.name };
 
     const json = await claudeRequest({ baseUrl, apiKey, body, signal });
+    if (onUsage) onUsage(normaliseUsage(json, 'claude'));
     const block = (json?.content || []).find(b => b?.type === 'tool_use' && b?.name === tool.name);
     if (!block) {
         // Fallback: try to find any tool_use, otherwise extract text and parse.
@@ -469,16 +548,30 @@ async function claudeStructured({ baseUrl, apiKey, profile, system, user, schema
 }
 
 /**
- * @param {{ profile: LlmProfile, system: string, user: string }} args
+ * Claude's `/v1/messages` endpoint takes `system` separate from the
+ * conversational `messages[]`. We hoist all `role: 'system'` messages out
+ * (concatenating with double newlines if the caller built up multiple) and
+ * leave the user/assistant turns intact.
+ *
+ * @param {{ profile: LlmProfile, messages: ChatMessage[] }} args
  */
-function claudeBaseBody({ profile, system, user }) {
+function claudeBaseBody({ profile, messages }) {
+    const systemParts = [];
+    const convo = [];
+    for (const m of messages) {
+        if (m.role === 'system') {
+            if (typeof m.content === 'string' && m.content.length) systemParts.push(m.content);
+        } else {
+            convo.push({ role: m.role, content: m.content });
+        }
+    }
     /** @type {Record<string, unknown>} */
     const body = {
         model: profile.model,
         max_tokens: typeof profile.max_tokens === 'number' ? profile.max_tokens : 1024,
-        system,
-        messages: [{ role: 'user', content: user }],
+        messages: convo,
     };
+    if (systemParts.length) body.system = systemParts.join('\n\n');
     if (typeof profile.temperature === 'number') body.temperature = profile.temperature;
     if (typeof profile.top_p === 'number') body.top_p = profile.top_p;
     if (profile.extra && typeof profile.extra === 'object') Object.assign(body, profile.extra);
@@ -528,6 +621,50 @@ function extractClaudeText(json) {
         .join('');
 }
 
+/**
+ * Normalise the `usage` field from an upstream chat-completion response into
+ * `{prompt_tokens, completion_tokens, total_tokens}`.
+ *
+ * - OpenAI-family servers (OpenAI, OpenRouter, Groq, …) return the names
+ *   we use directly, but some omit `total_tokens` and a few local servers
+ *   (older Ollama, llama.cpp builds without metrics) omit `usage` entirely.
+ * - Claude returns `usage.{input_tokens, output_tokens}` and never a total.
+ *
+ * Returns `null` when the upstream omitted usage. The Director loop treats
+ * `null` as "skip the budget check this step".
+ *
+ * @param {any} json
+ * @param {'openai' | 'claude'} source
+ * @returns {ChatUsage | null}
+ */
+function normaliseUsage(json, source) {
+    const u = json?.usage;
+    if (!u || typeof u !== 'object') return null;
+    if (source === 'claude') {
+        const prompt = numOr0(u.input_tokens);
+        const completion = numOr0(u.output_tokens);
+        if (!prompt && !completion) return null;
+        return {
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            total_tokens: prompt + completion,
+        };
+    }
+    const prompt = numOr0(u.prompt_tokens);
+    const completion = numOr0(u.completion_tokens);
+    const total = numOr0(u.total_tokens) || (prompt + completion);
+    if (!prompt && !completion && !total) return null;
+    return {
+        prompt_tokens: prompt,
+        completion_tokens: completion,
+        total_tokens: total,
+    };
+}
+
+function numOr0(v) {
+    return typeof v === 'number' && Number.isFinite(v) ? v : 0;
+}
+
 /* -------- Helpers -------- */
 
 /**
@@ -550,7 +687,19 @@ function parseJsonOrThrow(raw, schemaName) {
     try {
         return JSON.parse(s);
     } catch (_) {
-        // Try to extract the first {...} block.
+        // Try to extract the FIRST balanced {...} block. Some local models
+        // (e.g. qwen2.5 via Ollama) occasionally emit two decisions back to
+        // back; we want the first one and the agent loop will re-invoke the
+        // Director for the next beat with full history.
+        const first = extractFirstJsonObject(s);
+        if (first !== null) {
+            try {
+                return JSON.parse(first);
+            } catch (_) {
+                // fall through
+            }
+        }
+        // Fallback: greedy first..last (handles a single object with extra prose at both ends).
         const start = s.indexOf('{');
         const end = s.lastIndexOf('}');
         if (start !== -1 && end > start) {
@@ -563,4 +712,36 @@ function parseJsonOrThrow(raw, schemaName) {
         }
         throw new LlmError('parse_failed', `could not parse ${schemaName} JSON: ${s.slice(0, 200)}`, true);
     }
+}
+
+/**
+ * Walks `s` and returns the substring of the first balanced JSON object,
+ * respecting string literals (including escaped quotes). Returns null if no
+ * balanced object is found.
+ *
+ * @param {string} s
+ * @returns {string | null}
+ */
+function extractFirstJsonObject(s) {
+    const start = s.indexOf('{');
+    if (start === -1) return null;
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    for (let i = start; i < s.length; i++) {
+        const ch = s[i];
+        if (escape) { escape = false; continue; }
+        if (inString) {
+            if (ch === '\\') escape = true;
+            else if (ch === '"') inString = false;
+            continue;
+        }
+        if (ch === '"') { inString = true; continue; }
+        if (ch === '{') depth++;
+        else if (ch === '}') {
+            depth--;
+            if (depth === 0) return s.slice(start, i + 1);
+        }
+    }
+    return null;
 }

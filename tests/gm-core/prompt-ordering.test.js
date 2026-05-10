@@ -17,6 +17,7 @@ import { describe, test, expect } from '@jest/globals';
 import { actorSystemPrompt, actorUserPrompt } from '../../src/gm-core/actors/prompts.js';
 import { narratorSystemPrompt, narratorUserPrompt } from '../../src/gm-core/narrator/prompts.js';
 import { directorSystemPrompt, directorUserPrompt } from '../../src/gm-core/director/prompts.js';
+import { formatToolResult } from '../../src/gm-core/director/history.js';
 
 const SHEET_MARKER_KEY = 'M0_ORDERING_PROBE_KEY';
 const SHEET_MARKER_VALUE = 'M0_ORDERING_PROBE_VALUE';
@@ -94,17 +95,44 @@ describe('M0 prompt ordering: sheet AFTER RAG', () => {
         expect(sys).not.toContain('--- BEGIN MEMORIES');
     });
 
-    test('directorUserPrompt: MEMORIES sits before user input + last beat', () => {
-        const user = directorUserPrompt({ ...ctx, last_beat: 'Narrator described the room.' });
+    test('directorUserPrompt: MEMORIES sits before user input', () => {
+        const user = directorUserPrompt(ctx);
         const memoriesIdx = user.indexOf('--- BEGIN MEMORIES');
         const userInputIdx = user.indexOf('# Player input this turn');
-        const lastBeatIdx = user.indexOf('# LAST BEAT');
         expect(memoriesIdx).toBeGreaterThanOrEqual(0);
         expect(userInputIdx).toBeGreaterThan(memoriesIdx);
-        expect(lastBeatIdx).toBeGreaterThan(memoriesIdx);
+        // The initial user prompt must NOT carry a `# LAST BEAT` block any
+        // more — that lived under `ctx.last_beat` before the agent-loop
+        // refactor; tool results now flow as proper user-role messages
+        // appended to the per-turn history.
+        expect(user).not.toContain('# LAST BEAT');
         // No sheet content should leak into the Director's prompt either.
         expect(user).not.toContain(SHEET_MARKER_KEY);
         const sys = directorSystemPrompt(ctx);
         expect(sys).not.toContain(SHEET_MARKER_KEY);
+    });
+});
+
+describe('director history: formatToolResult', () => {
+    test('renders a per-step tool-result message that mirrors the dispatcher summary', () => {
+        const decision = { action: 'speak', actor: 'amelia', intent: 'greet', rationale: 'NPC turn' };
+        const summary = 'Amelia (id: `amelia`) just spoke in response to the player\'s input. Default to end_turn.';
+        const out = formatToolResult(decision, summary);
+        expect(out).toContain('Tool result for `speak`:');
+        expect(out).toContain(summary);
+        expect(out).toContain('Decide the next beat.');
+    });
+
+    test('handles missing summary by emitting "(no details)" without crashing', () => {
+        const decision = { action: 'end_turn' };
+        const out = formatToolResult(decision, '');
+        expect(out).toContain('Tool result for `end_turn`:');
+        expect(out).toContain('(no details)');
+    });
+
+    test('falls back to action="unknown" when the decision is malformed', () => {
+        // @ts-expect-error testing defensive path
+        const out = formatToolResult({}, 'whatever happened');
+        expect(out).toContain('Tool result for `unknown`:');
     });
 });

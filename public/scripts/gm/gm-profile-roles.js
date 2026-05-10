@@ -10,11 +10,12 @@
  * Rather than ship a parallel settings popup, we extend SillyTavern's own
  * Connection Profiles (the connection-manager extension). Each profile is
  * a JSON bag in `extension_settings.connectionManager.profiles`; we simply
- * add three optional keys per profile:
+ * add four optional keys per profile:
  *
  *   - `gm-director-model`
  *   - `gm-narrator-model`
- *   - `gm-actor-model`   (reserved for Phase 5+)
+ *   - `gm-actor-model`
+ *   - `gm-summarizer-model`   (collapses long agent-loop history)
  *
  * If a role override is empty, we fall back to the profile's main `model`
  * field (which connection-manager already populates from ST's live API
@@ -46,6 +47,11 @@ const ROLES = /** @type {const} */ ([
         key: 'actor',
         label: 'Actor model',
         hint: 'NPC dialogue (reserved, Phase 5+). Empty = profile default.',
+    },
+    {
+        key: 'summarizer',
+        label: 'Summarizer model',
+        hint: 'Collapses long agent-loop history into a recap when the Director\'s context fills up. A small, cheap model is fine. Empty = profile default.',
     },
 ]);
 
@@ -198,7 +204,7 @@ function getSelectedProfile() {
  * Returns the role-specific model override for the selected profile, or
  * `''` if none is set. Used by `currentLlmProfile()`.
  *
- * @param {'director' | 'narrator' | 'actor'} roleKey
+ * @param {'director' | 'narrator' | 'actor' | 'summarizer'} roleKey
  */
 export function getRoleModelOverride(roleKey) {
     const profile = getSelectedProfile();
