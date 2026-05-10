@@ -18,6 +18,7 @@ import * as sheetOps from '../gm-core/sheets/operations.js';
 import * as sceneStore from '../gm-core/scenes/store.js';
 import { validateSceneInput } from '../gm-core/scenes/schemas.js';
 import * as transcript from '../gm-core/scenes/transcript.js';
+import { runSceneEndPipeline } from '../gm-core/scenes/end-pipeline.js';
 import { writeStCardForCharacter, removeStCardForCharacter } from '../gm-core/integrations/st-card-mirror.js';
 import { mirrorCharacterToPersona } from '../gm-core/integrations/st-persona-mirror.js';
 import { createLlmClient } from '../gm-core/llm/client.js';
@@ -741,18 +742,107 @@ router.delete('/scenes/:id/participants/:char_id', (request, response) => {
 /**
  * POST /api/gm/scenes/:id/end
  *
- * Mark the scene `closed` and clear `Campaign.current_scene_id` if it pointed
- * here.
+ * Phase 8: drives the scene-end pipeline. Produces a `SceneSummary`,
+ * runs per-participant `MemoryExtraction`, persists the summary doc,
+ * writes key events as `world_lore` and per-character memories as
+ * `character_memory`, then flips the scene to `closed`.
+ *
+ * Body:
+ *   { director_profile: LlmProfile, actor_profile: LlmProfile }
+ *
+ * Query:
+ *   ?dry_run=1   run the LLM calls but skip every persistent write.
+ *                Returns the structured outputs in the response body
+ *                so callers (eval scripts, tests) can inspect them.
+ *   ?force=1    debug-only: re-run the pipeline against a closed scene.
+ *                Records are written through `mirror.upsertRecordInJsonl`
+ *                so deterministic ids make this idempotent. NOT exposed
+ *                to the UI.
  */
-router.post('/scenes/:id/end', (request, response) => {
-    const found = sceneStore.findById(request.user.directories, request.params.id);
+router.post('/scenes/:id/end', async (request, response) => {
+    const directories = request.user.directories;
+    const found = sceneStore.findById(directories, request.params.id);
     if (!found) return response.status(404).json({ error: 'scene not found' });
+
+    const dryRun = request.query.dry_run === '1' || request.query.dry_run === 'true';
+    const force = request.query.force === '1' || request.query.force === 'true';
+    if (found.scene.status === 'closed' && !force) {
+        return response.status(409).json({ error: 'scene is already closed' });
+    }
+
+    const body = request.body ?? {};
+    const { director_profile, actor_profile } = body;
+    if (!director_profile || !actor_profile) {
+        return response.status(400).json({ error: 'director_profile and actor_profile are required' });
+    }
+
+    const campaign = campaignStore.get(directories, found.campaign_id);
+    if (!campaign) return response.status(404).json({ error: 'campaign not found' });
+
+    const characters = characterStore.listAll(directories, campaign.id);
+    const player = characters.find(c => c.is_player) || null;
+    const participantIds = new Set(found.scene.participants || []);
+    if (player) participantIds.add(player.id);
+    const participants = characters
+        .filter(c => participantIds.has(c.id))
+        .sort((a, b) => Number(b.is_player) - Number(a.is_player));
+
+    let memoryService;
+    let sceneIndex = 0;
     try {
-        const updated = sceneStore.endScene(request.user.directories, found.campaign_id, found.scene.id);
-        return response.json({ scene: updated });
+        memoryService = await getMemoryService(directories);
+        sceneIndex = computeSceneIndex(found.scene);
+    } catch (err) {
+        console.error('[gm] scene-end: memory service unavailable', err);
+        return response.status(503).json({ error: 'memory service unavailable', details: err?.message || String(err) });
+    }
+
+    let summaryClient;
+    let extractionClient;
+    try {
+        summaryClient = createLlmClient({ userDirectories: directories, profile: director_profile });
+        extractionClient = createLlmClient({ userDirectories: directories, profile: actor_profile });
+    } catch (err) {
+        console.error('[gm] scene-end: failed to build LLM client', err);
+        return response.status(400).json({ error: 'invalid llm profile', details: err?.message || String(err) });
+    }
+
+    const abortController = new AbortController();
+    request.on('close', () => {
+        if (!response.writableEnded) abortController.abort();
+    });
+
+    try {
+        const result = await runSceneEndPipeline({
+            directories,
+            campaignId: campaign.id,
+            campaign: { name: campaign.name, brief: campaign.brief },
+            scene: found.scene,
+            participants,
+            memoryService,
+            summaryClient,
+            extractionClient,
+            sceneIndex,
+            dryRun,
+            signal: abortController.signal,
+        });
+        return response.json({
+            scene: result.scene ?? found.scene,
+            summary: result.summary,
+            memories_extracted: result.memories_extracted,
+            key_events_written: result.key_events_written,
+            warnings: result.warnings,
+            dry_run: result.dry_run,
+        });
     } catch (error) {
-        console.error('[gm] end scene failed', error);
-        return response.status(500).json({ error: 'failed to end scene' });
+        const stage = /** @type {any} */(error)?.stage;
+        console.error('[gm] scene-end failed', { stage, error });
+        const status = stage === 'summary' ? 502 : 500;
+        return response.status(status).json({
+            error: 'scene-end pipeline failed',
+            stage,
+            details: error?.message || String(error),
+        });
     }
 });
 

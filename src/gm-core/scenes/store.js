@@ -182,18 +182,28 @@ export function refreshMessageCount(directories, campaignId, sceneId) {
 
 /**
  * Mark a scene `closed`. Clears `Campaign.current_scene_id` if it pointed
- * at this scene.
+ * at this scene. Optionally persists summary metadata produced by the
+ * Phase 8 scene-end pipeline (`summary_id`, `summary_headline`,
+ * `summary_path`).
  *
  * @param {import('../../users.js').UserDirectoryList} directories
  * @param {string} campaignId
  * @param {string} sceneId
+ * @param {{ summary_id?: string | null, summary_headline?: string | null, summary_path?: string | null }} [summaryPatch]
  * @returns {Scene | null}
  */
-export function endScene(directories, campaignId, sceneId) {
-    const updated = update(directories, campaignId, sceneId, {
+export function endScene(directories, campaignId, sceneId, summaryPatch) {
+    /** @type {Partial<Scene>} */
+    const patch = {
         status: 'closed',
         ended_at: nowIso(),
-    });
+    };
+    if (summaryPatch && typeof summaryPatch === 'object') {
+        if ('summary_id' in summaryPatch) patch.summary_id = summaryPatch.summary_id ?? null;
+        if ('summary_headline' in summaryPatch) patch.summary_headline = summaryPatch.summary_headline ?? null;
+        if ('summary_path' in summaryPatch) patch.summary_path = summaryPatch.summary_path ?? null;
+    }
+    const updated = update(directories, campaignId, sceneId, patch);
     if (!updated) return null;
 
     try {

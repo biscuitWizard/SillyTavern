@@ -15,7 +15,7 @@ phases stack on them.
 | 5  | [Multi-actor](5-multi-actor.md)                  | Done           |
 | 6  | [Skill checks + ruleset](6-skill-checks.md)      | Pending        |
 | 7  | [RAG (Qdrant)](7-rag.md)                         | Pending        |
-| 8  | [Scene-end pipeline](8-scene-end.md)             | Pending        |
+| 8  | [Scene-end pipeline](8-scene-end.md)             | Done           |
 | 9  | [Strict-GM evals](9-evals.md)                    | Pending        |
 | 10 | [Polish](10-polish.md)                           | Pending        |
 

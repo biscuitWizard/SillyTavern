@@ -214,10 +214,35 @@ export async function appendSceneMessage(sceneId, line) {
     return out;
 }
 
-/** @param {string} sceneId */
-export async function endScene(sceneId) {
-    const out = await request(`/scenes/${encodeURIComponent(sceneId)}/end`, { method: 'POST' });
-    return out?.scene ?? null;
+/**
+ * Phase 8: triggers the scene-end pipeline. Returns the full payload so
+ * the caller can render `memories_extracted` / `summary.headline` in
+ * the toast or detail view.
+ *
+ * @param {string} sceneId
+ * @param {{ director_profile: object, actor_profile: object, dry_run?: boolean }} options
+ * @returns {Promise<{
+ *   scene: any,
+ *   summary: any,
+ *   memories_extracted: Record<string, number>,
+ *   key_events_written: number,
+ *   warnings: Array<{ stage: string, character_id?: string, error: string }>,
+ *   dry_run: boolean,
+ * } | null>}
+ */
+export async function endScene(sceneId, options) {
+    if (!options || !options.director_profile || !options.actor_profile) {
+        throw new Error('endScene requires director_profile and actor_profile');
+    }
+    const query = options.dry_run ? '?dry_run=1' : '';
+    const out = await request(`/scenes/${encodeURIComponent(sceneId)}/end${query}`, {
+        method: 'POST',
+        body: JSON.stringify({
+            director_profile: options.director_profile,
+            actor_profile: options.actor_profile,
+        }),
+    });
+    return out ?? null;
 }
 
 /**

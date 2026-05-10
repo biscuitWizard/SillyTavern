@@ -228,9 +228,13 @@ function renderSceneRow(campaign, scene) {
     const status = scene.status === 'closed' ? 'Closed' : 'Active';
     const date = scene.started_at ? formatRelative(scene.started_at) : '—';
     const messages = `${scene.message_count ?? 0} msg`;
+    const headline = typeof scene.summary_headline === 'string' ? scene.summary_headline.trim() : '';
 
     row.innerHTML = `
-        <span class="gm-scene-row-name"></span>
+        <span class="gm-scene-row-text">
+            <span class="gm-scene-row-name"></span>
+            <span class="gm-scene-row-headline"></span>
+        </span>
         <span class="gm-scene-row-meta">
             <span class="gm-scene-row-status status-${scene.status}"></span>
             <span class="gm-scene-row-date"></span>
@@ -238,6 +242,13 @@ function renderSceneRow(campaign, scene) {
         </span>
     `;
     row.querySelector('.gm-scene-row-name').textContent = scene.name || scene.id;
+    const headlineEl = row.querySelector('.gm-scene-row-headline');
+    if (headline) {
+        headlineEl.textContent = headline;
+        headlineEl.title = headline;
+    } else {
+        headlineEl.remove();
+    }
     row.querySelector('.gm-scene-row-status').textContent = status;
     row.querySelector('.gm-scene-row-date').textContent = date;
     row.querySelector('.gm-scene-row-messages').textContent = messages;

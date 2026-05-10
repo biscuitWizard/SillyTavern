@@ -167,15 +167,64 @@ function onBack(campaign) {
 
 async function onEndScene(campaign, scene) {
     if (!confirm(`End scene "${scene.name || scene.id}"?`)) return;
-    try {
-        await api.endScene(scene.id);
-    } catch (err) {
-        console.error('[gm] endScene failed', err);
-        alert(`Could not end scene: ${err?.message || err}`);
+
+    const directorProfile = currentLlmProfile('director');
+    const narratorProfile = currentLlmProfile('narrator');
+    if (!directorProfile || !narratorProfile || !hasUsableLlmProfile()) {
+        alert('No connection profile is selected, or it is missing a model. Open the API settings (plug icon) to pick or create one before ending the scene.');
+        openStApiPanel();
         return;
     }
+
+    const endBtn = document.querySelector('#gm-root .gm-secondary-btn');
+    if (endBtn instanceof HTMLButtonElement) endBtn.disabled = true;
+    if (abortCurrentTurn) {
+        try { abortCurrentTurn.abort(); } catch (_) { /* ignore */ }
+        abortCurrentTurn = null;
+    }
+    setChip('Closing scene…');
+
+    let result = null;
+    try {
+        result = await api.endScene(scene.id, {
+            director_profile: directorProfile,
+            actor_profile: narratorProfile,
+        });
+    } catch (err) {
+        console.error('[gm] endScene failed', err);
+        setChip('Scene-end failed — see console');
+        setTimeout(() => setChip(''), 4000);
+        if (endBtn instanceof HTMLButtonElement) endBtn.disabled = false;
+        sceneToast(`Could not end scene: ${err?.message || err}`, 'error');
+        return;
+    }
+
+    setChip('');
+    const memoriesTotal = result?.memories_extracted
+        ? Object.values(result.memories_extracted).reduce((a, b) => a + b, 0)
+        : 0;
+    const headline = result?.summary?.headline ? ` — "${truncateForToast(result.summary.headline, 60)}"` : '';
+    sceneToast(`Scene closed${headline} · ${memoriesTotal} ${memoriesTotal === 1 ? 'memory' : 'memories'} extracted`, 'ok');
+
     teardownSceneShell();
     route({ view: 'campaign', campaignId: campaign.id });
+}
+
+/** @param {string} message @param {'ok' | 'error'} kind */
+function sceneToast(message, kind) {
+    const g = /** @type {any} */(window);
+    if (g.toastr) {
+        const fn = kind === 'error' ? g.toastr.error : g.toastr.success;
+        try { fn.call(g.toastr, message, 'Scene'); return; } catch (_) { /* fall through */ }
+    }
+    if (kind === 'error') console.error('[gm] scene toast', message);
+    else console.info('[gm] scene toast', message);
+}
+
+/** @param {string} s @param {number} max */
+function truncateForToast(s, max) {
+    if (typeof s !== 'string') return '';
+    return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
 function teardownSceneShell() {

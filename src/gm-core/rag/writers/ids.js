@@ -43,3 +43,32 @@ export function deriveRoleMemoryId(args) {
         .digest('hex');
     return hash.slice(0, 16);
 }
+
+/**
+ * Phase 8: per-character end-of-scene memory id. Distinct from
+ * `deriveCharacterMemoryId` (which keys on `messageIndex`) because the
+ * scene-end batch extractor doesn't have a single message index — its
+ * memories are scene-spanning. Re-running the pipeline on the same
+ * transcript produces the same id, so writes are idempotent.
+ *
+ * @param {{ campaignId: string, characterId: string, sceneId: string, slot: number, content: string }} args
+ */
+export function deriveSceneEndCharacterMemoryId(args) {
+    const hash = createHash('sha256')
+        .update(`${args.campaignId}|${args.characterId}|${args.sceneId}|scene-end|${args.slot}|${args.content}`)
+        .digest('hex');
+    return hash.slice(0, 16);
+}
+
+/**
+ * Phase 8: world_lore key-event id. Stable across pipeline re-runs so
+ * the disk JSONL upsert + Qdrant upsert are no-ops on the second pass.
+ *
+ * @param {{ campaignId: string, sceneId: string, idx: number, content: string }} args
+ */
+export function deriveSceneEndKeyEventId(args) {
+    const hash = createHash('sha256')
+        .update(`${args.campaignId}|${args.sceneId}|key-event|${args.idx}|${args.content}`)
+        .digest('hex');
+    return hash.slice(0, 16);
+}
