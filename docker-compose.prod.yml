@@ -90,9 +90,9 @@ services:
     restart: unless-stopped
     command:
       - --model
-      - /models/${CHAT_MODEL_FILE:-EVA-Qwen2.5-32B-v0.2-Q5_K_M.gguf}
+      - /models/${CHAT_MODEL_FILE:-ArliAI_Mistral-Small-24B-ArliAI-RPMax-v1.4-Q5_K_M.gguf}
       - -c
-      - "${LLAMA_CTX:-131072}"
+      - "${LLAMA_CTX:-32768}"
       - --parallel
       - "${LLAMA_PARALLEL:-1}"
       - --cache-type-k
@@ -141,7 +141,7 @@ services:
     restart: unless-stopped
     command:
       - --model
-      - /models/${DIRECTOR_MODEL_FILE:-Qwen2.5-14B-Instruct-Q5_K_M.gguf}
+      - /models/${DIRECTOR_MODEL_FILE:-Qwen3-32B-Q5_K_M.gguf}
       - -c
       - "${LLAMA_DIRECTOR_CTX:-131072}"
       - --parallel
