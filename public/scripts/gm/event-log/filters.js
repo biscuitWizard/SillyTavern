@@ -29,10 +29,21 @@ const DEBOUNCE_MS = 200;
 export function renderFilters({ onFilterChange }) {
     const state = { roles: new Set(), scope: '', text: '' };
 
+    const wrap = document.createElement('div');
+    wrap.className = 'gm-evlog-filter-wrap';
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'gm-evlog-filter-toggle';
+    toggle.innerHTML = '<i class="fa-solid fa-caret-right"></i> Filters';
+    toggle.addEventListener('click', () => {
+        wrap.classList.toggle('is-expanded');
+    });
+    wrap.append(toggle);
+
     const bar = document.createElement('div');
     bar.className = 'gm-evlog-filter-bar';
 
-    /* ---- Role chips ---- */
     for (const role of ROLE_CHIPS) {
         const chip = document.createElement('button');
         chip.type = 'button';
@@ -51,7 +62,6 @@ export function renderFilters({ onFilterChange }) {
         bar.append(chip);
     }
 
-    /* ---- Scope select ---- */
     const select = document.createElement('select');
     select.className = 'gm-evlog-filter-select';
     for (const opt of SCOPE_OPTIONS) {
@@ -66,7 +76,6 @@ export function renderFilters({ onFilterChange }) {
     });
     bar.append(select);
 
-    /* ---- Text search ---- */
     const search = document.createElement('input');
     search.type = 'text';
     search.className = 'gm-evlog-filter-search';
@@ -81,6 +90,8 @@ export function renderFilters({ onFilterChange }) {
     });
     bar.append(search);
 
+    wrap.append(bar);
+
     function emitChange() {
         onFilterChange({
             roles: Array.from(state.roles),
@@ -89,5 +100,5 @@ export function renderFilters({ onFilterChange }) {
         });
     }
 
-    return bar;
+    return wrap;
 }

@@ -1727,6 +1727,7 @@ body.tt-mode-scene #chat .mes.gm-roll-card .mes_edit {
 .gm-scene-sidebar-host-right {
     right: 0;
     border-left: 1px solid var(--gm-border);
+    overflow: hidden;
 }
 
 /* The inner sidebar element (rendered by sidebar-left.js / sidebar-right.js)
@@ -1734,10 +1735,12 @@ body.tt-mode-scene #chat .mes.gm-roll-card .mes_edit {
    with the Campaign Main rendering. */
 .gm-scene-sidebar-host > .gm-sidebar {
     width: 100%;
-    height: 100%;
+    flex: 1 1 0;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     gap: 12px;
+    overflow: hidden;
 }
 
 @media (max-width: 900px) {
@@ -4626,9 +4629,23 @@ body.tt-mode-scene #chat .mes.gm-roll-card::before {
     flex-direction: column;
     overflow-y: auto;
     gap: 4px;
-    flex: 1 1 auto;
+    flex: 1 1 0;
     min-height: 0;
-    padding: 6px 0;
+    padding: 6px 2px;
+}
+
+.gm-evlog-list::-webkit-scrollbar {
+    width: 6px;
+}
+.gm-evlog-list::-webkit-scrollbar-track {
+    background: transparent;
+}
+.gm-evlog-list::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 3px;
+}
+.gm-evlog-list::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.28);
 }
 
 .gm-evlog-row {
@@ -4950,14 +4967,47 @@ body.tt-mode-scene #chat .mes.gm-roll-card::before {
 
 /* ---- Filter bar ---- */
 
-.gm-evlog-filter-bar {
+.gm-evlog-filter-wrap {
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--gm-border);
+}
+
+.gm-evlog-filter-toggle {
     display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 4px 4px;
+    background: transparent;
+    border: none;
+    color: var(--gm-text-muted);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    font-family: inherit;
+}
+.gm-evlog-filter-toggle:hover {
+    color: var(--gm-text-soft);
+}
+.gm-evlog-filter-toggle i {
+    font-size: 8px;
+    transition: transform 150ms ease;
+}
+.gm-evlog-filter-wrap.is-expanded .gm-evlog-filter-toggle i {
+    transform: rotate(90deg);
+}
+
+.gm-evlog-filter-bar {
+    display: none;
     flex-wrap: wrap;
     gap: 6px;
-    padding: 6px 0;
+    padding: 4px 4px 8px;
     align-items: center;
-    border-bottom: 1px solid var(--gm-border);
-    flex-shrink: 0;
+}
+.gm-evlog-filter-wrap.is-expanded .gm-evlog-filter-bar {
+    display: flex;
 }
 
 .gm-evlog-filter-chip {
