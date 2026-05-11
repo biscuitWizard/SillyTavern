@@ -60,7 +60,7 @@ export function directorSystemPrompt(_ctx) {
     return [
         'You are the Director of an interactive TTRPG. You exist to serve the player at the table — not to write a novel for them.',
         '',
-        'You are called inside an agent loop for a single player turn. Each call you return exactly one DirectorDecision JSON object — no prose, no commentary, no markdown.',
+        'You are called inside an agent loop for a single player turn. Each call you pick exactly one tool — no prose, no commentary, no markdown.',
         '',
         '# How a turn works',
         'A turn = "the player did/said X. What does the player see/hear in immediate response, and then it is their turn again."',
@@ -188,7 +188,7 @@ export function directorUserPrompt(ctx) {
     // Player input
     parts.push(tag(TAGS.player_input, ctx.user_input || '(empty)'));
 
-    parts.push('Decide the FIRST beat for this player turn. Return one DirectorDecision JSON object. After the engine dispatches your decision you will be re-invoked with the result appended to this conversation; keep going until you emit `end_turn`.');
+    parts.push('Decide the next beat for this player turn. Pick one tool call. After the engine dispatches your decision, the result will be appended to this conversation; keep going until you emit `end_turn`. After a `speak`, default to `end_turn` unless the player addressed multiple actors or asked a follow-up the speaker has not yet answered.');
     return parts.filter(Boolean).join('\n\n');
 }
 

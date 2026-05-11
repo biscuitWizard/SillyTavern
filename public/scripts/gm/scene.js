@@ -464,6 +464,7 @@ async function handleSceneTurn(userInput) {
 
     const directorProfile = currentLlmProfile('director');
     const narratorProfile = currentLlmProfile('narrator');
+    const actorProfile = currentLlmProfile('actor');
     if (!directorProfile || !narratorProfile || !hasUsableLlmProfile()) {
         appendActorLine({
             actor: 'system',
@@ -494,7 +495,8 @@ async function handleSceneTurn(userInput) {
             scene_id: scene.id,
             user_input: input,
             director_profile: directorProfile,
-            actor_profile: narratorProfile,
+            narrator_profile: narratorProfile,
+            actor_profile: actorProfile || narratorProfile,
             summarizer_profile: summarizerProfile,
         }, controller.signal);
         const charactersById = new Map((characters || []).map(c => [c.id, c]));

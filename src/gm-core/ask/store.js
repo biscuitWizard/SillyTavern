@@ -107,6 +107,49 @@ export function append(directories, campaignId, entry) {
 }
 
 /**
+ * Truncate the transcript so that `entryId` and everything after it are
+ * removed.  Returns the removed entries (useful for lore cleanup).
+ *
+ * @param {import('../../users.js').UserDirectoryList} directories
+ * @param {string} campaignId
+ * @param {string} entryId
+ * @returns {Promise<AskEntry[]>}
+ */
+export function truncateFromId(directories, campaignId, entryId) {
+    const file = transcriptFile(directories, campaignId);
+    return withLock(file, async () => {
+        const all = readAll(directories, campaignId);
+        const idx = all.findIndex(e => e.id === entryId);
+        if (idx < 0) return [];
+        const removed = all.splice(idx);
+        const content = all.map(e => JSON.stringify(e)).join('\n') + (all.length ? '\n' : '');
+        await fs.promises.writeFile(file, content, 'utf8');
+        return removed;
+    });
+}
+
+/**
+ * Remove the last N entries from the transcript.
+ *
+ * @param {import('../../users.js').UserDirectoryList} directories
+ * @param {string} campaignId
+ * @param {number} count
+ * @returns {Promise<AskEntry[]>}
+ */
+export function truncateLast(directories, campaignId, count = 2) {
+    const file = transcriptFile(directories, campaignId);
+    return withLock(file, async () => {
+        const all = readAll(directories, campaignId);
+        if (all.length === 0) return [];
+        const n = Math.min(Math.max(count, 0), all.length);
+        const removed = all.splice(all.length - n, n);
+        const content = all.map(e => JSON.stringify(e)).join('\n') + (all.length ? '\n' : '');
+        await fs.promises.writeFile(file, content, 'utf8');
+        return removed;
+    });
+}
+
+/**
  * Build a stable short id for an entry. Collisions are theoretically
  * possible (same role + same text in the same nanosecond) so we mix in
  * `Date.now() * 1000` for uniqueness within a session.

@@ -1275,6 +1275,84 @@ body.tt-mode-scene #chat .mes.gm-roll-card .mes_edit {
     font-size: 13px;
 }
 
+.gm-ask-head-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.gm-ask-undo-btn {
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--gm-border);
+    border-radius: 6px;
+    color: var(--gm-text-soft);
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.gm-ask-undo-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+.gm-ask-undo-btn:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.14);
+}
+
+.gm-ask-msg-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.gm-ask-msg-actions {
+    display: flex;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+.gm-ask-msg:hover .gm-ask-msg-actions {
+    opacity: 1;
+}
+.gm-ask-row-btn {
+    background: none;
+    border: none;
+    color: var(--gm-text-muted);
+    cursor: pointer;
+    font-size: 12px;
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+.gm-ask-row-btn:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: var(--gm-text-soft);
+}
+
+.gm-ask-identity-card {
+    background: rgba(124, 92, 255, 0.08);
+    border: 1px solid rgba(124, 92, 255, 0.25);
+    border-radius: 10px;
+    padding: 12px;
+    margin: 6px 0;
+    font-size: 13px;
+}
+.gm-ask-identity-card-title {
+    font-weight: 700;
+    margin-bottom: 6px;
+    color: #c8b9ff;
+}
+.gm-ask-identity-card-field {
+    margin-bottom: 4px;
+}
+.gm-ask-identity-card-rationale {
+    color: var(--gm-text-muted);
+    font-style: italic;
+    margin-bottom: 8px;
+}
+.gm-ask-identity-card-actions {
+    display: flex;
+    gap: 8px;
+}
+
 /* -------- Plot panel -------- */
 
 .gm-plot-panel {

@@ -570,7 +570,7 @@ async function openaiToolFallback({ baseUrl, apiKey, profile, messages, tools, o
     const body = openaiBaseBody({ profile, messages: augmented });
     let lastErr;
     let lastJson;
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
         lastJson = await openaiRequest({ baseUrl, apiKey, profile, body, signal });
         const raw = extractOpenaiText(lastJson);
         try {
@@ -833,6 +833,13 @@ function openaiBaseBody({ profile, messages }) {
     if (typeof profile.temperature === 'number') body.temperature = profile.temperature;
     if (typeof profile.top_p === 'number') body.top_p = profile.top_p;
     if (typeof profile.max_tokens === 'number') body.max_tokens = profile.max_tokens;
+    // Inject repetition/frequency penalties for local backends only.
+    // llama.cpp uses `repeat_penalty`; Ollama wraps it the same way.
+    // User-provided `profile.extra` values win (applied via Object.assign below).
+    if (FORCE_TEXT_JSON.has(profile.source)) {
+        if (!body.repeat_penalty) body.repeat_penalty = 1.15;
+        if (!body.frequency_penalty) body.frequency_penalty = 0.1;
+    }
     if (profile.extra && typeof profile.extra === 'object') Object.assign(body, profile.extra);
     return body;
 }

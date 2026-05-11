@@ -20,46 +20,98 @@ The frontend Scene view owns the input bar. When the player submits text:
 
 ## Server-side: the Director loop
 
-`src/gm-core/director/loop.js` runs a bounded loop (default cap: 8 steps).
-Each iteration:
+`src/gm-core/director/loop.js` runs a bounded tool-calling agent loop
+(default cap: 8 steps). The Director communicates exclusively through
+OpenAI-style tool calls (`tool_choice: 'required'`). Each iteration:
+
+1. **Refresh context.** The user prompt (`directorHistory[1]`) is
+   rebuilt from `directorUserPrompt(ctx)` every step so the Director
+   sees the latest `recent_transcript` — including narrator/actor lines
+   emitted earlier in the same turn.
+2. **Call the Director.** `directorClient.tool({ messages: directorHistory, tools: directorTools, tool_choice: 'required' })`.
+3. **Dispatch.** Based on the selected tool name, the loop dispatches
+   the action and appends the result as a `role: 'tool'` message keyed
+   by `tool_call_id`.
 
 ```mermaid
 flowchart TD
-  Start([Step start]) --> StatusEvt[emit status: directing]
-  StatusEvt --> Decide[Director: structured(DirectorDecision)]
-  Decide -->|action: speak narrator| CallNarrator
-  Decide -->|action: speak character X| CallActor
-  Decide -->|action: skill_check| Adjudicate
-  Decide -->|action: spawn_character| StateMutation
-  Decide -->|action: remove_character| StateMutation
-  Decide -->|action: add_lore| StateMutation
-  Decide -->|action: propose_scene| StateMutation
-  Decide -->|action: end_turn| Done([loop end])
+  Start([Step start]) --> Refresh[Refresh user prompt with latest transcript]
+  Refresh --> StatusEvt[emit status: directing]
+  StatusEvt --> Decide[Director: tool call]
+  Decide -->|speak: narrator| CallNarrator
+  Decide -->|speak: character_id| CallActor
+  Decide -->|skill_check| Adjudicate
+  Decide -->|spawn_character| StateMutation
+  Decide -->|remove_character| StateMutation
+  Decide -->|search_library| StateMutation
+  Decide -->|add_lore| StateMutation
+  Decide -->|mutate_sheet| StateMutation
+  Decide -->|mutate_identity| StateMutation
+  Decide -->|end_turn| Done([loop end])
 
-  CallNarrator --> EmitMessage[emit message: narrator] --> NextStep([next step])
-  CallActor --> EmitMessage2[emit message: actor X] --> NextStep
+  CallNarrator --> EmitMessage[emit message: narrator] --> ToolResult[Append tool result with truncated prose]
+  CallActor --> EmitMessage2[emit message: actor X] --> ToolResult
   Adjudicate --> SkillDecide[skillcheck.decide structured] --> Roll[skillcheck.roll]
-  Roll --> EmitRoll[emit roll: card] --> ForceNarrator[Narrator: post_roll prose]
-  ForceNarrator --> EmitMessage3[emit message: narrator] --> NextStep
-  StateMutation --> EmitState[emit state-change event] --> NextStep
+  Roll --> EmitRoll[emit roll: card] --> ToolResult
+  StateMutation --> EmitState[emit state-change event] --> ToolResult
+  ToolResult --> NextStep([next step → refresh & decide again])
   NextStep --> Start
 ```
 
+### Director history layout
+
+The loop maintains a `directorHistory: ChatMessage[]` array:
+
+```
+[0]   system prompt (stable)
+[1]   user prompt (refreshed each step with latest transcript + RAG)
+[2]   assistant: { content: null, tool_calls: [{ id, name, arguments }] }  ← decision 1
+[3]   tool:      { tool_call_id, content: <engine result for decision 1> }
+[4]   assistant: { content: null, tool_calls: [{ id, name, arguments }] }  ← decision 2
+[5]   tool:      { tool_call_id, content: <engine result for decision 2> }
+...
+```
+
+Tool results include truncated prose from narrator/actor speak actions
+so the Director can see what was said and decide whether to continue or
+`end_turn`.
+
+### RAG injection
+
+The Director receives:
+- `world_lore` top 6
+- `director_memory` top 2
+- `player_journal` top 1
+
+Narrator and Actor calls get their own per-role RAG slices via
+`memoryService.for_narrator()` and `memoryService.for_character()`
+respectively.
+
+### Parse resilience
+
+If the LLM fails to produce valid JSON/tool calls after 3 fallback
+attempts, the loop emits a `parse_failed` error and ends the turn with
+`reason: 'degraded'` instead of crashing. This avoids orphaned tool-call
+pairing violations.
+
 ## TurnEvent kinds
 
-The NDJSON stream emits one `TurnEvent` per line. Kinds (subject to
-schema in `src/gm-core/director/schemas.d.ts` once implemented):
+The NDJSON stream emits one `TurnEvent` per line:
 
 - `status` — Director phase change (`directing`, `awaiting_actor`,
-  `rolling`, `narrating_consequence`, `closing`).
+  `rolling`, `closing`).
 - `message` — a finished message from Narrator or an actor. Carries
-  `{ actor, text, post_roll? }`.
-- `roll` — a transparent skill-check card with `{ actor, skill, dc,
-  ability, modifier, d20, total, outcome, severity }`.
-- `state` — game-state mutation (`spawn_character`, `remove_character`,
-  `add_lore`, `propose_scene`).
-- `error` — recoverable error (e.g. provider failure, retry exhausted).
-- `end_of_turn` — sentinel; loop is done. Frontend stops reading.
+  `{ actor, name, role, text, actor_id? }`.
+- `roll` — a transparent skill-check card with `{ actor_id, actor_name,
+  intent, card }`.
+- `state` — game-state mutation (`spawn`, `remove`).
+- `sheet_mutated` — sheet ops applied to a character.
+- `identity_mutated` / `identity_edit_request` — identity field changes
+  (immediate for NPCs, approval-gated for PCs).
+- `memory_write` — a RAG record was persisted.
+- `error` / `tool_error` — error events.
+- `end_of_turn` — sentinel; loop is done. Reason: `director` | `cap` |
+  `error` | `degraded` | `aborted`. Frontend stops reading.
 
 The frontend renders each kind via a dedicated path that reuses
 `addOneMessage()` for prose and a custom template for `roll` and `state`.
@@ -90,11 +142,11 @@ Two LLM calls plus a deterministic roll, when the Director picks
 2. **Roll** — `skillcheck.roll()` is pure. d20 + ability modifier from
    the actor's sheet + proficiency bonus when the actor is proficient.
    Returns `RollOutcome { d20, modifier, total, success, margin }`.
-3. **Narration** — the Narrator is invoked with `post_roll` metadata so
-   the prompt builder can frame the prose as a consequence of the roll.
+3. **Post-roll speak** — the Director MUST pick `speak` next to deliver
+   the consequence. The loop enforces this via `pendingPostRollSpeak`.
 
-A real roll always forces the Narrator next. A "no check needed" decision
-emits a status event and lets the Director pick again.
+A "no check needed" decision emits a status event and lets the Director
+pick again.
 
 ## Scene end
 
@@ -114,7 +166,6 @@ run it again on the same transcript with the same scene ID.
 
 ## What does not happen
 
-- The Director never gets RAG snippets.
 - The Narrator never sees character memories.
 - Actor X never sees actor Y's sheet or memories.
 - RAG snippets are never persisted to the transcript.

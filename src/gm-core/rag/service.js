@@ -135,12 +135,15 @@ export function createMemoryService(deps) {
     /**
      * Retrieval slice for the Director.
      *
-     * @param {{ campaignId: string, queryText: string, topK?: { world?: number, director?: number } }} args
-     * @returns {Promise<{ world: RetrievalHit[], director: RetrievalHit[] }>}
+     * DESIGN.md specifies: world_lore top 6, director_memory top 2,
+     * player_journal top 1.
+     *
+     * @param {{ campaignId: string, queryText: string, topK?: { world?: number, director?: number, player_journal?: number } }} args
+     * @returns {Promise<{ world: RetrievalHit[], director: RetrievalHit[], player_journal: RetrievalHit[] }>}
      */
     async function for_director({ campaignId, queryText, topK: override }) {
         const k = { ...topK, ...(override || {}) };
-        const [world, director] = await Promise.all([
+        const [world, director, journal] = await Promise.all([
             searchOne({
                 collection: collectionNameFor('world_lore', campaignId),
                 queryText,
@@ -155,8 +158,15 @@ export function createMemoryService(deps) {
                 campaignId,
                 kind: 'director_memory',
             }),
+            searchOne({
+                collection: collectionNameFor('player_journal', campaignId),
+                queryText,
+                limit: k.player_journal,
+                campaignId,
+                kind: 'player_journal',
+            }),
         ]);
-        return { world, director };
+        return { world, director, player_journal: journal };
     }
 
     /**

@@ -11,6 +11,7 @@
  */
 
 import { tag, TAGS } from '../prompts/tags.js';
+import { renderSheetYaml } from '../library/yaml.js';
 
 export const ASK_REPLY_SCHEMA = {
     $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -183,4 +184,88 @@ export function buildAskUser(ctx) {
 function truncate(s, max) {
     if (typeof s !== 'string') return '';
     return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+/* ---- Agent-loop mode prompts (Stream C) ---- */
+
+/**
+ * System prompt for the Ask agent loop. Unlike the structured-only
+ * `ASK_SYSTEM_PROMPT`, this version instructs the model to use tools.
+ */
+export function buildAskLoopSystem() {
+    return [
+        'You are the GM speaking out-of-fiction with the player. You are NOT narrating, NOT advancing the world\'s clock, NOT speaking as anyone.',
+        'The player is asking you a meta question — about their sheet, about the world, about what\'s possible. Use tools to read/write authoritative state when their question implies it.',
+        '',
+        '# Tools available',
+        '- `mutate_sheet` — apply mechanical edits to the PC\'s sheet (stats, statuses, items). Use when the player explicitly asks you to update their sheet.',
+        '- `mutate_identity` — rewrite a PC identity field (appearance, personality, voice, background). Use ONLY for major lasting changes the player explicitly asked for. Changes to the PC are held for player approval.',
+        '- `search_memory` — search campaign memories for relevant context.',
+        '- `add_lore` — record a new world fact into the campaign lore.',
+        '- `answer_player` — return the final prose answer to the player. Call this LAST, after performing any mutations the player requested.',
+        '',
+        '# Hard rules',
+        '- Never narrate the player\'s actions, decisions, or thoughts.',
+        '- Never advance fiction. The story does not move while Ask mode is open.',
+        '- Stay inside what the campaign brief, sheet, memories, and world lore tell you. If you don\'t know, say so.',
+        '- You MUST call `answer_player` to finish. Do not end without answering.',
+        '- When the player asks you to change their sheet, use `mutate_sheet` or `mutate_identity` BEFORE calling `answer_player`.',
+    ].join('\n');
+}
+
+/**
+ * Build the user prompt for the Ask agent loop.
+ *
+ * @param {{
+ *   campaign: { name?: string, brief?: string, addendum?: string },
+ *   playerCharacter: import('../library/schemas.js').Character | null,
+ *   recentSceneHeadlines: string[],
+ *   loreHits: Array<{ record: any }>,
+ *   characterHits?: Array<{ record: any }>,
+ *   journalHits?: Array<{ record: any }>,
+ *   transcriptTail: Array<{ role: string, text: string }>,
+ *   question: string,
+ * }} ctx
+ */
+export function buildAskLoopUser(ctx) {
+    const parts = [];
+
+    const campaignLines = [ctx.campaign?.name || 'Untitled'];
+    if (ctx.campaign?.brief) campaignLines.push(`Brief: ${truncate(ctx.campaign.brief, 600)}`);
+    if (ctx.campaign?.addendum) campaignLines.push(`GM addendum: ${truncate(ctx.campaign.addendum, 400)}`);
+    parts.push(tag(TAGS.campaign, campaignLines.join('\n')));
+
+    if (ctx.playerCharacter) {
+        const pc = ctx.playerCharacter;
+        const pcLines = [`Name: ${pc.name || 'The PC'}`, `ID: ${pc.id}`];
+        if (pc.appearance) pcLines.push(`Appearance: ${pc.appearance}`);
+        if (pc.personality) pcLines.push(`Personality: ${pc.personality}`);
+        if (pc.voice) pcLines.push(`Voice: ${pc.voice}`);
+        if (pc.background) pcLines.push(`Background: ${pc.background}`);
+        const sheetYaml = renderSheetYaml(pc.sheet);
+        if (sheetYaml.trim()) pcLines.push(`\nSheet:\n${sheetYaml}`);
+        parts.push(tag(TAGS.player_character, pcLines.join('\n')));
+    }
+
+    if (Array.isArray(ctx.recentSceneHeadlines) && ctx.recentSceneHeadlines.length) {
+        const headlines = ctx.recentSceneHeadlines.slice(0, 3).map(h => `- ${truncate(h, 200)}`);
+        parts.push(tag(TAGS.scene_history, headlines.join('\n')));
+    }
+
+    parts.push(tag(TAGS.world_lore, formatLoreHits(ctx.loreHits)));
+
+    if (ctx.characterHits?.length) {
+        const memLines = ctx.characterHits.map(h => `- ${truncate(h.record?.content || '', 200)}`);
+        parts.push(tag('character_memory', memLines.join('\n')));
+    }
+    if (ctx.journalHits?.length) {
+        const jLines = ctx.journalHits.map(h => `- ${truncate(h.record?.content || '', 200)}`);
+        parts.push(tag('player_journal', jLines.join('\n')));
+    }
+
+    parts.push(tag(TAGS.ask_history, formatAskTail(ctx.transcriptTail)));
+    parts.push(tag(TAGS.player_input, String(ctx.question || '').trim() || '(empty question)'));
+
+    parts.push('Pick one tool call. Use mutate_sheet or mutate_identity if the player asked for a change, then call answer_player with your final reply.');
+    return parts.filter(Boolean).join('\n\n');
 }

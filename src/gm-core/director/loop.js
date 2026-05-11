@@ -147,6 +147,7 @@ const DEFAULT_MAX_STEPS = 8;
  * @param {{
  *   ctx: import('./prompts.js').TurnContext,
  *   directorClient: import('../llm/client.d.ts').LlmClient,
+ *   narratorClient?: import('../llm/client.d.ts').LlmClient,
  *   actorClient:    import('../llm/client.d.ts').LlmClient,
  *   adjudicatorClient?: import('../llm/client.d.ts').LlmClient,
  *   summarizerClient?: import('../llm/client.d.ts').LlmClient,
@@ -168,6 +169,7 @@ const DEFAULT_MAX_STEPS = 8;
 export async function runTurn({
     ctx,
     directorClient,
+    narratorClient,
     actorClient,
     adjudicatorClient,
     summarizerClient,
@@ -241,6 +243,7 @@ export async function runTurn({
             ctx.memories_block = formatSections([
                 { kind: 'world_lore', hits: slice.world },
                 { kind: 'director_memory', hits: slice.director, max: 4 },
+                { kind: 'player_journal', hits: slice.player_journal, max: 1 },
             ]);
         } catch (err) {
             console.warn('[director-loop] memory injection failed', err?.message || err);
@@ -363,6 +366,12 @@ export async function runTurn({
 
         await emit({ kind: 'status', phase: 'directing' });
 
+        // Refresh the Director's user prompt so it sees the latest
+        // transcript (including narrator/actor lines emitted earlier in
+        // this turn). The system prompt at [0] is stable; only the user
+        // prompt at [1] carries the evolving recent_transcript.
+        directorHistory[1] = { role: 'user', content: directorUserPrompt(ctx) };
+
         /** @type {import('../llm/client.d.ts').ToolCallResponse} */
         let call;
         try {
@@ -375,17 +384,13 @@ export async function runTurn({
                 role: 'director',
             });
         } catch (err) {
-            // Network / timeout / HTTP failures are infrastructure issues
-            // — there's nothing the Director can do about them, so end the
-            // turn. Logical / parse / schema-validation failures (which
-            // come back as LlmError with retryable=true from the parser)
-            // we still treat as fatal here since we can't get a fresh
-            // decision back without another call anyway; the rate limit
-            // below catches the case where we DO get a decision but
-            // dispatch can't act on it.
+            // Distinguish parse/schema failures from infrastructure errors.
+            // Parse failures mean the model produced something we couldn't
+            // interpret — the turn is over but not catastrophically so.
+            const isParseFail = err instanceof LlmError && (err.code === 'parse_failed' || err.code === 'bad_tool_name');
             await emitError(emit, err, 'director');
-            emitSpanEnd('error');
-            await emit({ kind: 'end_of_turn', reason: 'error' });
+            emitSpanEnd(isParseFail ? 'degraded' : 'error');
+            await emit({ kind: 'end_of_turn', reason: isParseFail ? 'degraded' : 'error' });
             return;
         }
 
@@ -521,7 +526,10 @@ export async function runTurn({
             });
         } else if (decision.action === 'speak') {
             outcome = await dispatchSpeak({
-                ctx, decision, actorClient, emit, signal,
+                ctx, decision,
+                narratorClient: narratorClient || actorClient,
+                actorClient,
+                emit, signal,
                 resolveCharacter,
                 transientCharacters,
                 promotedTransients,
@@ -750,6 +758,7 @@ async function dispatchAddLore({ ctx, decision, emit, memoryService, cid, sceneI
  * @param {{
  *   ctx: import('./prompts.js').TurnContext,
  *   decision: any,
+ *   narratorClient: import('../llm/client.d.ts').LlmClient,
  *   actorClient: import('../llm/client.d.ts').LlmClient,
  *   emit: (ev: TurnEvent) => Promise<void> | void,
  *   signal?: AbortSignal,
@@ -762,7 +771,7 @@ async function dispatchAddLore({ ctx, decision, emit, memoryService, cid, sceneI
  * @returns {Promise<{ kind: 'continue', summary: string } | { kind: 'end' }>}
  */
 async function dispatchSpeak({
-    ctx, decision, actorClient, emit, signal,
+    ctx, decision, narratorClient, actorClient, emit, signal,
     resolveCharacter, transientCharacters, promotedTransients,
     createCharacter, addParticipant,
     memoryService, cid, sceneIndex,
@@ -791,7 +800,7 @@ async function dispatchSpeak({
         let prose;
         try {
             const messages = buildNarratorMessages(ctx, decision.intent || '');
-            prose = await actorClient.chat({
+            prose = await narratorClient.chat({
                 system: messages[0].content,
                 user: messages[messages.length - 1].content,
                 messages,
@@ -803,7 +812,6 @@ async function dispatchSpeak({
             await emitError(emit, err, 'narrator');
             return { kind: 'end' };
         }
-        // Restore the Director-side memories block for subsequent steps.
         ctx.memories_block = previousMemoriesBlock;
         const text = (prose || '').trim();
         await emit({
@@ -816,11 +824,9 @@ async function dispatchSpeak({
         appendToTail(ctx, 'Narrator', text);
 
         if (memoryService && cid) {
-            // Fire-and-forget continuity extractor. Its writes emit their own
-            // memory_write events through the service path.
             extractAndWriteNarratorContinuity({
                 memoryService,
-                client: actorClient,
+                client: narratorClient,
                 campaignId: cid,
                 sceneId: ctx.scene?.id || '',
                 sceneName: ctx.scene?.name,
@@ -835,7 +841,7 @@ async function dispatchSpeak({
         }
         return {
             kind: 'continue',
-            summary: `Narrator just delivered the beat (intent: "${truncateForBeat(decision.intent)}"). The player has been responded to. Default to end_turn unless the player's input clearly demanded another beat.`,
+            summary: `Narrator just spoke (intent: "${truncateForBeat(decision.intent)}"):\n"${truncateForToolResult(text)}"\nThe player has been responded to. Default to end_turn unless the player's input clearly addressed multiple characters or demanded another beat.`,
         };
     }
 
@@ -1008,7 +1014,7 @@ async function dispatchSpeak({
     }
     return {
         kind: 'continue',
-        summary: `${character.name} (id: \`${character.id}\`) just spoke in response to the player's input${promotedNow ? ' (and was promoted from transient to a persistent campaign character)' : ''}. Default to end_turn unless the player's input clearly addressed multiple characters.`,
+        summary: `${character.name} (id: \`${character.id}\`) just spoke${promotedNow ? ' (promoted from transient to persistent)' : ''}:\n"${truncateForToolResult(text)}"\nDefault to end_turn unless the player's input clearly addressed multiple characters.`,
     };
 }
 
@@ -1055,6 +1061,12 @@ async function promoteTransient({ transient, createCharacter, addParticipant }) 
 function truncateForBeat(s) {
     if (typeof s !== 'string') return '';
     return s.length > 120 ? `${s.slice(0, 117)}…` : s;
+}
+
+/** @param {string} s */
+function truncateForToolResult(s) {
+    if (typeof s !== 'string') return '';
+    return s.length > 400 ? `${s.slice(0, 397)}…` : s;
 }
 
 /**

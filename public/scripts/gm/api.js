@@ -494,24 +494,80 @@ export async function getAskTranscript(campaignId) {
 }
 
 /**
- * Run one Ask exchange. The server persists both player + GM entries and
- * writes any GM-suggested `lore_candidate` as a `world_lore` record.
+ * Run one Ask exchange via NDJSON stream. Returns the raw Response so
+ * callers can consume events progressively (status, tool_step, answer, error).
  *
  * @param {string} campaignId
  * @param {{ question: string, director_profile: object }} options
- * @returns {Promise<{ reply: string, lore_id: string | null, entries: { player: AskEntry, gm: AskEntry } }>}
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<Response>}
  */
-export async function postAsk(campaignId, options) {
+export async function postAsk(campaignId, options, signal) {
     if (!options || !options.question || !options.director_profile) {
         throw new Error('postAsk requires question and director_profile');
     }
-    return request(`/campaigns/${encodeURIComponent(campaignId)}/ask`, {
+    const url = `${BASE}/campaigns/${encodeURIComponent(campaignId)}/ask`;
+    const response = await fetch(url, {
         method: 'POST',
+        headers: getRequestHeaders(),
         body: JSON.stringify({
             question: options.question,
             director_profile: options.director_profile,
         }),
+        signal,
     });
+    if (!response.ok) {
+        let body;
+        try { body = await response.json(); } catch (_) { /* ignore */ }
+        const err = new Error(body?.error || `Ask failed (${response.status})`);
+        // @ts-ignore
+        err.body = body;
+        throw err;
+    }
+    return response;
+}
+
+/**
+ * Rewind the Ask transcript. Removes entries from `entryId` onward
+ * (inclusive), or the last N entries if `{ last: N }` is given.
+ *
+ * @param {string} campaignId
+ * @param {{ entry_id?: string, last?: number }} opts
+ * @returns {Promise<{ entries: AskEntry[], removed_count: number, lore_removed: string[] }>}
+ */
+export async function rewindAsk(campaignId, opts) {
+    return request(`/campaigns/${encodeURIComponent(campaignId)}/ask/rewind`, {
+        method: 'POST',
+        body: JSON.stringify(opts),
+    });
+}
+
+/**
+ * Regenerate the last Ask GM reply. Truncates the most recent GM entry
+ * and re-runs the loop. Returns a streaming NDJSON Response.
+ *
+ * @param {string} campaignId
+ * @param {{ director_profile: object }} opts
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<Response>}
+ */
+export async function regenerateAsk(campaignId, opts, signal) {
+    const url = `${BASE}/campaigns/${encodeURIComponent(campaignId)}/ask/regenerate`;
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify(opts),
+        signal,
+    });
+    if (!response.ok) {
+        let body;
+        try { body = await response.json(); } catch (_) { /* ignore */ }
+        const err = new Error(body?.error || `Ask regenerate failed (${response.status})`);
+        // @ts-ignore
+        err.body = body;
+        throw err;
+    }
+    return response;
 }
 
 /* -------- Plot mode (intent gate -> scene start) -------- */

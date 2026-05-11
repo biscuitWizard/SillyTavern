@@ -62,6 +62,19 @@ export function currentLlmProfile(role) {
 
         const urlOverride = getRoleUrlOverride(role);
         if (urlOverride) live.custom_url = urlOverride;
+
+        // Per-role sampling defaults — keep prose tight and table-play length.
+        // User-set values from the connection profile always win.
+        const ROLE_DEFAULTS = {
+            narrator: { max_tokens: 320, temperature: 0.7 },
+            actor:    { max_tokens: 240, temperature: 0.85 },
+        };
+        const defaults = ROLE_DEFAULTS[role];
+        if (defaults) {
+            if (live.max_tokens === undefined || live.max_tokens > defaults.max_tokens) {
+                live.max_tokens = defaults.max_tokens;
+            }
+        }
     }
     return live;
 }

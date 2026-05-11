@@ -18,6 +18,7 @@ import * as campaignStore from '../gm-core/campaigns/store.js';
 import { validateCampaignInput, buildCurrentSituation } from '../gm-core/campaigns/schemas.js';
 import { synthesizeOpening } from '../gm-core/openings/synth.js';
 import { ask as runAsk } from '../gm-core/ask/service.js';
+import { runAskLoop } from '../gm-core/ask/loop.js';
 import * as askStore from '../gm-core/ask/store.js';
 import { decide as runPlotDecide } from '../gm-core/plot/service.js';
 import * as characterStore from '../gm-core/library/store.js';
@@ -466,6 +467,7 @@ router.post('/campaigns/:cid/ask', async (request, response) => {
 
     const characters = characterStore.listAll(directories, campaign.id);
     const player = characters.find(c => c.is_player) || null;
+    const charactersById = new Map(characters.map(c => [c.id, c]));
     const allScenes = sceneStore.listAll(directories, campaign.id);
     const recentSceneHeadlines = allScenes
         .slice()
@@ -490,12 +492,23 @@ router.post('/campaigns/:cid/ask', async (request, response) => {
         if (!response.writableEnded) abortController.abort();
     });
 
+    // Stream NDJSON events for the Ask agent loop.
+    response.setHeader('Content-Type', 'application/x-ndjson');
+    response.setHeader('Cache-Control', 'no-cache');
+    response.setHeader('X-Accel-Buffering', 'no');
+
+    const emit = async (ev) => {
+        if (!response.writableEnded) {
+            response.write(JSON.stringify(ev) + '\n');
+        }
+    };
+
     try {
-        const result = await withDebugContext({
+        await withDebugContext({
             directories,
             campaign_id: campaign.id,
             scope: 'ask',
-        }, () => runAsk({
+        }, () => runAskLoop({
             directories,
             campaign,
             playerCharacter: player,
@@ -503,18 +516,278 @@ router.post('/campaigns/:cid/ask', async (request, response) => {
             question,
             client,
             memoryService,
+            mutateSheet: (charId, op) => {
+                if (!op || typeof op !== 'object') return null;
+                let updated = null;
+                switch (op.op) {
+                    case 'set_stat':
+                        updated = sheetOps.setStat(directories, campaign.id, charId, op.key, op.value);
+                        break;
+                    case 'adjust_stat':
+                        updated = sheetOps.adjustStat(directories, campaign.id, charId, op.key, op.delta);
+                        break;
+                    case 'clear_stat':
+                        updated = sheetOps.clearStat(directories, campaign.id, charId, op.key);
+                        break;
+                    case 'set_status':
+                        updated = sheetOps.setStatus(directories, campaign.id, charId, op.key, op.value);
+                        break;
+                    case 'clear_status':
+                        updated = sheetOps.clearStatus(directories, campaign.id, charId, op.key);
+                        break;
+                    case 'add_item':
+                        updated = sheetOps.addItem(directories, campaign.id, charId, {
+                            name: op.name, description: op.description, influences: op.influences,
+                        });
+                        break;
+                    case 'update_item': {
+                        const patch = {};
+                        if (op.name !== undefined) patch.name = op.name;
+                        if (op.description !== undefined) patch.description = op.description;
+                        if (op.influences !== undefined) patch.influences = op.influences;
+                        updated = sheetOps.updateItem(directories, campaign.id, charId, op.item_id, patch);
+                        break;
+                    }
+                    case 'delete_item':
+                        updated = sheetOps.deleteItem(directories, campaign.id, charId, op.item_id);
+                        break;
+                    case 'set_skills':
+                        updated = sheetOps.setSkills(directories, campaign.id, charId, op.skills);
+                        break;
+                    case 'set_notes':
+                        updated = sheetOps.setNotes(directories, campaign.id, charId, op.notes);
+                        break;
+                    default:
+                        return null;
+                }
+                if (updated) charactersById.set(charId, updated);
+                return updated;
+            },
+            updateCharacter: (charId, patch) => {
+                const updated = characterStore.update(directories, campaign.id, charId, patch);
+                if (updated) charactersById.set(charId, updated);
+                return updated;
+            },
+            findCharacter: (id) => charactersById.get(id) || null,
             sceneIndex,
             signal: abortController.signal,
+            emit,
         }));
         campaignStore.touch(directories, campaign.id);
-        return response.json({
-            reply: result.reply,
-            lore_id: result.lore_id,
-            entries: result.entries,
-        });
     } catch (err) {
         console.error('[gm.ask] failed', err);
-        return response.status(502).json({ error: 'ask failed', details: err?.message || String(err) });
+        await emit({ kind: 'error', code: 'internal', message: err?.message || String(err) });
+    } finally {
+        if (!response.writableEnded) response.end();
+    }
+});
+
+/* -------- Ask rewind / regenerate -------- */
+
+/**
+ * POST /api/gm/campaigns/:cid/ask/rewind
+ *
+ * Truncate the Ask transcript. Accepts either `{ entry_id }` (truncate
+ * from that entry onward, inclusive) or `{ last: N }` (remove the last N
+ * entries). When rolled-back GM entries reference a `lore_id`, we
+ * best-effort remove the corresponding world_lore record.
+ */
+router.post('/campaigns/:cid/ask/rewind', async (request, response) => {
+    const directories = request.user.directories;
+    const campaign = campaignStore.get(directories, request.params.cid);
+    if (!campaign) return response.status(404).json({ error: 'campaign not found' });
+
+    const body = request.body ?? {};
+    let removed = [];
+    try {
+        if (body.entry_id) {
+            removed = await askStore.truncateFromId(directories, campaign.id, String(body.entry_id));
+        } else if (typeof body.last === 'number' && body.last > 0) {
+            removed = await askStore.truncateLast(directories, campaign.id, body.last);
+        } else {
+            return response.status(400).json({ error: 'Provide entry_id or last (number > 0)' });
+        }
+    } catch (err) {
+        console.error('[gm.ask.rewind] truncate failed', err);
+        return response.status(500).json({ error: 'truncate failed', details: err?.message || String(err) });
+    }
+
+    const loreCleanup = [];
+    for (const ent of removed) {
+        if (ent.role === 'gm' && ent.lore_id) {
+            loreCleanup.push(ent.lore_id);
+        }
+    }
+
+    if (loreCleanup.length > 0) {
+        try {
+            const memoryService = await getMemoryService(directories);
+            if (memoryService) {
+                for (const loreId of loreCleanup) {
+                    try {
+                        await memoryService.remove({ campaignId: campaign.id, id: loreId, kind: 'world_lore' });
+                    } catch (err) {
+                        console.warn(`[gm.ask.rewind] lore cleanup failed for ${loreId}`, err?.message || err);
+                    }
+                }
+            }
+        } catch (err) {
+            console.warn('[gm.ask.rewind] memory service unavailable for lore cleanup', err?.message || err);
+        }
+    }
+
+    campaignStore.touch(directories, campaign.id);
+    const entries = askStore.readAll(directories, campaign.id);
+    return response.json({ entries, removed_count: removed.length, lore_removed: loreCleanup });
+});
+
+/**
+ * POST /api/gm/campaigns/:cid/ask/regenerate
+ *
+ * Truncate the most recent GM reply (keeping the player question), then
+ * re-run the Ask loop with the same question. Streams NDJSON like the
+ * main Ask endpoint.
+ */
+router.post('/campaigns/:cid/ask/regenerate', async (request, response) => {
+    const directories = request.user.directories;
+    const campaign = campaignStore.get(directories, request.params.cid);
+    if (!campaign) return response.status(404).json({ error: 'campaign not found' });
+
+    const body = request.body ?? {};
+    if (!body.director_profile || typeof body.director_profile !== 'object') {
+        return response.status(400).json({ error: 'director_profile is required' });
+    }
+
+    const transcript = askStore.readAll(directories, campaign.id);
+    if (transcript.length === 0) {
+        return response.status(400).json({ error: 'no ask transcript to regenerate from' });
+    }
+
+    let lastPlayerEntry = null;
+    for (let i = transcript.length - 1; i >= 0; i--) {
+        if (transcript[i].role === 'player') {
+            lastPlayerEntry = transcript[i];
+            break;
+        }
+    }
+    if (!lastPlayerEntry) {
+        return response.status(400).json({ error: 'no player entry found to regenerate from' });
+    }
+
+    const gmAfterPlayer = [];
+    let found = false;
+    for (const ent of transcript) {
+        if (ent.id === lastPlayerEntry.id) { found = true; continue; }
+        if (found && ent.role === 'gm') gmAfterPlayer.push(ent);
+    }
+
+    for (const gm of gmAfterPlayer) {
+        try {
+            await askStore.truncateFromId(directories, campaign.id, gm.id);
+        } catch (_) { /* non-fatal */ }
+        if (gm.lore_id) {
+            try {
+                const ms = await getMemoryService(directories);
+                if (ms) await ms.remove({ campaignId: campaign.id, id: gm.lore_id, kind: 'world_lore' });
+            } catch (_) { /* non-fatal */ }
+        }
+    }
+
+    let client;
+    try {
+        client = createLlmClient({ userDirectories: directories, profile: body.director_profile });
+    } catch (err) {
+        return response.status(400).json({ error: 'invalid director_profile', details: err?.message || String(err) });
+    }
+
+    const characters = characterStore.listAll(directories, campaign.id);
+    const player = characters.find(c => c.is_player) || null;
+    const charactersById = new Map(characters.map(c => [c.id, c]));
+    const allScenes = sceneStore.listAll(directories, campaign.id);
+    const recentSceneHeadlines = allScenes
+        .slice()
+        .sort((a, b) => Date.parse(b.started_at || '') - Date.parse(a.started_at || ''))
+        .map(s => typeof s.summary_headline === 'string' ? s.summary_headline.trim() : '')
+        .filter(Boolean);
+
+    let memoryService = null;
+    let sceneIndex = 0;
+    try {
+        memoryService = await getMemoryService(directories);
+        if (campaign.current_scene_id) {
+            const found = sceneStore.findById(directories, campaign.current_scene_id);
+            if (found) sceneIndex = computeSceneIndex(found.scene);
+        }
+    } catch (_) { /* non-fatal */ }
+
+    const abortController = new AbortController();
+    request.on('close', () => {
+        if (!response.writableEnded) abortController.abort();
+    });
+
+    response.setHeader('Content-Type', 'application/x-ndjson');
+    response.setHeader('Cache-Control', 'no-cache');
+    response.setHeader('X-Accel-Buffering', 'no');
+
+    const emit = async (ev) => {
+        if (!response.writableEnded) response.write(JSON.stringify(ev) + '\n');
+    };
+
+    try {
+        await withDebugContext({
+            directories,
+            campaign_id: campaign.id,
+            scope: 'ask',
+        }, () => runAskLoop({
+            directories,
+            campaign,
+            playerCharacter: player,
+            recentSceneHeadlines,
+            question: lastPlayerEntry.text,
+            client,
+            memoryService,
+            mutateSheet: (charId, op) => {
+                if (!op || typeof op !== 'object') return null;
+                let updated = null;
+                switch (op.op) {
+                    case 'set_stat': updated = sheetOps.setStat(directories, campaign.id, charId, op.key, op.value); break;
+                    case 'adjust_stat': updated = sheetOps.adjustStat(directories, campaign.id, charId, op.key, op.delta); break;
+                    case 'clear_stat': updated = sheetOps.clearStat(directories, campaign.id, charId, op.key); break;
+                    case 'set_status': updated = sheetOps.setStatus(directories, campaign.id, charId, op.key, op.value); break;
+                    case 'clear_status': updated = sheetOps.clearStatus(directories, campaign.id, charId, op.key); break;
+                    case 'add_item': updated = sheetOps.addItem(directories, campaign.id, charId, { name: op.name, description: op.description, influences: op.influences }); break;
+                    case 'update_item': {
+                        const patch = {};
+                        if (op.name !== undefined) patch.name = op.name;
+                        if (op.description !== undefined) patch.description = op.description;
+                        if (op.influences !== undefined) patch.influences = op.influences;
+                        updated = sheetOps.updateItem(directories, campaign.id, charId, op.item_id, patch);
+                        break;
+                    }
+                    case 'delete_item': updated = sheetOps.deleteItem(directories, campaign.id, charId, op.item_id); break;
+                    case 'set_skills': updated = sheetOps.setSkills(directories, campaign.id, charId, op.skills); break;
+                    case 'set_notes': updated = sheetOps.setNotes(directories, campaign.id, charId, op.notes); break;
+                    default: return null;
+                }
+                if (updated) charactersById.set(charId, updated);
+                return updated;
+            },
+            updateCharacter: (charId, patch) => {
+                const updated = characterStore.update(directories, campaign.id, charId, patch);
+                if (updated) charactersById.set(charId, updated);
+                return updated;
+            },
+            findCharacter: (id) => charactersById.get(id) || null,
+            sceneIndex,
+            signal: abortController.signal,
+            emit,
+        }));
+        campaignStore.touch(directories, campaign.id);
+    } catch (err) {
+        console.error('[gm.ask.regenerate] failed', err);
+        await emit({ kind: 'error', code: 'internal', message: err?.message || String(err) });
+    } finally {
+        if (!response.writableEnded) response.end();
     }
 });
 
@@ -1503,7 +1776,7 @@ router.post('/scenes/:id/messages/:line_index/regenerate', async (request, respo
     }
 
     const body = request.body ?? {};
-    const { director_profile, actor_profile, summarizer_profile } = body;
+    const { director_profile, narrator_profile, actor_profile, summarizer_profile } = body;
     if (!director_profile || !actor_profile) {
         return response.status(400).json({ error: 'director_profile and actor_profile are required' });
     }
@@ -1558,6 +1831,7 @@ router.post('/scenes/:id/messages/:line_index/regenerate', async (request, respo
         scene: found.scene,
         userInput,
         director_profile,
+        narrator_profile,
         actor_profile,
         summarizer_profile,
         skipPlayerLinePersist: true,
@@ -1851,13 +2125,14 @@ const TRANSCRIPT_TAIL_CHARS = 4000;
  *   {
  *     campaign_id, scene_id, user_input,
  *     director_profile:    LlmProfile,
+ *     narrator_profile?:   LlmProfile,   // defaults to actor_profile
  *     actor_profile:       LlmProfile,
  *     summarizer_profile?: LlmProfile,   // collapses long agent-loop history
  *   }
  */
 router.post('/turn', async (request, response) => {
     const body = request.body ?? {};
-    const { campaign_id, scene_id, user_input, director_profile, actor_profile, summarizer_profile } = body;
+    const { campaign_id, scene_id, user_input, director_profile, narrator_profile, actor_profile, summarizer_profile } = body;
     const userInput = typeof user_input === 'string' ? user_input.trim() : '';
 
     if (!campaign_id || !scene_id) {
@@ -1891,6 +2166,7 @@ router.post('/turn', async (request, response) => {
         scene: found.scene,
         userInput,
         director_profile,
+        narrator_profile,
         actor_profile,
         summarizer_profile,
     }));
@@ -1913,6 +2189,7 @@ router.post('/turn', async (request, response) => {
  *   scene: any,
  *   userInput: string,
  *   director_profile: any,
+ *   narrator_profile?: any,
  *   actor_profile: any,
  *   summarizer_profile?: any,
  *   skipPlayerLinePersist?: boolean,
@@ -1920,7 +2197,7 @@ router.post('/turn', async (request, response) => {
  */
 async function runStreamingTurn(args) {
     const { request, response, directories, campaign, scene, userInput,
-        director_profile, actor_profile, summarizer_profile,
+        director_profile, narrator_profile, actor_profile, summarizer_profile,
         skipPlayerLinePersist = false } = args;
     const found = { scene, campaign_id: campaign.id };
 
@@ -2085,9 +2362,11 @@ async function runStreamingTurn(args) {
         }
     };
 
-    let directorClient, actorClient, summarizerClient = null;
+    let directorClient, narratorClient, actorClient, summarizerClient = null;
     try {
         directorClient = createLlmClient({ userDirectories: directories, profile: director_profile });
+        const effectiveNarratorProfile = (narrator_profile && typeof narrator_profile === 'object') ? narrator_profile : actor_profile;
+        narratorClient = createLlmClient({ userDirectories: directories, profile: effectiveNarratorProfile });
         actorClient = createLlmClient({ userDirectories: directories, profile: actor_profile });
         // The summariser role is optional. When the frontend ships a
         // `summarizer_profile` we build a dedicated client; otherwise the
@@ -2138,6 +2417,7 @@ async function runStreamingTurn(args) {
         await runTurn({
             ctx,
             directorClient,
+            narratorClient,
             actorClient,
             adjudicatorClient: directorClient,
             summarizerClient: summarizerClient || undefined,

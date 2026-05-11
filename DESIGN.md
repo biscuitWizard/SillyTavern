@@ -258,6 +258,35 @@ plumbing for any model that supports function calling, and through
 direct in-process calls inside the GM core's structured-output paths
 when the provider supports JSON-schema strict mode.
 
+## Ask mode (out-of-fiction GM advisor)
+
+The **Ask tab** lets the player talk to the GM outside of active scenes.
+Questions like "What does my character know about the king?" or
+"Update my HP to 15" are handled here.
+
+Ask runs its own **agent loop** (`src/gm-core/ask/loop.js`), structurally
+similar to the Director loop but with a different tool set:
+
+- `mutate_sheet` — set/adjust/clear stats, items, statuses.
+- `mutate_identity` — propose changes to identity fields (name,
+  appearance, etc.). PC identity changes emit an `identity_edit_request`
+  event and require player approval; NPC changes apply immediately.
+- `search_memory` — query RAG collections (world_lore, character_memory,
+  player_journal).
+- `add_lore` — commit a new world-lore record to the vector DB.
+- `answer_player` — terminal tool. The loop ends when this is called;
+  its `reply` is the GM's answer shown to the player.
+
+The Ask loop uses `tool_choice: 'required'` and caps at 6 steps.
+It sees the full PC sheet (rendered as YAML), campaign context, recent
+Ask transcript, and RAG hits for world lore, character memory, and
+player journal.
+
+The endpoint (`POST /api/gm/campaigns/:cid/ask`) streams NDJSON events
+(`status`, `tool_step`, `answer`, `identity_edit_request`, `error`) so
+the panel can show incremental progress. The Ask panel persists its own
+transcript via `askStore`.
+
 ## UI principles
 
 1. **Curated, not freeform.** The player navigates a deliberate flow

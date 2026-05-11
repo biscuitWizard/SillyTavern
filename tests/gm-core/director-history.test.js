@@ -323,6 +323,123 @@ describe('director loop: collapses history when prompt_tokens exceeds budget', (
 });
 
 // =====================================================================
+// runTurn: live transcript refresh
+// =====================================================================
+
+describe('director loop: Director sees latest transcript each step', () => {
+    test('iteration 2 user prompt contains actor prose emitted in iteration 1', async () => {
+        const ctx = baseCtx();
+        const director = makeDirector({
+            decisions: [
+                { action: 'speak', actor: 'amelia', intent: 'greet', rationale: 'first' },
+                { action: 'end_turn', rationale: 'done' },
+            ],
+        });
+        const ACTOR_PROSE = 'Hello traveller, welcome to my tavern!';
+        const actor = makeActor(() => ACTOR_PROSE);
+        const events = [];
+        await runTurn({
+            ctx,
+            directorClient: director,
+            actorClient: actor,
+            emit: (e) => events.push(e),
+            findCharacter: (id) => ({ jack, amelia, bran })[id] || null,
+        });
+
+        expect(director.calls).toHaveLength(2);
+
+        // On the second Director call, the user prompt at [1] should
+        // contain the actor's prose from the first iteration.
+        const secondCallUserPrompt = director.calls[1][1].content;
+        expect(secondCallUserPrompt).toContain('Amelia');
+        expect(secondCallUserPrompt).toContain(ACTOR_PROSE);
+    });
+
+    test('tool result includes truncated actor prose', async () => {
+        const ctx = baseCtx();
+        const director = makeDirector({
+            decisions: [
+                { action: 'speak', actor: 'amelia', intent: 'greet', rationale: 'first' },
+                { action: 'end_turn', rationale: 'done' },
+            ],
+        });
+        const ACTOR_PROSE = 'Welcome to the tavern, weary traveller.';
+        const actor = makeActor(() => ACTOR_PROSE);
+        const events = [];
+        await runTurn({
+            ctx,
+            directorClient: director,
+            actorClient: actor,
+            emit: (e) => events.push(e),
+            findCharacter: (id) => ({ jack, amelia, bran })[id] || null,
+        });
+
+        // The tool result message for the speak should contain the prose
+        const toolResult = director.calls[1][3];
+        expect(toolResult.role).toBe('tool');
+        expect(toolResult.content).toContain(ACTOR_PROSE);
+    });
+});
+
+// =====================================================================
+// runTurn: graceful degradation on parse_failed
+// =====================================================================
+
+describe('director loop: graceful degradation on parse failure', () => {
+    test('parse_failed from directorClient.tool emits degraded end_of_turn, not fatal error', async () => {
+        const ctx = baseCtx();
+        const { LlmError } = await import('../../src/gm-core/llm/errors.js');
+        const client = {
+            tool: jest.fn(async () => {
+                throw new LlmError('parse_failed', 'could not parse tool choice', true);
+            }),
+            chat: jest.fn(async () => 'unused'),
+            structured: jest.fn(async () => { throw new Error('unused'); }),
+        };
+        const events = [];
+        await runTurn({
+            ctx,
+            directorClient: client,
+            actorClient: { chat: jest.fn(), structured: jest.fn() },
+            emit: (e) => events.push(e),
+            findCharacter: (id) => ({ jack, amelia, bran })[id] || null,
+        });
+
+        const endEvent = events.find(e => e.kind === 'end_of_turn');
+        expect(endEvent).toBeDefined();
+        expect(endEvent.reason).toBe('degraded');
+
+        const errorEvent = events.find(e => e.kind === 'error');
+        expect(errorEvent).toBeDefined();
+        expect(errorEvent.code).toBe('parse_failed');
+    });
+
+    test('non-parse errors still emit error end_of_turn', async () => {
+        const ctx = baseCtx();
+        const { LlmError } = await import('../../src/gm-core/llm/errors.js');
+        const client = {
+            tool: jest.fn(async () => {
+                throw new LlmError('network', 'connection refused', true);
+            }),
+            chat: jest.fn(async () => 'unused'),
+            structured: jest.fn(async () => { throw new Error('unused'); }),
+        };
+        const events = [];
+        await runTurn({
+            ctx,
+            directorClient: client,
+            actorClient: { chat: jest.fn(), structured: jest.fn() },
+            emit: (e) => events.push(e),
+            findCharacter: (id) => ({ jack, amelia, bran })[id] || null,
+        });
+
+        const endEvent = events.find(e => e.kind === 'end_of_turn');
+        expect(endEvent).toBeDefined();
+        expect(endEvent.reason).toBe('error');
+    });
+});
+
+// =====================================================================
 // collapseOlderTurns: pure helper
 // =====================================================================
 

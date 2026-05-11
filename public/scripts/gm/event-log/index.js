@@ -15,6 +15,8 @@ import { on as busOn } from '../events.js';
 let activeContainer = null;
 let activeStream = null;
 let busUnsub = null;
+let pollTimer = null;
+let pollCtx = null;
 
 let allEvents = [];
 let filters = { roles: [], scopes: [], text: '' };
@@ -110,6 +112,7 @@ export function renderEventLog(container, ctx) {
         });
 
     /* ---- SSE stream ---- */
+    let sseConnected = false;
     activeStream = openAutoStream({
         sceneId,
         campaignId,
@@ -118,9 +121,24 @@ export function renderEventLog(container, ctx) {
             rerenderList();
         },
         onStatusChange(connected) {
+            sseConnected = connected;
             liveDot.classList.toggle('is-hidden', !connected);
         },
     });
+
+    /* ---- Polling fallback (when SSE is disconnected) ---- */
+    pollCtx = { sceneId, campaignId };
+    pollTimer = setInterval(async () => {
+        if (sseConnected) return;
+        try {
+            const events = await fetchHistory({ sceneId, campaignId });
+            if (!Array.isArray(events)) return;
+            if (events.length !== allEvents.length) {
+                allEvents = events;
+                rerenderList();
+            }
+        } catch (_) { /* ignore poll errors */ }
+    }, 5000);
 
     /* ---- Frontend bus bridge ---- */
     busUnsub = busOn('memory_write', (payload) => {
@@ -215,6 +233,11 @@ function showEmpty() {
  * Cleanup — close SSE, unsubscribe bus, null out references.
  */
 export function teardownEventLog() {
+    if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+    }
+    pollCtx = null;
     if (activeStream) {
         activeStream.close();
         activeStream = null;
