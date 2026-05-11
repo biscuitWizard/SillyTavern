@@ -174,6 +174,7 @@ export function renderAskPanel(mount, { campaign, onBack }) {
         const decoder = new TextDecoder();
         let buffer = '';
         let answered = false;
+        let errorShown = false;
 
         while (true) {
             const { value, done } = await reader.read();
@@ -204,6 +205,7 @@ export function renderAskPanel(mount, { campaign, onBack }) {
                 } else if (ev.kind === 'identity_edit_request') {
                     renderIdentityCard(ev.detail);
                 } else if (ev.kind === 'error') {
+                    errorShown = true;
                     if (!answered) {
                         entries.splice(entries.length - 2, 2,
                             { ...optimisticPlayer, pending: false },
@@ -215,7 +217,7 @@ export function renderAskPanel(mount, { campaign, onBack }) {
             }
         }
 
-        if (!answered) {
+        if (!answered && !errorShown) {
             entries.splice(entries.length - 2, 2,
                 { ...optimisticPlayer, pending: false },
             );
