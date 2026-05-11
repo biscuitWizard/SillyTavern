@@ -153,12 +153,13 @@ describe('Ask agent loop', () => {
         expect(answer.reply).toBe('Done! Your HP is now 15.');
     });
 
-    test('mutate_identity for PC emits identity_edit_request', async () => {
+    test('mutate_identity for PC applies directly and emits tool_step', async () => {
         const events = [];
         const emit = jest.fn(async (ev) => events.push(ev));
         const pc = makePC();
 
         const findCharacter = jest.fn((id) => id === 'jack' ? pc : null);
+        const updateCharacter = jest.fn(async () => pc);
 
         const client = makeClient([
             toolCallResult('mutate_identity', {
@@ -168,7 +169,7 @@ describe('Ask agent loop', () => {
                 rationale: 'Goddess transformed the PC',
             }, 0),
             toolCallResult('answer_player', {
-                reply: 'Identity change submitted for your approval.',
+                reply: 'Your appearance has been updated.',
                 lore_candidate: null,
             }, 1),
         ]);
@@ -182,15 +183,15 @@ describe('Ask agent loop', () => {
             client,
             memoryService: null,
             findCharacter,
+            updateCharacter,
             sceneIndex: 0,
             emit,
         });
 
-        const idReq = events.find(e => e.kind === 'identity_edit_request');
-        expect(idReq).toBeTruthy();
-        expect(idReq.detail.character_id).toBe('jack');
-        expect(idReq.detail.field).toBe('appearance');
-        expect(idReq.detail.proposed_value).toBe('Now has silver hair and glowing eyes');
+        expect(updateCharacter).toHaveBeenCalledWith('jack', { appearance: 'Now has silver hair and glowing eyes' });
+        const step = events.find(e => e.kind === 'tool_step' && e.tool === 'mutate_identity');
+        expect(step).toBeTruthy();
+        expect(step.detail.new_value).toBe('Now has silver hair and glowing eyes');
     });
 
     test('loop enforces step cap and emits error', async () => {

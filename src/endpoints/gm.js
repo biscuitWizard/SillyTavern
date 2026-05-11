@@ -493,15 +493,27 @@ router.post('/campaigns/:cid/ask', async (request, response) => {
     });
 
     // Stream NDJSON events for the Ask agent loop.
-    response.setHeader('Content-Type', 'application/x-ndjson');
-    response.setHeader('Cache-Control', 'no-cache');
+    response.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+    response.setHeader('Cache-Control', 'no-cache, no-transform');
+    response.setHeader('Connection', 'keep-alive');
     response.setHeader('X-Accel-Buffering', 'no');
+    if (typeof response.flushHeaders === 'function') response.flushHeaders();
 
     const emit = async (ev) => {
         if (!response.writableEnded) {
             response.write(JSON.stringify(ev) + '\n');
         }
     };
+
+    // Send periodic heartbeats to prevent connection timeouts during long
+    // LLM tool calls (Qwen3-32B reasoning can take 30+ seconds per call).
+    const heartbeat = setInterval(() => {
+        if (!response.writableEnded) {
+            response.write(JSON.stringify({ kind: 'status', phase: 'thinking' }) + '\n');
+        } else {
+            clearInterval(heartbeat);
+        }
+    }, 8000);
 
     try {
         await withDebugContext({
@@ -578,6 +590,7 @@ router.post('/campaigns/:cid/ask', async (request, response) => {
         console.error('[gm.ask] failed', err);
         await emit({ kind: 'error', code: 'internal', message: err?.message || String(err) });
     } finally {
+        clearInterval(heartbeat);
         if (!response.writableEnded) response.end();
     }
 });
