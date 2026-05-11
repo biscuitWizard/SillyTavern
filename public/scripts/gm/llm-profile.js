@@ -57,10 +57,18 @@ export function currentLlmProfile(role) {
     if (!live.source) return null;
 
     if (role) {
-        const modelOverride = getRoleModelOverride(role);
-        if (modelOverride) live.model = modelOverride;
-
+        let modelOverride = getRoleModelOverride(role);
         const urlOverride = getRoleUrlOverride(role);
+
+        if (modelOverride && /^https?:\/\//i.test(modelOverride)) {
+            console.warn(`[llm-profile] gm-${role}-model looks like a URL ("${modelOverride}"). Did you mean to put it in the URL field?`);
+            if (!urlOverride) {
+                live.custom_url = modelOverride;
+            }
+            modelOverride = '';
+        }
+
+        if (modelOverride) live.model = modelOverride;
         if (urlOverride) live.custom_url = urlOverride;
 
         const ROLE_REASONING = {

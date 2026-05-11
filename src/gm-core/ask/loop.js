@@ -132,11 +132,16 @@ export async function runAskLoop(args) {
                 role: 'ask',
             });
         } catch (err) {
-            await emit({
-                kind: 'error',
-                code: err instanceof LlmError ? err.code : 'unknown',
-                message: `ask: ${err?.message || err}`,
-            });
+            const code = err instanceof LlmError ? err.code : 'unknown';
+            let message = `ask: ${err?.message || err}`;
+            if (code === 'parse_failed') {
+                message = 'The connected model could not produce a valid tool call. '
+                    + 'This usually means the Director URL override is missing or '
+                    + 'points to a model that does not support function calling. '
+                    + 'Check the TTRPG Tavern role-model settings in the API panel.';
+            }
+            console.error('[gm.ask] tool call failed', code, err?.message || err);
+            await emit({ kind: 'error', code, message });
             return;
         }
 

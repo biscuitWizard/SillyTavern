@@ -120,6 +120,11 @@ export function renderAskPanel(mount, { campaign, onBack }) {
             return;
         }
 
+        if (directorProfile.model && /^https?:\/\//i.test(directorProfile.model)) {
+            showError('The Director model field contains a URL — it should be a model name. Check the TTRPG Tavern role-model settings in the API panel.');
+            return;
+        }
+
         showError('');
         busy = true;
         submit.disabled = true;
