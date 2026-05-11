@@ -277,25 +277,25 @@ async function handleMutateIdentity({ toolArgs, findCharacter, updateCharacter, 
         return { summary: `mutate_identity: character "${charId}" not found.` };
     }
 
-    if (character.is_player) {
-        await emit({
-            kind: 'identity_edit_request',
-            detail: {
-                character_id: charId,
-                character_name: character.name,
-                field,
-                current_value: String(character[field] ?? ''),
-                proposed_value: value,
-                rationale: String(toolArgs.rationale || ''),
-            },
-        });
-        return { summary: `identity_edit_request for ${character.name}.${field} submitted for player approval.` };
-    }
-
+    // In Ask mode the player explicitly requested the change, so apply
+    // it directly. Emit the detail so the frontend can show what changed,
+    // but don't gate on approval — that's for unsolicited Director edits.
     if (typeof updateCharacter === 'function') {
         await updateCharacter(charId, { [field]: value });
     }
-    return { summary: `identity_mutated: ${character.name}.${field} updated.` };
+    await emit({
+        kind: 'tool_step',
+        tool: 'mutate_identity',
+        summary: `${character.name}.${field} updated.`,
+        detail: {
+            character_id: charId,
+            character_name: character.name,
+            field,
+            previous_value: String(character[field] ?? ''),
+            new_value: value,
+        },
+    });
+    return { summary: `identity_mutated: ${character.name}.${field} updated to: "${value.slice(0, 120)}…"` };
 }
 
 async function handleSearchMemory({ toolArgs, memoryService, campaignId, playerCharacter }) {

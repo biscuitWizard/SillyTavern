@@ -30,6 +30,28 @@ function withSheet(directories, campaignId, characterId, mutate) {
 }
 
 /**
+ * Coerce a stat value to a number or string. LLMs sometimes return objects
+ * like `{ "base_value": 12 }` instead of a bare `12`; we extract the first
+ * numeric property or stringify.
+ */
+function coerceStatValue(raw) {
+    if (raw === null || raw === undefined) return 0;
+    if (typeof raw === 'number') return raw;
+    if (typeof raw === 'string') {
+        const n = Number(raw);
+        return Number.isFinite(n) ? n : raw;
+    }
+    if (typeof raw === 'object') {
+        const vals = Object.values(raw).filter(v => typeof v === 'number');
+        if (vals.length > 0) return vals[0];
+        const strs = Object.values(raw).filter(v => typeof v === 'string');
+        if (strs.length > 0) return strs[0];
+        return String(raw);
+    }
+    return raw;
+}
+
+/**
  * @param {import('../../users.js').UserDirectoryList} directories
  * @param {string} campaignId
  * @param {string} characterId
@@ -37,9 +59,10 @@ function withSheet(directories, campaignId, characterId, mutate) {
  * @param {number | string} value
  */
 export function setStat(directories, campaignId, characterId, key, value) {
+    const safe = coerceStatValue(value);
     return withSheet(directories, campaignId, characterId, (sheet) => ({
         ...sheet,
-        stats: { ...sheet.stats, [key]: value },
+        stats: { ...sheet.stats, [key]: safe },
     }));
 }
 
@@ -51,9 +74,11 @@ export function setStat(directories, campaignId, characterId, key, value) {
  * @param {number} delta
  */
 export function adjustStat(directories, campaignId, characterId, key, delta) {
+    const safeDelta = typeof delta === 'number' && Number.isFinite(delta) ? delta : 0;
     return withSheet(directories, campaignId, characterId, (sheet) => {
-        const current = Number(sheet.stats[key] ?? 0);
-        return { ...sheet, stats: { ...sheet.stats, [key]: current + delta } };
+        const current = coerceStatValue(sheet.stats[key]);
+        const base = typeof current === 'number' ? current : 0;
+        return { ...sheet, stats: { ...sheet.stats, [key]: base + safeDelta } };
     });
 }
 
@@ -84,9 +109,14 @@ export function clearStat(directories, campaignId, characterId, key) {
  * @param {string} value
  */
 export function setStatus(directories, campaignId, characterId, key, value) {
+    let safe = value;
+    if (typeof value === 'object' && value !== null) {
+        safe = value.description || value.value || Object.values(value).find(v => typeof v === 'string') || JSON.stringify(value);
+    }
+    safe = String(safe ?? '');
     return withSheet(directories, campaignId, characterId, (sheet) => ({
         ...sheet,
-        statuses: { ...sheet.statuses, [key]: value },
+        statuses: { ...sheet.statuses, [key]: safe },
     }));
 }
 
