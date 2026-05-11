@@ -5,7 +5,9 @@
  *
  *   1. `runTurn` (loop.js) — exercises the loop end-to-end with mock
  *      Director / actor / summarizer clients. Asserts that:
- *        - The history grows correctly across loop iterations.
+ *        - The history grows correctly across loop iterations, with
+ *          assistant `tool_calls` and `role: 'tool'` results pairing up
+ *          by `tool_call_id`.
  *        - When a mock Director reports `prompt_tokens` over the threshold
  *          via `onUsage`, the loop fires `collapseOlderTurns` exactly once.
  *        - When `onUsage` reports `null`, no collapse is attempted.
@@ -24,6 +26,33 @@ import {
     SUMMARY_TRIGGER_TOKENS,
     SUMMARY_KEEP_LAST_PAIRS,
 } from '../../src/gm-core/director/history.js';
+
+/**
+ * Convert a legacy `{ action, ...args }` test fixture into the
+ * `ToolCallResponse` shape the new `directorClient.tool()` returns.
+ * Keeps existing scripted decisions readable without a per-test rewrite.
+ *
+ * @param {{ action: string } & Record<string, unknown>} decision
+ * @param {number} idx
+ */
+function decisionToToolCall(decision, idx) {
+    const { action, ...args } = decision;
+    return {
+        id: `call_test_${idx}`,
+        name: action,
+        arguments: args,
+        raw_arguments: JSON.stringify(args),
+    };
+}
+
+/** Snapshot a single chat message preserving tool-call / tool-result fields. */
+function snapshotMessage(m) {
+    /** @type {Record<string, unknown>} */
+    const out = { role: m.role, content: m.content };
+    if (m.tool_calls) out.tool_calls = m.tool_calls;
+    if (m.tool_call_id) out.tool_call_id = m.tool_call_id;
+    return out;
+}
 
 // =====================================================================
 // Fixtures
@@ -68,25 +97,28 @@ function baseCtx() {
  * Build a Director mock that returns a scripted sequence of decisions
  * AND optionally fires `onUsage` with a per-call usage snapshot drawn
  * from `usagePerCall[i]`. Captures every messages[] argument so tests
- * can introspect.
+ * can introspect, preserving tool_calls / tool_call_id on each message
+ * so assertions can pin the new agent-loop wire shape.
  */
 function makeDirector({ decisions, usagePerCall }) {
     const decQueue = [...decisions];
     const usageQueue = usagePerCall ? [...usagePerCall] : null;
-    /** @type {Array<Array<{ role: string, content: string }>>} */
+    /** @type {Array<Array<Record<string, unknown>>>} */
     const calls = [];
+    let callIdx = 0;
     const client = {
-        structured: jest.fn(async ({ messages, onUsage }) => {
-            calls.push((messages || []).map(m => ({ role: m.role, content: m.content })));
+        tool: jest.fn(async ({ messages, onUsage }) => {
+            calls.push((messages || []).map(snapshotMessage));
             if (decQueue.length === 0) throw new Error('director queue exhausted');
             const decision = decQueue.shift();
             if (onUsage) {
                 const usage = usageQueue ? usageQueue.shift() : null;
                 onUsage(usage ?? null);
             }
-            return decision;
+            return decisionToToolCall(decision, callIdx++);
         }),
         chat: jest.fn(async () => 'unused'),
+        structured: jest.fn(async () => { throw new Error('director.structured not used in tool-calling mode'); }),
         calls,
     };
     return client;
@@ -111,7 +143,7 @@ function makeSummarizer(reply = '- earlier beats happened') {
 // =====================================================================
 
 describe('director loop: messages[] history grows across iterations', () => {
-    test('every Director call sees its own prior decisions and the engine\'s tool results', async () => {
+    test('every Director call sees its own prior tool calls and the engine\'s tool results', async () => {
         const ctx = baseCtx();
         const director = makeDirector({
             decisions: [
@@ -137,20 +169,26 @@ describe('director loop: messages[] history grows across iterations', () => {
         expect(director.calls[0][0].role).toBe('system');
         expect(director.calls[0][1].role).toBe('user');
 
-        // Call #2: prior assistant decision + tool-result user message appended.
+        // Call #2: prior assistant tool_call + role:'tool' result message appended.
         expect(director.calls[1]).toHaveLength(4);
         expect(director.calls[1][2].role).toBe('assistant');
-        expect(director.calls[1][2].content).toContain('"action":"speak"');
-        expect(director.calls[1][2].content).toContain('"actor":"amelia"');
-        expect(director.calls[1][3].role).toBe('user');
-        expect(director.calls[1][3].content).toContain('Tool result for `speak`');
+        expect(director.calls[1][2].content).toBeNull();
+        expect(Array.isArray(director.calls[1][2].tool_calls)).toBe(true);
+        expect(director.calls[1][2].tool_calls[0].function.name).toBe('speak');
+        const args2 = JSON.parse(director.calls[1][2].tool_calls[0].function.arguments);
+        expect(args2.actor).toBe('amelia');
+        expect(director.calls[1][3].role).toBe('tool');
+        expect(director.calls[1][3].tool_call_id).toBe(director.calls[1][2].tool_calls[0].id);
         expect(director.calls[1][3].content).toContain('Amelia');
 
         // Call #3: two assistant + two tool-result pairs (history of both speaks).
         expect(director.calls[2]).toHaveLength(6);
         expect(director.calls[2][4].role).toBe('assistant');
-        expect(director.calls[2][4].content).toContain('"actor":"bran"');
-        expect(director.calls[2][5].role).toBe('user');
+        expect(director.calls[2][4].tool_calls[0].function.name).toBe('speak');
+        const args3 = JSON.parse(director.calls[2][4].tool_calls[0].function.arguments);
+        expect(args3.actor).toBe('bran');
+        expect(director.calls[2][5].role).toBe('tool');
+        expect(director.calls[2][5].tool_call_id).toBe(director.calls[2][4].tool_calls[0].id);
         expect(director.calls[2][5].content).toContain('Bran');
 
         // Two actor messages emitted, no quotas in play.
@@ -208,9 +246,12 @@ describe('director loop: collapses history when prompt_tokens exceeds budget', (
         expect(recapMsg.content).toContain('synthetic recap');
 
         // Tail intact: the final tool-result message reflects the most
-        // recent narrator beat that fired before end_turn.
-        const lastUser = [...finalCall].reverse().find(m => m.role === 'user');
-        expect(lastUser.content).toContain('Tool result for `speak`');
+        // recent narrator beat that fired before end_turn — and it's
+        // now a proper role: 'tool' message, not a `user` stand-in.
+        const lastTool = [...finalCall].reverse().find(m => m.role === 'tool');
+        expect(lastTool).toBeDefined();
+        expect(lastTool.content).toContain('Narrator');
+        expect(lastTool.tool_call_id).toEqual(expect.any(String));
 
         // System prompt + initial user prompt were preserved.
         expect(finalCall[0].role).toBe('system');
@@ -375,15 +416,20 @@ describe('collapseOlderTurns', () => {
 // =====================================================================
 
 describe('formatToolResult', () => {
-    test('embeds the action name in backticks and includes the summary verbatim', () => {
+    test('returns the summary verbatim, without prefix or trailing nudge', () => {
+        // In tool-calling mode the result lands inside a role:'tool'
+        // message whose preceding assistant turn already named the
+        // tool — so we don't repeat the action name, and we drop the
+        // "Decide the next beat." trailer that used to leak into the
+        // old role:'user' stand-in and read like a fresh user request.
         const out = formatToolResult({ action: 'spawn_character' }, 'Spawned Bob (id: `bob`).');
-        expect(out).toContain('Tool result for `spawn_character`:');
-        expect(out).toContain('Spawned Bob (id: `bob`).');
-        expect(out).toContain('Decide the next beat.');
+        expect(out).toBe('Spawned Bob (id: `bob`).');
+        expect(out).not.toMatch(/Tool result for/);
+        expect(out).not.toMatch(/Decide the next beat/);
     });
 
-    test('falls back to "(no details)" when the summary is empty', () => {
+    test('falls back to "(no details from `<action>`)" when the summary is empty', () => {
         const out = formatToolResult({ action: 'end_turn' }, '');
-        expect(out).toContain('(no details)');
+        expect(out).toBe('(no details from `end_turn`)');
     });
 });

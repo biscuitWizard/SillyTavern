@@ -57,17 +57,37 @@ function baseCtx() {
     };
 }
 
+function snapshotMessage(m) {
+    /** @type {Record<string, unknown>} */
+    const out = { role: m.role, content: m.content };
+    if (m.tool_calls) out.tool_calls = m.tool_calls;
+    if (m.tool_call_id) out.tool_call_id = m.tool_call_id;
+    return out;
+}
+
+function decisionToToolCall(decision, idx) {
+    const { action, ...args } = decision;
+    return {
+        id: `call_test_${idx}`,
+        name: action,
+        arguments: args,
+        raw_arguments: JSON.stringify(args),
+    };
+}
+
 function makeDirector(decisions) {
     const queue = [...decisions];
-    /** @type {Array<Array<{ role: string, content: string }>>} */
+    /** @type {Array<Array<Record<string, unknown>>>} */
     const calls = [];
+    let idx = 0;
     const client = {
-        structured: jest.fn(async ({ messages }) => {
-            calls.push((messages || []).map(m => ({ role: m.role, content: m.content })));
+        tool: jest.fn(async ({ messages }) => {
+            calls.push((messages || []).map(snapshotMessage));
             if (queue.length === 0) throw new Error('director queue exhausted');
-            return queue.shift();
+            return decisionToToolCall(queue.shift(), idx++);
         }),
         chat: jest.fn(async () => 'unused'),
+        structured: jest.fn(async () => { throw new Error('director.structured not used in tool-calling mode'); }),
         calls,
     };
     return client;
@@ -102,15 +122,15 @@ describe('search_library', () => {
         expect(events.filter(e => e.kind === 'state')).toHaveLength(0);
         expect(events.filter(e => e.kind === 'tool_error')).toHaveLength(0);
         // The Director sees the matches via the second call's messages[]
-        // history — the loop appended a synthetic user "Tool result for
-        // `search_library`" message after the dispatcher returned.
+        // history — the loop appended a role:'tool' result anchored to
+        // the search_library tool_call_id.
         const secondCall = director.calls[1];
         expect(secondCall).toBeDefined();
-        const lastUser = [...secondCall].reverse().find(m => m.role === 'user');
-        expect(lastUser).toBeDefined();
-        expect(lastUser.content).toContain('search_library');
-        expect(lastUser.content).toContain('old_bartender');
-        expect(lastUser.content).toContain('Greta the Bartender');
+        const lastTool = [...secondCall].reverse().find(m => m.role === 'tool');
+        expect(lastTool).toBeDefined();
+        expect(lastTool.content).toContain('search_library');
+        expect(lastTool.content).toContain('old_bartender');
+        expect(lastTool.content).toContain('Greta the Bartender');
         // Loop terminates cleanly.
         expect(events[events.length - 1]).toEqual(expect.objectContaining({
             kind: 'end_of_turn', reason: 'director',
@@ -134,9 +154,9 @@ describe('search_library', () => {
             findCharacter: () => null,
         });
         const secondCall = director.calls[1];
-        const lastUser = [...secondCall].reverse().find(m => m.role === 'user');
-        expect(lastUser.content).toMatch(/no off-stage characters/i);
-        expect(lastUser.content).toContain('spawn_character');
+        const lastTool = [...secondCall].reverse().find(m => m.role === 'tool');
+        expect(lastTool.content).toMatch(/no off-stage characters/i);
+        expect(lastTool.content).toContain('spawn_character');
     });
 });
 

@@ -37,6 +37,9 @@ import { chat as stChat, messageEdit as stMessageEdit } from '../../script.js';
 let installed = false;
 let regenerationInFlight = false;
 
+/** @type {Promise<void>|null} */
+let pendingEditPersist = null;
+
 /** @type {MutationObserver | null} */
 let regenBtnObserver = null;
 
@@ -280,26 +283,41 @@ function scheduleEditPersistAfterStCommit(editDoneBtn) {
  * @param {string|null} beforeText
  */
 async function persistMesEdit(idx, mes, beforeText) {
-    const state = currentSceneState();
-    if (!state) return;
+    const job = (async () => {
+        const state = currentSceneState();
+        if (!state) return;
 
-    // Prefer ST's committed text from the chat[] mirror because its
-    // edit handler converts markdown / sanitises before writing; our
-    // `beforeText` snapshot is the raw textarea, which is the
-    // fallback when chat[] hasn't latched yet.
-    let text = '';
-    if (Array.isArray(stChat) && stChat[idx] && typeof stChat[idx].mes === 'string') {
-        text = stChat[idx].mes;
-    }
-    if (!text && beforeText !== null) text = beforeText;
-    if (!text) return;
+        // Prefer ST's committed text from the chat[] mirror because its
+        // edit handler converts markdown / sanitises before writing; our
+        // `beforeText` snapshot is the raw textarea, which is the
+        // fallback when chat[] hasn't latched yet.
+        let text = '';
+        if (Array.isArray(stChat) && stChat[idx] && typeof stChat[idx].mes === 'string') {
+            text = stChat[idx].mes;
+        }
+        if (!text && beforeText !== null) text = beforeText;
+        // Last-resort: read the rendered .mes_text from the DOM. ST's
+        // messageEditDone may have already swapped the edit textarea for
+        // the formatted div by the time our setTimeout fires.
+        if (!text && mes instanceof Element) {
+            const rendered = mes.querySelector('.mes_text');
+            if (rendered) text = rendered.textContent?.trim() || '';
+        }
+        if (!text) {
+            console.warn('[gm] persistMesEdit: no text found for idx', idx);
+            return;
+        }
 
-    try {
-        await api.editSceneMessage(state.scene.id, idx, text);
-    } catch (err) {
-        console.error('[gm] editSceneMessage failed', err);
-        notifySystem(`Edit failed: ${err?.message || err}`);
-    }
+        try {
+            await api.editSceneMessage(state.scene.id, idx, text);
+        } catch (err) {
+            console.error('[gm] editSceneMessage failed', err);
+            notifySystem(`Edit failed: ${err?.message || err}`);
+        }
+    })();
+    pendingEditPersist = job;
+    await job;
+    if (pendingEditPersist === job) pendingEditPersist = null;
 }
 
 /**
@@ -387,6 +405,12 @@ async function regenerateFromIdx(idx) {
     if (!state) return;
     if (state.readOnly || state.scene.status === 'closed') return;
     if (idx < 0) return;
+
+    // Wait for any in-flight edit persistence so the server reads the
+    // latest text when it builds the regeneration prompt.
+    if (pendingEditPersist) {
+        try { await pendingEditPersist; } catch (_) { /* logged elsewhere */ }
+    }
 
     const directorProfile = currentLlmProfile('director');
     const narratorProfile = currentLlmProfile('narrator');

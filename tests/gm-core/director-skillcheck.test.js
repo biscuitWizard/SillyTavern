@@ -56,13 +56,36 @@ function baseCtx() {
     };
 }
 
+/**
+ * Skill-check tests script a single queue that interleaves Director
+ * decisions (consumed via `tool()`) with adjudicator decisions
+ * (consumed via `structured()`). The mock dispatches based on which
+ * method the loop calls. Items shaped like `{ action: '...' }` are
+ * Director decisions and get wrapped as a `ToolCallResponse`;
+ * everything else (adjudicator output) is returned verbatim.
+ */
 function makeDirector(callQueue) {
     const queue = [...callQueue];
+    let toolIdx = 0;
+    const popDecision = () => {
+        if (queue.length === 0) throw new Error('director queue exhausted');
+        return queue.shift();
+    };
     return {
-        structured: jest.fn(async () => {
-            if (queue.length === 0) throw new Error('director queue exhausted');
-            return queue.shift();
+        tool: jest.fn(async () => {
+            const decision = popDecision();
+            if (!decision || typeof decision !== 'object' || typeof /** @type {any} */(decision).action !== 'string') {
+                throw new Error(`director.tool() got a non-decision queue item: ${JSON.stringify(decision)}`);
+            }
+            const { action, ...args } = /** @type {any} */(decision);
+            return {
+                id: `call_test_${toolIdx++}`,
+                name: action,
+                arguments: args,
+                raw_arguments: JSON.stringify(args),
+            };
         }),
+        structured: jest.fn(async () => popDecision()),
         chat: jest.fn(async () => 'unused'),
     };
 }

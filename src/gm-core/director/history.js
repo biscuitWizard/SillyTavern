@@ -1,13 +1,15 @@
 /**
  * Director agent-loop history utilities.
  *
- * The Director loop is now stateful within a single turn: it maintains a
+ * The Director loop is stateful within a single turn: it maintains a
  * `messages[]` array (system + initial user + alternating assistant
- * decisions and synthetic user "tool result" beats) and replays the whole
- * thing on every `directorClient.structured(...)` call. That gives the
- * Director real memory of its own prior decisions, which fixes runaway
- * `skill_check` chains, repeated tool errors, and the "looks like step 1
- * every step" behaviour that drove the old `MAX_SPEAKS_PER_ACTOR` quota.
+ * `tool_call` selections and `role: 'tool'` engine results, anchored
+ * to each other by `tool_call_id`) and replays the whole thing on
+ * every `directorClient.tool(...)` call. That gives the Director real
+ * memory of its own prior decisions and lets the chat template render
+ * each engine result as a proper tool response — so the Director no
+ * longer mistakes its own tool outputs for fresh player input the way
+ * it did when results lived under `role: 'user'`.
  *
  * On long turns the message array would eventually overflow the model's
  * context window. We avoid that by collapsing the older middle of the
@@ -46,23 +48,27 @@ export const SUMMARY_KEEP_LAST_PAIRS = 5;
  */
 
 /**
- * Render a synthetic user "tool result" message for the Director's
- * messages[] history. This mirrors the format of the deprecated
- * `ctx.last_beat` strings so the model already knows how to read them —
- * it's the same content, just delivered as a proper user turn instead
- * of a system-prompt block.
+ * Render the `content` of the `role: 'tool'` result message that the
+ * Director sees after dispatching one of its tool calls. The chat
+ * template already frames this as a tool response anchored to the
+ * matching `tool_call_id`, so we don't repeat the action name or beg
+ * the model to "decide the next beat" — both of those used to leak
+ * into the old `role: 'user'` stand-in and confuse small models into
+ * treating tool outputs as a fresh user prompt.
+ *
+ * `decision` is accepted for API stability and to fall back to "(no
+ * details for `<action>`)" when the dispatcher returned an empty
+ * summary; nothing else of the decision shape is read.
  *
  * @param {{ action: string }} decision   the Director's prior decision
  * @param {string} summary                the dispatcher's outcome string
  * @returns {string}
  */
 export function formatToolResult(decision, summary) {
-    const action = decision && typeof decision.action === 'string' ? decision.action : 'unknown';
     const body = String(summary || '').trim();
-    if (!body) {
-        return `Tool result for \`${action}\`: (no details)\nDecide the next beat.`;
-    }
-    return `Tool result for \`${action}\`:\n${body}\n\nDecide the next beat.`;
+    if (body) return body;
+    const action = decision && typeof decision.action === 'string' ? decision.action : 'unknown';
+    return `(no details from \`${action}\`)`;
 }
 
 /**
@@ -73,14 +79,18 @@ export function formatToolResult(decision, summary) {
  *   - `history[1]` is always the initial user prompt (campaign + scene +
  *     transcript + player input).
  *   - From `history[2]` onward we have alternating
- *     `{role:'assistant', content:<decisionJson>}` and
- *     `{role:'user', content:<toolResult>}` messages.
+ *     `{role:'assistant', content:null, tool_calls:[{id, function:{name, arguments}}]}`
+ *     and
+ *     `{role:'tool', tool_call_id, content:<engine result>}`
+ *     messages — one pair per Director step.
  *
  * After this call the array still satisfies those invariants. We keep
  * the system + initial user, then a single synthetic
  * `{role:'user', content:<recap>}` summary message, then the last
  * `SUMMARY_KEEP_LAST_PAIRS * 2` messages verbatim. Everything in between
- * is summarised by the summariser.
+ * is summarised by the summariser. The recap goes in as a `user` turn
+ * (not `tool`) because there's no preceding `tool_calls` for it to
+ * anchor onto.
  *
  * No-op if there is nothing in the middle to collapse (i.e. the history
  * is already shorter than `2 + SUMMARY_KEEP_LAST_PAIRS * 2`).
@@ -128,8 +138,14 @@ export async function collapseOlderTurns(history, summarizerClient, signal) {
  */
 async function runSummarizer({ summarizerClient, dropped, signal }) {
     const transcript = dropped.map(m => {
-        const role = m.role === 'assistant' ? 'Director decision' : (m.role === 'user' ? 'Engine result' : m.role);
-        return `[${role}]\n${m.content}`;
+        if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+            const tc = m.tool_calls[0];
+            return `[Director decision] ${tc?.function?.name || 'unknown'}(${tc?.function?.arguments || '{}'})`;
+        }
+        const role = m.role === 'assistant'
+            ? 'Director decision'
+            : (m.role === 'tool' ? 'Engine result' : (m.role === 'user' ? 'Engine result' : m.role));
+        return `[${role}]\n${m.content || ''}`;
     }).join('\n\n');
 
     try {
@@ -195,16 +211,24 @@ function fallbackRecap(dropped) {
         const result = dropped[i + 1];
         let action = '?';
         if (decision && decision.role === 'assistant') {
-            try {
-                const parsed = JSON.parse(decision.content);
-                action = parsed.action || '?';
-            } catch (_) {
-                action = decision.content.slice(0, 60);
+            if (Array.isArray(decision.tool_calls) && decision.tool_calls.length) {
+                action = decision.tool_calls[0]?.function?.name || '?';
+            } else if (typeof decision.content === 'string' && decision.content.length) {
+                // Legacy shape: assistant turns used to hold a JSON
+                // string. Keep parsing it so an older history that
+                // somehow flowed through here doesn't crash the recap.
+                try {
+                    const parsed = JSON.parse(decision.content);
+                    action = parsed.action || '?';
+                } catch (_) {
+                    action = decision.content.slice(0, 60);
+                }
             }
         }
-        const summary = result && result.role === 'user'
-            ? result.content.replace(/^Tool result for `[^`]+`:\s*/, '').slice(0, 240)
-            : '(no result)';
+        let summary = '(no result)';
+        if (result && (result.role === 'tool' || result.role === 'user') && typeof result.content === 'string') {
+            summary = result.content.replace(/^Tool result for `[^`]+`:\s*/, '').slice(0, 240);
+        }
         lines.push(`- ${action} → ${summary.replace(/\s+/g, ' ').trim()}`);
     }
     return lines.join('\n') || '(no prior beats)';

@@ -44,22 +44,26 @@
  *
  *   [0]   system prompt
  *   [1]   initial user prompt (campaign, scene, transcript, player input)
- *   [2]   assistant: decision1 JSON
- *   [3]   user:      tool result for decision1
- *   [4]   assistant: decision2 JSON
- *   [5]   user:      tool result for decision2
+ *   [2]   assistant: { content: null, tool_calls: [{ id, name, arguments }] }   ← decision 1
+ *   [3]   tool:      { tool_call_id, content: <engine result for decision 1> }
+ *   [4]   assistant: { content: null, tool_calls: [{ id, name, arguments }] }   ← decision 2
+ *   [5]   tool:      { tool_call_id, content: <engine result for decision 2> }
  *   ...
  *
  * On every step the loop replays the entire history into
- * `directorClient.structured({messages, ...})`. This gives the Director
- * real memory of its own prior decisions, which fixes runaway
- * `skill_check` chains, repeated tool errors, and the "looks like step 1
- * every step" behaviour that drove the old `MAX_SPEAKS_*` quotas.
+ * `directorClient.tool({messages, tools: directorTools, tool_choice: 'required', ...})`.
+ * The model selects exactly one tool per call; the loop dispatches on the
+ * tool name and feeds the dispatcher's outcome back as a `role: 'tool'`
+ * message anchored to the matching `tool_call_id`. This gives the Director
+ * real memory of its own prior decisions AND lets the chat template
+ * render each engine result as a proper tool response — fixing the
+ * "Director takes its own tool result as new player input" bug that the
+ * old `user`-message stand-in produced on small models.
  *
  * Each dispatcher returns `{ kind: 'continue', summary }` on success or
  * `{ kind: 'end' }` after emitting a terminal error. The loop calls
- * `formatToolResult(decision, summary)` to wrap the summary into a synthetic
- * user-role message and appends it to the history.
+ * `formatToolResult(decision, summary)` to render the body of the
+ * `role: 'tool'` message, then appends it to the history.
  *
  * On long turns the message array would eventually overflow the model's
  * context window. We avoid that by collapsing the older middle of the
@@ -79,7 +83,7 @@ import { directorSystemPrompt, directorUserPrompt } from './prompts.js';
 import { narratorSystemPrompt, narratorUserPrompt } from '../narrator/prompts.js';
 import { actorSystemPrompt, actorUserPrompt } from '../actors/prompts.js';
 import { buildActorMessages, buildNarratorMessages } from '../prompts/messages.js';
-import { directorDecisionJsonSchema, validateDirectorDecision, SUPPORTED_ACTIONS } from './schemas.js';
+import { directorTools, validateDirectorDecision, SUPPORTED_ACTIONS } from './schemas.js';
 import { LlmError } from '../llm/errors.js';
 import * as skillEngine from '../skillcheck/engine.js';
 import { formatSections } from '../rag/injection.js';
@@ -246,7 +250,7 @@ export async function runTurn({
 
     // Director agent-loop history. See the file header for the layout
     // invariants. The first two messages are pinned (system + initial
-    // user); the loop appends an assistant decision + a user tool result
+    // user); the loop appends an assistant tool_call + a tool result
     // for every non-terminal beat. `collapseOlderTurns` may compact the
     // middle into a single recap when token budget is exceeded.
     /** @type {import('../llm/client.d.ts').ChatMessage[]} */
@@ -255,6 +259,30 @@ export async function runTurn({
         { role: 'user',   content: directorUserPrompt(ctx) },
     ];
     let lastPromptTokens = 0;
+
+    /**
+     * Synthesise the assistant message that records the Director's latest
+     * tool selection in `directorHistory`. We always serialise arguments
+     * to a JSON string per OpenAI's tool-call wire spec, even on the
+     * text-mode fallback path — the matching `tool_call_id` on the
+     * following result message keeps everything anchored regardless of
+     * provider.
+     *
+     * @param {import('../llm/client.d.ts').ToolCallResponse} call
+     * @returns {import('../llm/client.d.ts').ChatMessage}
+     */
+    const assistantToolCallMessage = (call) => ({
+        role: 'assistant',
+        content: null,
+        tool_calls: [{
+            id: call.id,
+            type: 'function',
+            function: {
+                name: call.name,
+                arguments: call.raw_arguments || JSON.stringify(call.arguments || {}),
+            },
+        }],
+    });
 
     const spanEvent = makeDebugEvent({
         kind: 'span_start',
@@ -302,13 +330,15 @@ export async function runTurn({
     };
 
     /**
-     * Append a synthetic tool-result user message describing a recoverable
-     * error AND emit a `tool_error` event. The Director sees the error on
-     * its next step and gets a chance to pick a different action.
+     * Append a `role: 'tool'` result message describing a recoverable
+     * error AND emit a `tool_error` event. The Director sees the error
+     * on its next step (anchored to the matching `tool_call_id`) and
+     * gets a chance to pick a different action.
      *
+     * @param {string} toolCallId    the call_id from the Director's bad invocation
      * @param {{ tool: string, code: string, message: string, suggestions?: string[] }} err
      */
-    const recordRecoverableToolError = async (err) => {
+    const recordRecoverableToolError = async (toolCallId, err) => {
         await emit({
             kind: 'tool_error',
             tool: err.tool,
@@ -317,7 +347,8 @@ export async function runTurn({
             suggestions: err.suggestions,
         });
         directorHistory.push({
-            role: 'user',
+            role: 'tool',
+            tool_call_id: toolCallId,
             content: formatToolError(err),
         });
     };
@@ -332,12 +363,13 @@ export async function runTurn({
 
         await emit({ kind: 'status', phase: 'directing' });
 
-        let decision;
+        /** @type {import('../llm/client.d.ts').ToolCallResponse} */
+        let call;
         try {
-            decision = await directorClient.structured({
+            call = await directorClient.tool({
                 messages: directorHistory,
-                schema: directorDecisionJsonSchema,
-                schemaName: 'DirectorDecision',
+                tools: directorTools,
+                tool_choice: 'required',
                 onUsage: (u) => { if (u && Number.isFinite(u.prompt_tokens)) lastPromptTokens = u.prompt_tokens; },
                 signal,
                 role: 'director',
@@ -357,6 +389,13 @@ export async function runTurn({
             return;
         }
 
+        // Reconstruct the legacy `DirectorDecision` shape from the
+        // tool-call response so the rest of the dispatcher (and the
+        // validator below) keeps working unchanged. The function name
+        // takes the role the `action` discriminator used to play.
+        /** @type {Record<string, unknown>} */
+        const decision = { action: call.name, ...(call.arguments || {}) };
+
         const validationErr = validateDirectorDecision(decision);
         if (validationErr) {
             const key = 'validate_decision';
@@ -372,22 +411,22 @@ export async function runTurn({
                 await emit({ kind: 'end_of_turn', reason: 'error' });
                 return;
             }
-            // Record the (failed) decision so the Director sees what it
+            // Record the (failed) tool call so the Director sees what it
             // sent, then surface a tool_error and let it try again.
-            directorHistory.push({ role: 'assistant', content: JSON.stringify(decision) });
-            await recordRecoverableToolError({
+            directorHistory.push(assistantToolCallMessage(call));
+            await recordRecoverableToolError(call.id, {
                 tool: 'director_decision',
                 code: 'invalid_decision',
                 message: validationErr,
                 suggestions: [
-                    'Re-emit a decision matching the DirectorDecision schema EXACTLY (action, plus the action-specific fields).',
+                    'Re-invoke a tool with arguments matching its schema EXACTLY.',
                     'If you are unsure, pick `end_turn` with a short rationale.',
                 ],
             });
             continue;
         }
 
-        if (!SUPPORTED_ACTIONS.has(decision.action)) {
+        if (!SUPPORTED_ACTIONS.has(/** @type {string} */ (decision.action))) {
             const key = `unsupported_action:${decision.action}`;
             const exhausted = noteToolError(key);
             if (exhausted) {
@@ -401,8 +440,8 @@ export async function runTurn({
                 await emit({ kind: 'end_of_turn', reason: 'error' });
                 return;
             }
-            directorHistory.push({ role: 'assistant', content: JSON.stringify(decision) });
-            await recordRecoverableToolError({
+            directorHistory.push(assistantToolCallMessage(call));
+            await recordRecoverableToolError(call.id, {
                 tool: 'director_decision',
                 code: 'unsupported_action',
                 message: `Action "${decision.action}" is not yet implemented in this phase.`,
@@ -414,10 +453,10 @@ export async function runTurn({
             continue;
         }
 
-        // Record the Director's decision in history before we dispatch.
-        // The dispatcher's outcome will land as the matching tool-result
-        // user message immediately after.
-        directorHistory.push({ role: 'assistant', content: JSON.stringify(decision) });
+        // Record the Director's tool call in history before we dispatch.
+        // The dispatcher's outcome will land as the matching
+        // role: 'tool' result message immediately after.
+        directorHistory.push(assistantToolCallMessage(call));
 
         const dbgDecision = makeDebugEvent({
             kind: 'tool_decision',
@@ -444,7 +483,7 @@ export async function runTurn({
                 return;
             }
             const message = `A skill_check just resolved. You MUST pick \`speak\` (narrator or an in-scene NPC) to deliver the consequence BEFORE you can \`${decision.action}\`. The player needs to see/hear what happened.`;
-            await recordRecoverableToolError({
+            await recordRecoverableToolError(call.id, {
                 tool: 'skill_check',
                 code: 'speak_required',
                 message,
@@ -587,7 +626,8 @@ export async function runTurn({
         if (dbgResult) emitDebugEvent(dbgResult);
 
         directorHistory.push({
-            role: 'user',
+            role: 'tool',
+            tool_call_id: call.id,
             content: formatToolResult(decision, outcome.summary || ''),
         });
 

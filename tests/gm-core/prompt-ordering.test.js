@@ -105,25 +105,37 @@ describe('M0 prompt ordering: sheet AFTER RAG', () => {
 });
 
 describe('director history: formatToolResult', () => {
-    test('renders a per-step tool-result message that mirrors the dispatcher summary', () => {
+    // Post tool-call refactor: formatToolResult renders the body of a
+    // role: 'tool' message. The chat template anchors that result back
+    // to the preceding assistant tool_call by tool_call_id, so we no
+    // longer prefix with "Tool result for `<action>`:" or trail with
+    // "Decide the next beat." — both used to leak into the legacy
+    // role: 'user' stand-in and prime the model to treat tool outputs
+    // as fresh player speech.
+    test('returns the dispatcher summary verbatim, with no engine-side wrapping', () => {
         const decision = { action: 'speak', actor: 'amelia', intent: 'greet', rationale: 'NPC turn' };
         const summary = 'Amelia (id: `amelia`) just spoke in response to the player\'s input. Default to end_turn.';
         const out = formatToolResult(decision, summary);
-        expect(out).toContain('Tool result for `speak`:');
-        expect(out).toContain(summary);
-        expect(out).toContain('Decide the next beat.');
+        expect(out).toBe(summary);
+        expect(out).not.toMatch(/Tool result for/);
+        expect(out).not.toMatch(/Decide the next beat/);
     });
 
-    test('handles missing summary by emitting "(no details)" without crashing', () => {
+    test('falls back to "(no details from `<action>`)" when the summary is empty', () => {
         const decision = { action: 'end_turn' };
         const out = formatToolResult(decision, '');
-        expect(out).toContain('Tool result for `end_turn`:');
-        expect(out).toContain('(no details)');
+        expect(out).toBe('(no details from `end_turn`)');
     });
 
     test('falls back to action="unknown" when the decision is malformed', () => {
         // @ts-expect-error testing defensive path
         const out = formatToolResult({}, 'whatever happened');
-        expect(out).toContain('Tool result for `unknown`:');
+        expect(out).toBe('whatever happened');
+    });
+
+    test('falls back to action="unknown" in the empty-summary branch when the decision is malformed', () => {
+        // @ts-expect-error testing defensive path
+        const out = formatToolResult({}, '');
+        expect(out).toBe('(no details from `unknown`)');
     });
 });

@@ -77,17 +77,37 @@ function baseCtx() {
     };
 }
 
+function snapshotMessage(m) {
+    /** @type {Record<string, unknown>} */
+    const out = { role: m.role, content: m.content };
+    if (m.tool_calls) out.tool_calls = m.tool_calls;
+    if (m.tool_call_id) out.tool_call_id = m.tool_call_id;
+    return out;
+}
+
+function decisionToToolCall(decision, idx) {
+    const { action, ...args } = decision;
+    return {
+        id: `call_test_${idx}`,
+        name: action,
+        arguments: args,
+        raw_arguments: JSON.stringify(args),
+    };
+}
+
 function makeDirector(decisions) {
     const queue = [...decisions];
-    /** @type {Array<Array<{ role: string, content: string }>>} */
+    /** @type {Array<Array<Record<string, unknown>>>} */
     const calls = [];
+    let idx = 0;
     const client = {
-        structured: jest.fn(async ({ messages }) => {
-            calls.push((messages || []).map(m => ({ role: m.role, content: m.content })));
+        tool: jest.fn(async ({ messages }) => {
+            calls.push((messages || []).map(snapshotMessage));
             if (queue.length === 0) throw new Error('director queue exhausted');
-            return queue.shift();
+            return decisionToToolCall(queue.shift(), idx++);
         }),
         chat: jest.fn(async () => 'unused'),
+        structured: jest.fn(async () => { throw new Error('director.structured not used in tool-calling mode'); }),
         calls,
     };
     return client;
@@ -352,16 +372,16 @@ describe('mutate_sheet dispatch', () => {
         expect(finalJack.sheet.items.map(i => i.name)).toEqual(['Antidote Vial']);
 
         // The follow-up Director call must have seen the per-op result in
-        // its messages[] history — the loop appends a synthetic
-        // `Tool result for `mutate_sheet`:` user message after dispatch.
+        // its messages[] history — the loop appends a role:'tool' result
+        // anchored to the mutate_sheet call's tool_call_id.
         const followupCall = director.calls[1];
         expect(followupCall).toBeDefined();
-        const lastUser = [...followupCall].reverse().find(m => m.role === 'user');
-        expect(lastUser).toBeDefined();
-        expect(lastUser.content).toContain('Sheet for Jack');
-        expect(lastUser.content).toContain('adjust_stat hp -4');
-        expect(lastUser.content).toContain('set_status poisoned');
-        expect(lastUser.content).toContain('add_item');
+        const lastTool = [...followupCall].reverse().find(m => m.role === 'tool');
+        expect(lastTool).toBeDefined();
+        expect(lastTool.content).toContain('Sheet for Jack');
+        expect(lastTool.content).toContain('adjust_stat hp -4');
+        expect(lastTool.content).toContain('set_status poisoned');
+        expect(lastTool.content).toContain('add_item');
 
         expect(events[events.length - 1]).toEqual(expect.objectContaining({
             kind: 'end_of_turn',
@@ -441,8 +461,8 @@ describe('mutate_sheet dispatch', () => {
         // Recovery call must have seen the tool error in its history.
         const followupCall = director.calls[1];
         expect(followupCall).toBeDefined();
-        const lastUser = [...followupCall].reverse().find(m => m.role === 'user');
-        expect(lastUser.content).toContain('Tool error from `mutate_sheet`');
+        const lastTool = [...followupCall].reverse().find(m => m.role === 'tool');
+        expect(lastTool.content).toContain('Tool error from `mutate_sheet`');
         // Loop ended cleanly via the recovery, not via a hard error.
         expect(events[events.length - 1]).toEqual(expect.objectContaining({
             kind: 'end_of_turn', reason: 'director',
@@ -491,9 +511,9 @@ describe('mutate_sheet dispatch', () => {
         // in its history so it knows what landed and what didn't.
         const followupCall = director.calls[1];
         expect(followupCall).toBeDefined();
-        const lastUser = [...followupCall].reverse().find(m => m.role === 'user');
-        expect(lastUser.content).toMatch(/1 op applied, 1 failed/);
-        expect(lastUser.content).toContain('Some ops failed');
+        const lastTool = [...followupCall].reverse().find(m => m.role === 'tool');
+        expect(lastTool.content).toMatch(/1 op applied, 1 failed/);
+        expect(lastTool.content).toContain('Some ops failed');
     });
 
     test('missing mutateSheet callback → unrecoverable error, ends turn with reason=error', async () => {

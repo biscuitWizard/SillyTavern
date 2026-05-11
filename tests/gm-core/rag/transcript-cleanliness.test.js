@@ -97,24 +97,45 @@ function baseCtx() {
 
 function makeDirector(decisions) {
     const queue = [...decisions];
-    // The agent-loop refactor moved Director invocation onto a `messages[]`
-    // history. We flatten back to `{system, user}` shape for the test's
-    // existing assertions: `system` is the (single) system message,
-    // `user` is the concatenation of every user-role message in the call.
+    // The tool-calling refactor moved Director invocation onto a
+    // `messages[]` history flowing through `directorClient.tool()`. We
+    // flatten back to `{system, user}` shape for the test's existing
+    // assertions about what the Director's prompt contains: `system` is
+    // the (single) system message, `user` is the concatenation of every
+    // user-role message in the call. Tool-role results are intentionally
+    // NOT folded into `user` here — the assertions below verify what
+    // the player-facing prompt looks like, and the new agent-loop wire
+    // keeps tool outputs strictly out of the user role.
     /** @type {{ system: string, user: string }[]} */
     const calls = [];
+    let idx = 0;
+    const flatten = (messages, system, user) => {
+        const msgs = Array.isArray(messages) && messages.length
+            ? messages
+            : [
+                ...(typeof system === 'string' ? [{ role: 'system', content: system }] : []),
+                ...(typeof user === 'string' ? [{ role: 'user', content: user }] : []),
+            ];
+        const sys = msgs.filter(m => m.role === 'system').map(m => m.content || '').join('\n');
+        const usr = msgs.filter(m => m.role === 'user').map(m => m.content || '').join('\n');
+        calls.push({ system: sys, user: usr });
+    };
     return {
         calls,
+        tool: async ({ messages, system, user }) => {
+            flatten(messages, system, user);
+            if (queue.length === 0) throw new Error('director queue exhausted');
+            const decision = queue.shift();
+            const { action, ...args } = decision;
+            return {
+                id: `call_test_${idx++}`,
+                name: action,
+                arguments: args,
+                raw_arguments: JSON.stringify(args),
+            };
+        },
         structured: async ({ messages, system, user }) => {
-            const msgs = Array.isArray(messages) && messages.length
-                ? messages
-                : [
-                    ...(typeof system === 'string' ? [{ role: 'system', content: system }] : []),
-                    ...(typeof user === 'string' ? [{ role: 'user', content: user }] : []),
-                ];
-            const sys = msgs.filter(m => m.role === 'system').map(m => m.content).join('\n');
-            const usr = msgs.filter(m => m.role === 'user').map(m => m.content).join('\n');
-            calls.push({ system: sys, user: usr });
+            flatten(messages, system, user);
             if (queue.length === 0) throw new Error('director queue exhausted');
             return queue.shift();
         },

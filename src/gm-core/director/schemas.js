@@ -81,9 +81,252 @@ export const SUPPORTED_SHEET_MUTATION_OPS = new Set([
 ]);
 
 /**
- * Hand-written JSON Schema (Draft 2020-12) for the DirectorDecision union.
+ * OpenAI-format tool / function definitions for the Director.
+ *
+ * As of the tool-calling migration (replacing the old
+ * `response_format: { type: 'json_schema' }` flow), the Director picks
+ * its beat by calling one function from this list — `speak`,
+ * `skill_check`, `add_lore`, …, `end_turn`. The model's response comes
+ * back as a real OpenAI `tool_calls[0]` entry, the loop dispatches on
+ * the function name, and the dispatcher's outcome is fed back as a
+ * `role: 'tool'` message with the matching `tool_call_id`. Tool
+ * results are no longer disguised as `user` turns, which fixes the
+ * Director's habit of treating an engine response as fresh player
+ * input.
+ *
+ * Each function's `parameters` mirrors the corresponding variant of
+ * `directorDecisionJsonSchema` with the `action` discriminator dropped
+ * — the function name takes that role on the wire. Strict-mode
+ * friendly: every params object sets `additionalProperties: false` and
+ * lists every property in `required`.
+ *
+ * Re-exported via `directorDecisionJsonSchema.oneOf` below so the
+ * legacy code paths (and the text-mode JSON fallback in
+ * `client.js#openaiToolFallback`) keep working unchanged.
+ *
+ * @type {import('../llm/client.d.ts').ToolDefinition[]}
+ */
+export const directorTools = [
+    {
+        type: 'function',
+        function: {
+            name: 'speak',
+            description: 'Invite the World Narrator (actor:"narrator") or a specific in-scene NPC (actor:"<character_id>") to deliver one beat. `intent` is a directive (~20 words max), never quoted dialogue or paragraphs.',
+            strict: true,
+            parameters: {
+                type: 'object',
+                properties: {
+                    actor: { type: 'string', description: 'Actor id ("narrator" for the World Narrator, otherwise an actor id).' },
+                    intent: { type: 'string', maxLength: 240, description: 'DIRECTIVE, NOT PROSE. ~20 words max. Tell the actor WHAT beat to deliver and at what emotional pitch. No quoted dialogue.' },
+                    rationale: { type: 'string' },
+                },
+                required: ['actor', 'intent', 'rationale'],
+                additionalProperties: false,
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'skill_check',
+            description: 'Adjudicate an action with uncertain outcome and real consequence. The engine picks skill / DC / severity and rolls. You MUST `speak` next to deliver the consequence.',
+            strict: true,
+            parameters: {
+                type: 'object',
+                properties: {
+                    actor: { type: 'string', description: 'Character id attempting the action.' },
+                    intent: { type: 'string', maxLength: 240, description: 'Short description of what the actor is trying to do. ~20 words max.' },
+                    rationale: { type: 'string' },
+                },
+                required: ['actor', 'intent', 'rationale'],
+                additionalProperties: false,
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'search_library',
+            description: 'Search the campaign\'s off-stage characters by name, appearance, or role. Use BEFORE inventing a character.',
+            strict: true,
+            parameters: {
+                type: 'object',
+                properties: {
+                    query: { type: 'string', description: 'Free-text query searched against off-stage character name, appearance, and background.' },
+                    rationale: { type: 'string' },
+                },
+                required: ['query', 'rationale'],
+                additionalProperties: false,
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'spawn_character',
+            description: 'Bring a character into the scene. from_source:"library" pulls an existing campaign character (provide `ref`); from_source:"new" invents a transient NPC (provide `name` and `brief`).',
+            parameters: {
+                type: 'object',
+                properties: {
+                    from_source: { type: 'string', enum: ['library', 'new'] },
+                    ref: { type: 'string', description: 'For from_source:"library", the character id to bring on-stage.' },
+                    name: { type: 'string', description: 'For from_source:"new", the short display name.' },
+                    brief: { type: 'string', description: 'For from_source:"new", a one-sentence description (appearance, role, voice).' },
+                    on_join_message: { type: 'string' },
+                    rationale: { type: 'string' },
+                },
+                required: ['from_source', 'rationale'],
+                additionalProperties: false,
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'remove_character',
+            description: 'Write a non-player participant out of the scene when their beat is done.',
+            strict: true,
+            parameters: {
+                type: 'object',
+                properties: {
+                    character_id: { type: 'string' },
+                    on_leave_message: { type: 'string' },
+                    rationale: { type: 'string' },
+                },
+                required: ['character_id', 'rationale'],
+                additionalProperties: false,
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'add_lore',
+            description: 'Record a new world fact into the campaign\'s lore.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    title: { type: 'string' },
+                    body: { type: 'string' },
+                    tags: { type: 'array', items: { type: 'string' } },
+                    entry_kind: {
+                        type: 'string',
+                        description: 'Optional categorical tag: faction | place | event | item | concept | npc-fact | misc.',
+                    },
+                    importance: { type: 'number' },
+                    rationale: { type: 'string' },
+                },
+                required: ['title', 'body', 'tags', 'rationale'],
+                additionalProperties: false,
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'mutate_sheet',
+            description: 'Apply one or more mechanical sheet edits to an in-scene character (PC or NPC). Use for durable, mechanical state — damage, statuses, items.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    character_id: {
+                        type: 'string',
+                        description: 'Character whose sheet is being mutated. MUST be in the current scene roster.',
+                    },
+                    ops: {
+                        type: 'array',
+                        minItems: 1,
+                        description: 'Ordered list of one or more sheet mutations. Each op is a discriminated union by `op`.',
+                        items: {
+                            type: 'object',
+                            oneOf: [
+                                { type: 'object', properties: { op: { type: 'string', const: 'set_stat' }, key: { type: 'string' }, value: { oneOf: [{ type: 'number' }, { type: 'string' }] } }, required: ['op', 'key', 'value'], additionalProperties: false },
+                                { type: 'object', properties: { op: { type: 'string', const: 'adjust_stat' }, key: { type: 'string' }, delta: { type: 'number' } }, required: ['op', 'key', 'delta'], additionalProperties: false },
+                                { type: 'object', properties: { op: { type: 'string', const: 'clear_stat' }, key: { type: 'string' } }, required: ['op', 'key'], additionalProperties: false },
+                                { type: 'object', properties: { op: { type: 'string', const: 'set_status' }, key: { type: 'string' }, value: { type: 'string' } }, required: ['op', 'key', 'value'], additionalProperties: false },
+                                { type: 'object', properties: { op: { type: 'string', const: 'clear_status' }, key: { type: 'string' } }, required: ['op', 'key'], additionalProperties: false },
+                                { type: 'object', properties: { op: { type: 'string', const: 'add_item' }, name: { type: 'string' }, description: { type: 'string' }, influences: { type: 'array', items: { type: 'string' } } }, required: ['op', 'name'], additionalProperties: false },
+                                { type: 'object', properties: { op: { type: 'string', const: 'update_item' }, item_id: { type: 'string' }, name: { type: 'string' }, description: { type: 'string' }, influences: { type: 'array', items: { type: 'string' } } }, required: ['op', 'item_id'], additionalProperties: false },
+                                { type: 'object', properties: { op: { type: 'string', const: 'remove_item' }, item_id: { type: 'string' } }, required: ['op', 'item_id'], additionalProperties: false },
+                            ],
+                        },
+                    },
+                    rationale: { type: 'string' },
+                },
+                required: ['character_id', 'ops', 'rationale'],
+                additionalProperties: false,
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'mutate_identity',
+            description: 'Rewrite one of a character\'s permanent identity fields (appearance / personality / voice / background). Use SPARINGLY \u2014 only for major, lasting changes.',
+            strict: true,
+            parameters: {
+                type: 'object',
+                properties: {
+                    character_id: { type: 'string', description: 'Must be in the current scene roster.' },
+                    field: { type: 'string', enum: ['appearance', 'personality', 'voice', 'background'] },
+                    value: { type: 'string', description: 'Full replacement text for the field.' },
+                    rationale: { type: 'string' },
+                },
+                required: ['character_id', 'field', 'value', 'rationale'],
+                additionalProperties: false,
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'propose_scene',
+            description: 'Outside an active scene, suggest the next scene to run.',
+            strict: true,
+            parameters: {
+                type: 'object',
+                properties: {
+                    name: { type: 'string' },
+                    setting: { type: 'string' },
+                    suggested_participants: { type: 'array', items: { type: 'string' } },
+                    hooks: { type: 'array', items: { type: 'string' } },
+                    rationale: { type: 'string' },
+                },
+                required: ['name', 'setting', 'suggested_participants', 'hooks', 'rationale'],
+                additionalProperties: false,
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'end_turn',
+            description: 'Hand control back to the player. Emit as soon as the player\'s input has had a response.',
+            strict: true,
+            parameters: {
+                type: 'object',
+                properties: {
+                    rationale: { type: 'string' },
+                    pacing_note: {
+                        type: 'string',
+                        description: 'Optional one-line pacing note recorded into director_memory for future turns.',
+                    },
+                },
+                required: ['rationale'],
+                additionalProperties: false,
+            },
+        },
+    },
+];
+
+/**
+ * Legacy JSON Schema (Draft 2020-12) for the DirectorDecision union.
  * `oneOf` discriminated by `action`. Strict mode-friendly: every variant
  * sets `additionalProperties: false` and lists every property in `required`.
+ *
+ * This is retained because tests still snapshot it, and the structured
+ * scene-end / lore / ask paths reuse the shape. The Director loop itself
+ * no longer feeds this into the LLM client — see `directorTools` above.
  *
  * @type {object}
  */

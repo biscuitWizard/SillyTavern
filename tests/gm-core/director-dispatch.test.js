@@ -16,8 +16,9 @@
  * As of the agent-loop refactor (Phase 8), the loop maintains a real
  * `messages[]` history per turn rather than a single `ctx.last_beat`
  * string. Tests that previously inspected `ctx.last_beat` now snapshot
- * the `messages` argument the loop passes into `directorClient.structured`
- * on each call and assert against the appended tool-result message.
+ * the `messages` argument the loop passes into `directorClient.tool`
+ * on each call and assert against the appended `role: 'tool'` result
+ * message (and the assistant message with `tool_calls` that preceded it).
  */
 
 import { describe, test, expect, jest } from '@jest/globals';
@@ -57,19 +58,40 @@ function baseCtx() {
     };
 }
 
+function snapshotMessage(m) {
+    /** @type {Record<string, unknown>} */
+    const out = { role: m.role, content: m.content };
+    if (m.tool_calls) out.tool_calls = m.tool_calls;
+    if (m.tool_call_id) out.tool_call_id = m.tool_call_id;
+    return out;
+}
+
+function decisionToToolCall(decision, idx) {
+    const { action, ...args } = decision;
+    return {
+        id: `call_test_${idx}`,
+        name: action,
+        arguments: args,
+        raw_arguments: JSON.stringify(args),
+    };
+}
+
 function makeDirector(decisions) {
     const queue = [...decisions];
-    /** @type {Array<Array<{ role: string, content: string }>>} */
+    /** @type {Array<Array<Record<string, unknown>>>} */
     const calls = [];
+    let idx = 0;
     const client = {
-        structured: jest.fn(async ({ messages }) => {
+        tool: jest.fn(async ({ messages }) => {
             // Snapshot the history the loop passed in for this call so
-            // tests can assert on what the Director "saw" at each step.
-            calls.push((messages || []).map(m => ({ role: m.role, content: m.content })));
+            // tests can assert on what the Director "saw" at each step,
+            // including the new tool_calls / tool_call_id shape.
+            calls.push((messages || []).map(snapshotMessage));
             if (queue.length === 0) throw new Error('director queue exhausted');
-            return queue.shift();
+            return decisionToToolCall(queue.shift(), idx++);
         }),
         chat: jest.fn(async () => 'unused'),
+        structured: jest.fn(async () => { throw new Error('director.structured not used in tool-calling mode'); }),
         calls,
     };
     return client;
@@ -159,19 +181,25 @@ describe('director dispatch: speak', () => {
         expect(toolErrors[0].suggestions.length).toBeGreaterThan(0);
         expect(actor.chat).not.toHaveBeenCalled();
         // Director was called twice — once for the bad speak, once for the recovery.
-        expect(director.structured).toHaveBeenCalledTimes(2);
+        expect(director.tool).toHaveBeenCalledTimes(2);
         // Loop ended cleanly via the recovery, not via a hard error.
         expect(events[events.length - 1]).toEqual(expect.objectContaining({
             kind: 'end_of_turn', reason: 'director',
         }));
         // The Director's SECOND call must have seen the tool-error in its
-        // history — that's the new mechanism that replaces ctx.last_beat.
+        // history as a proper role:'tool' message, anchored to the matching
+        // tool_call_id from the bad speak attempt.
         const secondCall = director.calls[1];
         expect(secondCall).toBeDefined();
-        const lastUser = [...secondCall].reverse().find(m => m.role === 'user');
-        expect(lastUser).toBeDefined();
-        expect(lastUser.content).toContain('Tool result for `speak`');
-        expect(lastUser.content).toContain('unknown_actor');
+        const lastTool = [...secondCall].reverse().find(m => m.role === 'tool');
+        expect(lastTool).toBeDefined();
+        expect(lastTool.content).toContain('Tool error from `speak`');
+        expect(lastTool.content).toContain('unknown_actor');
+        // The matching assistant turn carries the bad call's tool_calls.
+        const assistantWithCall = [...secondCall].reverse().find(m => m.role === 'assistant' && Array.isArray(m.tool_calls));
+        expect(assistantWithCall).toBeDefined();
+        expect(assistantWithCall.tool_calls[0].id).toBe(lastTool.tool_call_id);
+        expect(assistantWithCall.tool_calls[0].function.name).toBe('speak');
     });
 
     test('speak: <character_id> records the spoken beat in director history so it can decide to end_turn', async () => {
@@ -199,19 +227,28 @@ describe('director dispatch: speak', () => {
         // ctx.user_input must be untouched — actors and narrator should always
         // see the original player input, not a synthetic loop marker.
         expect(ctx.user_input).toBe(originalInput);
-        // The Director's SECOND call must carry the speak as both an
-        // assistant decision AND a tool-result user message, so it knows
-        // not to fire the same actor again.
+        // The Director's SECOND call must carry the speak as an
+        // assistant tool_call AND a role:'tool' result, so it knows
+        // not to fire the same actor again. There's exactly one
+        // user turn (the initial player prompt) — tool results never
+        // masquerade as user input any more.
         const secondCall = director.calls[1];
         expect(secondCall).toBeDefined();
         const assistantTurns = secondCall.filter(m => m.role === 'assistant');
         expect(assistantTurns).toHaveLength(1);
-        expect(assistantTurns[0].content).toContain('"action":"speak"');
-        expect(assistantTurns[0].content).toContain('"actor":"amelia"');
-        const lastUser = [...secondCall].reverse().find(m => m.role === 'user');
-        expect(lastUser).toBeDefined();
-        expect(lastUser.content).toContain('Amelia');
-        expect(lastUser.content).toContain('just spoke');
+        expect(assistantTurns[0].content).toBeNull();
+        expect(Array.isArray(assistantTurns[0].tool_calls)).toBe(true);
+        expect(assistantTurns[0].tool_calls[0].function.name).toBe('speak');
+        const args = JSON.parse(assistantTurns[0].tool_calls[0].function.arguments);
+        expect(args.actor).toBe('amelia');
+        const toolTurns = secondCall.filter(m => m.role === 'tool');
+        expect(toolTurns).toHaveLength(1);
+        expect(toolTurns[0].tool_call_id).toBe(assistantTurns[0].tool_calls[0].id);
+        expect(toolTurns[0].content).toContain('Amelia');
+        expect(toolTurns[0].content).toContain('just spoke');
+        const userTurns = secondCall.filter(m => m.role === 'user');
+        expect(userTurns).toHaveLength(1);
+        expect(userTurns[0].content).toContain('<player_input>');
         // Exactly one message emitted (no runaway).
         expect(events.filter(e => e.kind === 'message')).toHaveLength(1);
         expect(events[events.length - 1]).toEqual(expect.objectContaining({

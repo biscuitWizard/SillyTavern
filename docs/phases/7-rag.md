@@ -227,7 +227,8 @@ each character (in-memory ring buffer).
 - [src/gm-core/director/prompts.js](../../src/gm-core/director/prompts.js)
   — MEMORIES block; tool schema declaration.
 - [src/gm-core/director/loop.js](../../src/gm-core/director/loop.js) —
-  tool-using loop wrapping `directorClient.structured(...)`; pacing
+  tool-using loop wrapping `directorClient.tool(...)`; engine results
+  return as `role: 'tool'` messages keyed by `tool_call_id`; pacing
   note on `end_turn`.
 - [src/gm-core/narrator/prompts.js](../../src/gm-core/narrator/prompts.js)
   — MEMORIES block; tool wiring.

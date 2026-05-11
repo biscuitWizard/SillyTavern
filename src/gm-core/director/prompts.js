@@ -8,10 +8,14 @@
  * adjudicator stays clean — its prompt builder lives in
  * `skillcheck/prompts.js` and never imports `MemoryService`.
  *
- * The Director still emits structured output only — RAG is in the user
- * prompt, not in the schema. The `search_memory` tool is exposed via the
- * standard tool-call channel; the loop runs a bounded tool-using wrapper
- * around `directorClient.structured(...)`.
+ * The Director communicates exclusively through OpenAI-style tool calls
+ * — RAG context lives in the user prompt, not in any schema. Each
+ * Director action (`speak`, `skill_check`, `search_memory`, …) is
+ * exposed as a function in `directorTools`, and the loop runs a bounded
+ * tool-using wrapper around `directorClient.tool(...)` so engine
+ * results come back as `role: 'tool'` messages keyed by
+ * `tool_call_id`. Player input is the only thing that ever enters the
+ * Director transcript as `role: 'user'`.
  *
  * Phase 5 widens the dispatched action surface to include
  * `speak: <character_id>`, `spawn_character` (library), and
@@ -60,7 +64,7 @@ export function directorSystemPrompt(_ctx) {
         '',
         '# How a turn works',
         'A turn = "the player did/said X. What does the player see/hear in immediate response, and then it is their turn again."',
-        'You see the FULL history of your prior decisions and the engine\'s tool results inside the same turn (assistant turns are your past decisions; user turns starting with `Tool result for ...` are the engine\'s response to each one). Use that history to decide whether to chain another beat or to `end_turn`.',
+        'You see the FULL history of your prior decisions and the engine\'s tool results inside the same turn (your past tool calls show up as assistant turns; the engine\'s response to each is the matching `tool` turn). Use that history to decide whether to chain another beat or to `end_turn`. There is only ever one `user` turn per player turn — the initial player input at the top of this conversation — so do NOT treat a tool result as new player speech.',
         'Default to ending the turn fast. The player came here to *play*, not to read.',
         '',
         '# Speaking actions (produce visible output)',

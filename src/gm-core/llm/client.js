@@ -153,9 +153,32 @@ const FORCE_TEXT_JSON = new Set([
  */
 
 /**
+ * @typedef {object} ToolCall
+ * @property {string} id
+ * @property {'function'} type
+ * @property {{ name: string, arguments: string }} function   arguments is a JSON string
+ */
+
+/**
  * @typedef {object} ChatMessage
- * @property {'system'|'user'|'assistant'} role
- * @property {string} content
+ * @property {'system'|'user'|'assistant'|'tool'} role
+ * @property {string|null} content
+ * @property {ToolCall[]} [tool_calls]      assistant turns that invoked tools
+ * @property {string} [tool_call_id]        tool turns pointing back at the call
+ */
+
+/**
+ * @typedef {object} ToolDefinition
+ * @property {'function'} type
+ * @property {{ name: string, description?: string, parameters: object, strict?: boolean }} function
+ */
+
+/**
+ * @typedef {object} ToolCallResponse
+ * @property {string} id                   stable id; reflect on the matching tool result message
+ * @property {string} name                 tool / function name selected by the model
+ * @property {Record<string, unknown>} arguments   parsed JSON arguments
+ * @property {string} raw_arguments        the model's raw argument JSON string
  */
 
 /**
@@ -169,6 +192,7 @@ const FORCE_TEXT_JSON = new Set([
  * @typedef {object} LlmClient
  * @property {(args: { system?: string, user?: string, messages?: ChatMessage[], onUsage?: (usage: ChatUsage | null) => void, signal?: AbortSignal }) => Promise<string>} chat
  * @property {(args: { system?: string, user?: string, messages?: ChatMessage[], schema: object, schemaName: string, onUsage?: (usage: ChatUsage | null) => void, signal?: AbortSignal }) => Promise<any>} structured
+ * @property {(args: { system?: string, user?: string, messages?: ChatMessage[], tools: ToolDefinition[], tool_choice?: ('auto'|'required'|'none'|{ type: 'function', function: { name: string } }), onUsage?: (usage: ChatUsage | null) => void, signal?: AbortSignal }) => Promise<ToolCallResponse>} tool
  * @property {LlmProfile} profile
  */
 
@@ -224,6 +248,73 @@ export function createLlmClient({ userDirectories, profile }) {
 
     return {
         profile,
+
+        async tool({ system, user, messages, tools, tool_choice, onUsage, signal, role } = /** @type {any} */({})) {
+            if (!Array.isArray(tools) || tools.length === 0) {
+                throw new LlmError('bad_request', 'tool() requires a non-empty tools array', false);
+            }
+            const { signal: s, cancel } = withTimeout(signal);
+            const msgs = resolveMessages({ system, user, messages });
+            const t0 = Date.now();
+            /** @type {import('../debug/schemas.js').LlmCallDetail['usage']} */
+            let capturedUsage;
+            const wrappedOnUsage = (u) => {
+                capturedUsage = u ?? undefined;
+                if (onUsage) onUsage(u);
+            };
+            try {
+                let result;
+                if (profile.source === 'claude') {
+                    result = await claudeTool({ baseUrl, apiKey, profile, messages: msgs, tools, tool_choice, onUsage: wrappedOnUsage, signal: s });
+                } else if (OPENAI_FAMILY.has(profile.source)) {
+                    result = await openaiTool({ baseUrl, apiKey, profile, messages: msgs, tools, tool_choice, onUsage: wrappedOnUsage, signal: s });
+                } else {
+                    throw new LlmError('unsupported_source', `source not supported: ${profile.source}`, false);
+                }
+                const ev = makeDebugEvent({
+                    kind: 'llm_call',
+                    headline: `${role || 'other'}: tool call (${result.name})`,
+                    detail: {
+                        role: role || 'other',
+                        mode: 'tool',
+                        provider: profile.source,
+                        model: profile.model,
+                        base_url: baseUrl,
+                        tool_name: result.name,
+                        tools_offered: tools.map(t => t.function?.name).filter(Boolean),
+                        messages: msgs,
+                        parsed: { id: result.id, name: result.name, arguments: result.arguments },
+                        usage: capturedUsage,
+                        duration_ms: Date.now() - t0,
+                        message_count: msgs.length,
+                    },
+                });
+                if (ev) emitDebugEvent(ev);
+                return result;
+            } catch (err) {
+                const ev = makeDebugEvent({
+                    kind: 'llm_call',
+                    headline: `${role || 'other'}: tool call (error)`,
+                    detail: {
+                        role: role || 'other',
+                        mode: 'tool',
+                        provider: profile.source,
+                        model: profile.model,
+                        base_url: baseUrl,
+                        tools_offered: tools.map(t => t.function?.name).filter(Boolean),
+                        messages: msgs,
+                        usage: capturedUsage,
+                        duration_ms: Date.now() - t0,
+                        error: { code: err?.code || 'unknown', message: err?.message || String(err) },
+                        message_count: msgs.length,
+                    },
+                });
+                if (ev) emitDebugEvent(ev);
+                throw err;
+            } finally {
+                cancel();
+            }
+        },
 
         async chat({ system, user, messages, onUsage, signal, role } = /** @type {any} */({})) {
             const { signal: s, cancel } = withTimeout(signal);
@@ -421,6 +512,189 @@ function stripTrailingSlash(s) {
 }
 
 /* -------- OpenAI-family transport -------- */
+
+/**
+ * Tool / function-calling call (OpenAI family).
+ *
+ * Sends `tools` + `tool_choice` in the chat-completions body and parses
+ * `choices[0].message.tool_calls[0]` back into the normalised
+ * `ToolCallResponse` shape. Falls back to text-mode JSON when:
+ *   - the upstream rejects `tools` outright (HTTP 400), or
+ *   - the upstream accepted the request but returned no `tool_calls`
+ *     (the model ignored `tool_choice: 'required'`).
+ *
+ * The fallback synthesises a deterministic `id` so callers downstream
+ * (e.g. the Director loop) can use the same `tool_call_id` plumbing
+ * regardless of whether the provider natively supported tools.
+ *
+ * @param {{ baseUrl: string, apiKey: string, profile: LlmProfile, messages: ChatMessage[], tools: ToolDefinition[], tool_choice?: any, onUsage?: (usage: ChatUsage | null) => void, signal: AbortSignal }} args
+ * @returns {Promise<ToolCallResponse>}
+ */
+async function openaiTool({ baseUrl, apiKey, profile, messages, tools, tool_choice, onUsage, signal }) {
+    const body = openaiBaseBody({ profile, messages });
+    body.tools = tools;
+    body.tool_choice = tool_choice || 'required';
+    body.parallel_tool_calls = false;
+
+    let json;
+    try {
+        json = await openaiRequest({ baseUrl, apiKey, profile, body, signal });
+    } catch (err) {
+        if (err instanceof LlmError && err.code === 'http_400') {
+            return await openaiToolFallback({ baseUrl, apiKey, profile, messages, tools, onUsage, signal });
+        }
+        throw err;
+    }
+    const message = json?.choices?.[0]?.message;
+    const calls = Array.isArray(message?.tool_calls) ? message.tool_calls : [];
+    if (calls.length > 0) {
+        if (onUsage) onUsage(normaliseUsage(json, 'openai'));
+        return normaliseOpenAIToolCall(calls[0], tools);
+    }
+    return await openaiToolFallback({ baseUrl, apiKey, profile, messages, tools, onUsage, signal });
+}
+
+/**
+ * Last-resort fallback for providers that can't or won't honour
+ * `tools` + `tool_choice`. We append a system reminder listing the
+ * available tools and their parameter schemas, ask the model to reply
+ * with `{ "name": "...", "arguments": { ... } }`, and synthesise the
+ * tool-call id ourselves.
+ *
+ * @param {{ baseUrl: string, apiKey: string, profile: LlmProfile, messages: ChatMessage[], tools: ToolDefinition[], onUsage?: (usage: ChatUsage | null) => void, signal: AbortSignal }} args
+ * @returns {Promise<ToolCallResponse>}
+ */
+async function openaiToolFallback({ baseUrl, apiKey, profile, messages, tools, onUsage, signal }) {
+    const reminder = buildToolFallbackReminder(tools);
+    const augmented = augmentSystemMessage(messages, reminder);
+    const body = openaiBaseBody({ profile, messages: augmented });
+    let lastErr;
+    let lastJson;
+    for (let attempt = 0; attempt < 2; attempt++) {
+        lastJson = await openaiRequest({ baseUrl, apiKey, profile, body, signal });
+        const raw = extractOpenaiText(lastJson);
+        try {
+            const parsed = parseJsonOrThrow(raw, 'tool_choice');
+            if (onUsage) onUsage(normaliseUsage(lastJson, 'openai'));
+            return synthesiseToolCall(parsed, tools);
+        } catch (err) {
+            if (extractOpenaiFinishReason(lastJson) === 'length') {
+                const repaired = repairTruncatedJson(raw);
+                if (repaired) {
+                    if (onUsage) onUsage(normaliseUsage(lastJson, 'openai'));
+                    return synthesiseToolCall(repaired, tools);
+                }
+            }
+            lastErr = err;
+        }
+    }
+    throw lastErr || new LlmError('parse_failed', 'unable to parse tool choice from fallback', true);
+}
+
+/**
+ * Build the system-prompt reminder used by the text-mode JSON tool
+ * fallback path. Lists every tool name + its parameter schema and asks
+ * the model to reply with a single `{ name, arguments }` JSON object.
+ *
+ * @param {ToolDefinition[]} tools
+ * @returns {string}
+ */
+function buildToolFallbackReminder(tools) {
+    const lines = [
+        '',
+        '',
+        'You MUST reply with a single JSON object of the form:',
+        '  { "name": "<one of the tool names below>", "arguments": { ... } }',
+        'No prose, no markdown fences, no commentary.',
+        '',
+        'Available tools:',
+    ];
+    for (const t of tools) {
+        const fn = t.function || /** @type {any} */({});
+        lines.push(`- ${fn.name}${fn.description ? `: ${fn.description.split('\n')[0]}` : ''}`);
+        lines.push(`  arguments schema: ${JSON.stringify(fn.parameters || {})}`);
+    }
+    return lines.join('\n');
+}
+
+/**
+ * Convert a raw OpenAI `tool_calls[i]` entry into the normalised
+ * `ToolCallResponse` shape. Validates that the call's `name` is one of
+ * the tools we offered, and parses `arguments` as JSON (a string per
+ * spec, though some providers return an already-parsed object).
+ *
+ * @param {any} call
+ * @param {ToolDefinition[]} tools
+ * @returns {ToolCallResponse}
+ */
+function normaliseOpenAIToolCall(call, tools) {
+    const name = call?.function?.name || call?.name;
+    const allowed = new Set(tools.map(t => t.function?.name).filter(Boolean));
+    if (!name || !allowed.has(name)) {
+        throw new LlmError('bad_tool_name', `model returned unknown tool name: ${name}`, true);
+    }
+    const rawArgs = call?.function?.arguments;
+    if (typeof rawArgs === 'object' && rawArgs !== null) {
+        return {
+            id: call?.id || generateCallId(name),
+            name,
+            arguments: /** @type {Record<string, unknown>} */ (rawArgs),
+            raw_arguments: JSON.stringify(rawArgs),
+        };
+    }
+    const rawStr = typeof rawArgs === 'string' ? rawArgs : '';
+    let parsed;
+    try {
+        parsed = rawStr ? parseJsonOrThrow(rawStr, `tool ${name} arguments`) : {};
+    } catch (err) {
+        throw new LlmError('parse_failed', `could not parse arguments for tool ${name}: ${err?.message || err}`, true);
+    }
+    if (!parsed || typeof parsed !== 'object') {
+        throw new LlmError('parse_failed', `arguments for tool ${name} were not an object`, true);
+    }
+    return {
+        id: call?.id || generateCallId(name),
+        name,
+        arguments: /** @type {Record<string, unknown>} */ (parsed),
+        raw_arguments: rawStr || JSON.stringify(parsed),
+    };
+}
+
+/**
+ * Build a `ToolCallResponse` from the fallback `{name, arguments}`
+ * JSON payload. Validates that `name` is on the offered list.
+ *
+ * @param {any} parsed
+ * @param {ToolDefinition[]} tools
+ * @returns {ToolCallResponse}
+ */
+function synthesiseToolCall(parsed, tools) {
+    if (!parsed || typeof parsed !== 'object') {
+        throw new LlmError('parse_failed', 'tool fallback: response was not a JSON object', true);
+    }
+    const name = /** @type {any} */ (parsed).name;
+    const allowed = new Set(tools.map(t => t.function?.name).filter(Boolean));
+    if (!name || typeof name !== 'string' || !allowed.has(name)) {
+        throw new LlmError('bad_tool_name', `tool fallback: unknown or missing name "${name}"`, true);
+    }
+    const args = /** @type {any} */ (parsed).arguments;
+    if (args !== undefined && (typeof args !== 'object' || args === null)) {
+        throw new LlmError('parse_failed', 'tool fallback: arguments was not an object', true);
+    }
+    const finalArgs = args || {};
+    return {
+        id: generateCallId(name),
+        name,
+        arguments: finalArgs,
+        raw_arguments: JSON.stringify(finalArgs),
+    };
+}
+
+let _callCounter = 0;
+function generateCallId(name) {
+    _callCounter = (_callCounter + 1) % 1_000_000;
+    return `call_local_${name}_${Date.now().toString(36)}_${_callCounter}`;
+}
 
 /**
  * @param {{ baseUrl: string, apiKey: string, profile: LlmProfile, messages: ChatMessage[], onUsage?: (usage: ChatUsage | null) => void, signal: AbortSignal }} args
@@ -623,6 +897,97 @@ function extractOpenaiFinishReason(json) {
 /* -------- Claude transport -------- */
 
 /**
+ * Tool / function-calling call (Claude).
+ *
+ * Claude's `/v1/messages` endpoint speaks tool use natively but with a
+ * different on-the-wire shape: assistant tool invocations are a
+ * `tool_use` content block, results are `tool_result` content blocks
+ * inside a user message. We translate the OpenAI-flavoured `messages`
+ * array we keep internally into Claude's content-block format at the
+ * boundary so the rest of the codebase stays provider-neutral.
+ *
+ * @param {{ baseUrl: string, apiKey: string, profile: LlmProfile, messages: ChatMessage[], tools: ToolDefinition[], tool_choice?: any, onUsage?: (usage: ChatUsage | null) => void, signal: AbortSignal }} args
+ * @returns {Promise<ToolCallResponse>}
+ */
+async function claudeTool({ baseUrl, apiKey, profile, messages, tools, tool_choice, onUsage, signal }) {
+    const body = claudeBaseBody({ profile, messages });
+    body.tools = tools.map(t => ({
+        name: t.function.name,
+        description: t.function.description || '',
+        input_schema: t.function.parameters,
+    }));
+    body.tool_choice = translateToolChoiceForClaude(tool_choice);
+
+    let json;
+    try {
+        json = await claudeRequest({ baseUrl, apiKey, body, signal });
+    } catch (err) {
+        if (err instanceof LlmError && /^http_4\d\d$/.test(err.code)) {
+            // Claude rejected our tools/tool_choice shape. Fall through
+            // to the text-mode fallback — unusual but keeps Director
+            // turns alive even on a misconfigured proxy.
+            return await claudeToolFallback({ baseUrl, apiKey, profile, messages, tools, onUsage, signal });
+        }
+        throw err;
+    }
+    if (onUsage) onUsage(normaliseUsage(json, 'claude'));
+    const allowed = new Set(tools.map(t => t.function.name));
+    const block = (json?.content || []).find(b => b?.type === 'tool_use' && allowed.has(b?.name));
+    if (!block) {
+        return await claudeToolFallback({ baseUrl, apiKey, profile, messages, tools, onUsage, signal });
+    }
+    const args = (block.input && typeof block.input === 'object') ? block.input : {};
+    return {
+        id: block.id || generateCallId(block.name),
+        name: block.name,
+        arguments: args,
+        raw_arguments: JSON.stringify(args),
+    };
+}
+
+/**
+ * Map our OpenAI-style `tool_choice` to Claude's `{type:'auto'|'any'|'tool', name?}`.
+ *
+ * @param {any} tc
+ */
+function translateToolChoiceForClaude(tc) {
+    if (!tc || tc === 'auto') return { type: 'auto' };
+    if (tc === 'required') return { type: 'any' };
+    if (tc === 'none') return { type: 'auto' };
+    if (typeof tc === 'object' && tc?.type === 'function' && tc?.function?.name) {
+        return { type: 'tool', name: tc.function.name };
+    }
+    return { type: 'any' };
+}
+
+/**
+ * Text-mode JSON fallback for Claude (mirrors the OpenAI fallback). Used
+ * when Claude rejects the tools body or returns no `tool_use` block.
+ *
+ * @param {{ baseUrl: string, apiKey: string, profile: LlmProfile, messages: ChatMessage[], tools: ToolDefinition[], onUsage?: (usage: ChatUsage | null) => void, signal: AbortSignal }} args
+ * @returns {Promise<ToolCallResponse>}
+ */
+async function claudeToolFallback({ baseUrl, apiKey, profile, messages, tools, onUsage, signal }) {
+    const reminder = buildToolFallbackReminder(tools);
+    const augmented = augmentSystemMessage(messages, reminder);
+    const body = claudeBaseBody({ profile, messages: augmented });
+    const json = await claudeRequest({ baseUrl, apiKey, body, signal });
+    if (onUsage) onUsage(normaliseUsage(json, 'claude'));
+    const text = extractClaudeText(json);
+    let parsed;
+    try {
+        parsed = parseJsonOrThrow(text, 'tool_choice');
+    } catch (err) {
+        if (json?.stop_reason === 'max_tokens') {
+            const repaired = repairTruncatedJson(text);
+            if (repaired) return synthesiseToolCall(repaired, tools);
+        }
+        throw err;
+    }
+    return synthesiseToolCall(parsed, tools);
+}
+
+/**
  * @param {{ baseUrl: string, apiKey: string, profile: LlmProfile, messages: ChatMessage[], onUsage?: (usage: ChatUsage | null) => void, signal: AbortSignal }} args
  */
 async function claudeChat({ baseUrl, apiKey, profile, messages, onUsage, signal }) {
@@ -675,19 +1040,66 @@ async function claudeStructured({ baseUrl, apiKey, profile, messages, schema, sc
 /**
  * Claude's `/v1/messages` endpoint takes `system` separate from the
  * conversational `messages[]`. We hoist all `role: 'system'` messages out
- * (concatenating with double newlines if the caller built up multiple) and
- * leave the user/assistant turns intact.
+ * (concatenating with double newlines if the caller built up multiple),
+ * convert assistant `tool_calls` into Claude `tool_use` content blocks,
+ * and convert `role: 'tool'` results into user messages carrying
+ * `tool_result` content blocks.
  *
  * @param {{ profile: LlmProfile, messages: ChatMessage[] }} args
  */
 function claudeBaseBody({ profile, messages }) {
     const systemParts = [];
+    /** @type {Array<{role: string, content: any}>} */
     const convo = [];
     for (const m of messages) {
         if (m.role === 'system') {
             if (typeof m.content === 'string' && m.content.length) systemParts.push(m.content);
+        } else if (m.role === 'tool') {
+            // Claude carries tool results inside a user message's content
+            // array. Coalesce consecutive tool results into the same user
+            // turn if the previous convo entry was already a user turn
+            // with content blocks (matches Claude's expected shape after
+            // parallel tool calls).
+            let input;
+            try {
+                input = m.content == null ? '' : String(m.content);
+            } catch (_) {
+                input = '';
+            }
+            const block = {
+                type: 'tool_result',
+                tool_use_id: m.tool_call_id || '',
+                content: input,
+            };
+            const prev = convo[convo.length - 1];
+            if (prev && prev.role === 'user' && Array.isArray(prev.content)) {
+                prev.content.push(block);
+            } else {
+                convo.push({ role: 'user', content: [block] });
+            }
+        } else if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+            /** @type {any[]} */
+            const blocks = [];
+            if (typeof m.content === 'string' && m.content.length) {
+                blocks.push({ type: 'text', text: m.content });
+            }
+            for (const tc of m.tool_calls) {
+                let parsedArgs;
+                try {
+                    parsedArgs = tc.function?.arguments ? JSON.parse(tc.function.arguments) : {};
+                } catch (_) {
+                    parsedArgs = {};
+                }
+                blocks.push({
+                    type: 'tool_use',
+                    id: tc.id,
+                    name: tc.function?.name || '',
+                    input: parsedArgs,
+                });
+            }
+            convo.push({ role: 'assistant', content: blocks });
         } else {
-            convo.push({ role: m.role, content: m.content });
+            convo.push({ role: m.role, content: m.content == null ? '' : m.content });
         }
     }
     /** @type {Record<string, unknown>} */
