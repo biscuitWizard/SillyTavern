@@ -147,9 +147,9 @@ describe('director loop: messages[] history grows across iterations', () => {
         const ctx = baseCtx();
         const director = makeDirector({
             decisions: [
-                { action: 'speak', actor: 'amelia', intent: 'greet warmly', rationale: 'NPC turn' },
-                { action: 'speak', actor: 'bran', intent: 'follow up', rationale: 'second NPC' },
-                { action: 'end_turn', rationale: 'done' },
+                { action: 'speak', actor: 'amelia', intent: 'greet warmly', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+                { action: 'speak', actor: 'bran', intent: 'follow up', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+                { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
             ],
         });
         const actor = makeActor(({ user }) => `(${user.length}-char prose)`);
@@ -210,12 +210,12 @@ describe('director loop: collapses history when prompt_tokens exceeds budget', (
         // narrator beats to grow the history first, then trip the budget.
         const speakBeats = [];
         for (let i = 0; i < SUMMARY_KEEP_LAST_PAIRS + 2; i++) {
-            speakBeats.push({ action: 'speak', actor: 'narrator', intent: `beat ${i}`, rationale: 'fill history' });
+            speakBeats.push({ action: 'speak', actor: 'narrator', intent: `beat ${i}`, rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' });
         }
         const director = makeDirector({
             decisions: [
                 ...speakBeats,
-                { action: 'end_turn', rationale: 'done' },
+                { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
             ],
             // Stay under the budget for the first calls; spike on the
             // second-to-last so the collapse fires before end_turn.
@@ -263,10 +263,10 @@ describe('director loop: collapses history when prompt_tokens exceeds budget', (
         const ctx = baseCtx();
         const speakBeats = [];
         for (let i = 0; i < SUMMARY_KEEP_LAST_PAIRS + 2; i++) {
-            speakBeats.push({ action: 'speak', actor: 'narrator', intent: `beat ${i}`, rationale: 'fill history' });
+            speakBeats.push({ action: 'speak', actor: 'narrator', intent: `beat ${i}`, rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' });
         }
         const director = makeDirector({
-            decisions: [...speakBeats, { action: 'end_turn', rationale: 'done' }],
+            decisions: [...speakBeats, { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' }],
             // Every call returns null usage — the loop must skip the budget check.
             usagePerCall: speakBeats.map(() => null).concat([null]),
         });
@@ -295,10 +295,10 @@ describe('director loop: collapses history when prompt_tokens exceeds budget', (
         const ctx = baseCtx();
         const speakBeats = [];
         for (let i = 0; i < SUMMARY_KEEP_LAST_PAIRS + 2; i++) {
-            speakBeats.push({ action: 'speak', actor: 'narrator', intent: `beat ${i}`, rationale: 'fill history' });
+            speakBeats.push({ action: 'speak', actor: 'narrator', intent: `beat ${i}`, rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' });
         }
         const director = makeDirector({
-            decisions: [...speakBeats, { action: 'end_turn', rationale: 'done' }],
+            decisions: [...speakBeats, { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' }],
             usagePerCall: speakBeats
                 .map((_, i) => ({ prompt_tokens: i === speakBeats.length - 1 ? SUMMARY_TRIGGER_TOKENS + 100 : 100, completion_tokens: 50, total_tokens: 150 }))
                 .concat([{ prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 }]),
@@ -331,8 +331,8 @@ describe('director loop: Director sees latest transcript each step', () => {
         const ctx = baseCtx();
         const director = makeDirector({
             decisions: [
-                { action: 'speak', actor: 'amelia', intent: 'greet', rationale: 'first' },
-                { action: 'end_turn', rationale: 'done' },
+                { action: 'speak', actor: 'amelia', intent: 'greet', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+                { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
             ],
         });
         const ACTOR_PROSE = 'Hello traveller, welcome to my tavern!';
@@ -359,8 +359,8 @@ describe('director loop: Director sees latest transcript each step', () => {
         const ctx = baseCtx();
         const director = makeDirector({
             decisions: [
-                { action: 'speak', actor: 'amelia', intent: 'greet', rationale: 'first' },
-                { action: 'end_turn', rationale: 'done' },
+                { action: 'speak', actor: 'amelia', intent: 'greet', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+                { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
             ],
         });
         const ACTOR_PROSE = 'Welcome to the tavern, weary traveller.';

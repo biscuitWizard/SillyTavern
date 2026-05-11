@@ -60,6 +60,15 @@ When the gate clears, the dim disappears, the banner is removed, and
 drops (token expired, server restart), the banner returns until you
 reconnect — your work is not lost.
 
+### Reasoning model (optional)
+
+If you run your own `llama-director` instance (port 8182), you can swap
+it to a reasoning-capable model for better Director decisions. See the
+dev-testing rules in `.cursor/rules/local-dev-testing.mdc` for
+recommended models (Qwen3-32B-Thinking, QwQ-32B, etc.) and swap
+instructions. The app automatically strips `<think>`/`<thinking>` tags
+from reasoning model output so they never appear in your game.
+
 ---
 
 ## 1. Create a campaign
@@ -106,7 +115,7 @@ The wizard runs a four-step flow for the **player character** (PC):
   not push back on something.
 - **Voice** — speech cadence, idioms, accent — anything that gives
   this person a recognizable mouth. The Actor LLM reads this when
-  voicing the PC's reactions to NPC dialogue.
+  writing the character's dialogue and action beats in third person.
 
 ### Step 2 — Background
 
@@ -218,8 +227,8 @@ Click **Start Scene**. The view flips into Scene mode:
 4. Lines stream in:
    - **Narrator** lines (italic prose-style) describe what the world
      does or how it changes.
-   - **Actor** lines (an NPC speaking in their voice) appear under
-     the NPC's name and portrait.
+   - **Actor** lines (an NPC's dialogue and actions, written in third
+     person) appear under the NPC's name and portrait.
    - **Roll cards** appear inline when the Director requests a skill
      check, showing the d20, modifier, and pass / fail.
 5. When the turn ends, the chip clears and you can type again.

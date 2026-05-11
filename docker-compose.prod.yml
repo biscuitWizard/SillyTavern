@@ -127,7 +127,14 @@ services:
     networks:
       - ttrpgtavern-prod
 
-  # Director model — Qwen2.5-14B-Instruct (structured output, tool-call discipline)
+  # Director model — structured output + tool-call discipline.
+  # Default: Qwen2.5-14B-Instruct-Q5_K_M.gguf
+  # Recommended reasoning-model swap (set DIRECTOR_MODEL_FILE env var):
+  #   - Qwen3-32B-Thinking (best tool-calling + reasoning trace)
+  #   - QwQ-32B-Preview (strong reasoning, weaker JSON discipline)
+  #   - DeepSeek-R1-Distill-Qwen-32B (strong reasoning, may need stricter schema)
+  # The app strips <think>/<thinking> tags from output automatically (X3).
+  # --reasoning-format auto is already set for native CoT support.
   llama-director:
     image: ghcr.io/ggml-org/llama.cpp:server-cuda
     container_name: ttrpgtavern-prod-llama-director

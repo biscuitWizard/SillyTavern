@@ -106,7 +106,7 @@ describe('buildActorMessages', () => {
     test('system message is first and contains identity', () => {
         const messages = buildActorMessages(ctx, character, 'react');
         expect(messages[0].role).toBe('system');
-        expect(messages[0].content).toContain('You are Amelia');
+        expect(messages[0].content).toContain('You write the next beat for Amelia');
     });
 
     test('falls back to system+user pair when transcript_lines is empty', () => {

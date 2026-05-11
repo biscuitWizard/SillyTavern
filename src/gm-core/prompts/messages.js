@@ -10,7 +10,7 @@
  *   [0]  system  — identity, voice rules, direction handling
  *   [1]  user    — campaign + scene + memories + sheet (context block)
  *   ...  alternating user/assistant transcript turns
- *   [N]  user    — <director_direction> + "Speak as {name} now."
+ *   [N]  user    — <director_direction> + "Write {name}'s next beat now."
  */
 
 import { actorSystemPrompt, actorUserPrompt } from '../actors/prompts.js';
@@ -49,10 +49,17 @@ export function buildActorMessages(ctx, character, intent) {
     const transcriptMessages = transcriptToTurns(transcriptLines, character.name);
     for (const m of transcriptMessages) messages.push(m);
 
+    // Cold-start primer: when the speaker has no prior assistant turns in
+    // the transcript, splice a synthetic one so the model doesn't echo the
+    // final user-role instruction verbatim (common with local models).
+    if (!transcriptMessages.some(m => m.role === 'assistant')) {
+        messages.push({ role: 'assistant', content: '(ready)' });
+    }
+
     const directionBody = intent && intent.trim() ? intent.trim() : '(react in character to the latest beat)';
     messages.push({
         role: 'user',
-        content: `${tag(TAGS.director_direction, directionBody)}\n\nSpeak as ${character.name} now. Stay in character.`,
+        content: `${tag(TAGS.director_direction, directionBody)}\n\nWrite ${character.name}'s next beat now. Third person, present tense.`,
     });
 
     return mergeAdjacentRoles(messages);

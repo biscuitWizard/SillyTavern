@@ -260,6 +260,38 @@ describe('M3: layout-aware sheet YAML in actor prompts', () => {
     });
 });
 
+describe('actor prompts: third-person POV and brevity contract', () => {
+    test('system prompt specifies third person, never first person', () => {
+        const sys = actorSystemPrompt(ctx, amelia);
+        expect(sys).toContain('third person');
+        expect(sys).toContain('close third person');
+        expect(sys).not.toMatch(/speak and act in first person/i);
+        expect(sys).not.toMatch(/\bfirst person\b/i);
+    });
+
+    test('system prompt contains the brevity contract block', () => {
+        const sys = actorSystemPrompt(ctx, amelia);
+        expect(sys).toContain('Brevity contract');
+        expect(sys).toContain('Hard cap: 4 sentences');
+        expect(sys).toContain('No multi-paragraph');
+        expect(sys).toContain('BAD');
+        expect(sys).toContain('GOOD');
+    });
+
+    test('user prompt trailing instruction uses third-person cue', () => {
+        const user = actorUserPrompt(ctx, amelia, 'react warily');
+        expect(user).toContain("Write Amelia Verra's next beat now. Third person, present tense.");
+        expect(user).not.toContain('Speak as');
+        expect(user).not.toContain('Stay in character');
+    });
+
+    test('direction handling GOOD/BAD examples use third person prose', () => {
+        const sys = actorSystemPrompt(ctx, amelia);
+        expect(sys).not.toMatch(/you say it in your own words with your own personality/);
+        expect(sys).toContain('you write');
+    });
+});
+
 /** Pull the contents of the `<character_sheet format="yaml">` block out of a prompt. */
 function extractYamlFence(prompt) {
     const m = /<character_sheet[^>]*>\n([\s\S]*?)\n<\/character_sheet>/m.exec(prompt);

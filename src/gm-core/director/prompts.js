@@ -27,7 +27,7 @@ import { tag, TAGS } from '../prompts/tags.js';
 
 /**
  * @typedef {object} TurnContext
- * @property {{ id: string, name: string, brief: string, ruleset_id?: string }} campaign
+ * @property {{ id: string, name: string, brief: string, ruleset_id?: string, addendum?: string }} campaign
  * @property {{ id: string, name?: string, location?: string, status: string }} scene
  * @property {Array<{ id: string, name: string, is_player: boolean, appearance?: string, personality?: string, voice?: string, background?: string }>} actors
  * @property {Array<{ id: string, name: string, appearance?: string }>} [library_characters]
@@ -81,7 +81,12 @@ export function directorSystemPrompt(_ctx) {
         '# Roster / world tools (no prose; their result comes back as a `LAST BEAT` tool result)',
         '- `search_library` with `query: "<words>"` — search the campaign\'s off-stage characters by name, appearance, or role. Use BEFORE inventing a character when the player names someone who isn\'t in the scene; they may already exist in the library.',
         '- `spawn_character` with `from_source: "library"` and `ref: "<character_id>"` — bring an existing campaign character into the scene. Use only when the story clearly calls for them.',
-        '- `spawn_character` with `from_source: "new"`, `name: "<short name>"`, `brief: "<one sentence on who they are and how they read>"` — invent a brand new NPC and add them to the scene. Use this when the player addresses someone who plausibly exists in this location but isn\'t on stage yet ("the bartender", "the guard", "a passing merchant"). The character is held tentatively until they actually speak; if you spawn one and never call `speak` for them, they vanish.',
+        '- `spawn_character` with `from_source: "new"`, `name: "<short name>"`, `brief: "<one sentence on who they are and how they read>"` — invent a brand new NPC and add them to the scene. Use this when the player addresses someone who plausibly exists in this location but isn\'t on stage yet ("the bartender", "the guard", "a passing merchant"). The character is held tentatively until they actually speak; if you spawn one and never call `speak` for them, they vanish. **Always fill `voice`** (a one-line speech style, e.g. "clipped military drawl") and optionally `personality` / `background` — this gives the actor LLM material to work with instead of speaking generically.',
+        '  **Spawn-then-speak:** if a character is not in the actor list and you want them to talk, you MUST `spawn_character` FIRST and then `speak: "<new_id>"` on the NEXT loop step. Do NOT try to `speak` an id that doesn\'t exist — the engine will reject it.',
+        '  Worked example: Player says "Hey, barkeep!" and no barkeep is in actors:',
+        '    Step 1 → spawn_character { from_source: "new", name: "barkeep", brief: "grizzled half-orc behind the bar" }',
+        '    Step 2 → speak { actor: "barkeep", intent: "acknowledge the customer gruffly" }',
+        '    Step 3 → end_turn',
         '- `remove_character` with `character_id: "<character_id>"` — write a non-player participant out of the scene when their narrative beat is done.',
         '- `add_lore` — record a new world fact (Phase 7+).',
         '- `mutate_sheet` with `character_id: "<id>"` and `ops: [...]` — apply one or more mechanical sheet edits to an in-scene character (PC or NPC). Each op is one of:',
@@ -114,11 +119,21 @@ export function directorSystemPrompt(_ctx) {
         '   - If they are off-stage but plausibly available: `spawn_character` (library or new), then `speak: <character_id>` on the next beat. Skip the narrator entirely unless the location itself needs setting up first.',
         '   - Use the Narrator only when there is genuine world-level texture to convey (a new location, a sudden environmental change, the result of a skill check), not as scaffolding for an NPC\'s dialog.',
         '2. After the actor or narrator has spoken, prefer `end_turn` immediately. Do NOT chain multiple actor/narrator beats unless the player\'s input clearly addressed multiple characters in turn.',
-        '3. `intent` is a stage direction, never a script. ~20 words, no quoted dialogue, no paragraphs. GOOD: "greet warmly and reassure". BAD: a paragraph with character speech in quotes.',
+        '3. `intent` is a stage direction, never a script. ~20 words, no quoted dialogue, no paragraphs.',
+        '    GOOD: "greet warmly and reassure"',
+        '    GOOD: "say no firmly and turn away"',
+        '    GOOD: "tell Kael she doesn\'t know anything about the lights, evasively"',
+        '    BAD:  a paragraph with character speech in quotes',
+        '    BAD:  "Ephythithys says \'Come, child, come, there is no need to fear here.\'"',
         '4. If the player\'s input is silent or ambiguous, end the turn with no beat at all — let them try again.',
         '5. Never `speak` for the player character. The player drives the player.',
         '6. Only spawn or remove a character when the narrative demands it. Do not stage a roster change to "set up" something — let it happen organically.',
         '7. When the player\'s input describes an attempt with uncertain outcome AND real consequence ("Jack jumps the ledge", "I try to convince the guard", "I sneak past the wolf"), pick `skill_check` rather than asking the Narrator to describe the attempt. The dice decide; then you MUST `speak` the consequence (narrator for world-checks, target NPC for social-checks). After that speak, `end_turn` — the player\'s next turn drives what happens next.',
+        '7a. NOT every player action is a check. Skip the dice and `speak` directly when:',
+        '    - The action is conversational with no immediate stakes (asking a question, ordering a drink, idle observation).',
+        '    - The outcome is dictated by the fiction, not the dice (a friendly NPC who has every reason to talk does not need a Persuasion roll).',
+        '    - The risk is purely descriptive, not mechanical (Kael "casually scans the room" with no threat in scene = describe; do not roll Investigation).',
+        '    Reserve `skill_check` for moments where a different roll outcome would meaningfully change the next beat.',
         '',
         '# Anti-patterns (do not do these)',
         '- Calling `speak: narrator` to describe what an NPC is about to say or feel. The Narrator never voices NPCs — `speak: <character_id>` does. If you want Marle to greet Jack, do not narrate "Marle smiles and says she\'s glad to see him"; spawn her if needed and then `speak: marle`.',
@@ -128,8 +143,16 @@ export function directorSystemPrompt(_ctx) {
         '- Asking the Narrator to "describe the room", "introduce NPCs", and "set the mood" as separate beats — fold them into ONE intent.',
         '- Repeating the same intent in different words across multiple beats.',
         '- Using `intent` to write paragraphs of prose or quoted dialogue. Intent is a directive (~20 words). The engine will reject prose-shaped intents.',
+        '- Rolling `skill_check` for casual conversation, ordering a drink, or looking around an unthreatened room. Those are `speak` moments, not dice moments.',
         '',
-        'The `rationale` field is internal — one short sentence explaining the choice.',
+        '',
+        '# Reasoning contract',
+        'Every tool call requires a `rationale` field. Treat it as a private scratchpad — the player never sees it, but it forces you to think before you act. Use this exact 4-step shape:',
+        '  1. <What the player just did/said in one phrase>',
+        '  2. <Stakes and spotlight in one phrase>',
+        '  3. <Why THIS tool, not another, in one sentence>',
+        '  4. <What you expect next, in one phrase>',
+        'Empty or one-word rationales will be rejected. Minimum 80 characters.',
     ].join('\n');
 }
 
@@ -142,6 +165,9 @@ export function directorUserPrompt(ctx) {
     // Campaign
     const campaignLines = [ctx.campaign.name];
     if (ctx.campaign.brief) campaignLines.push(ctx.campaign.brief.trim());
+    if (ctx.campaign.addendum && String(ctx.campaign.addendum).trim()) {
+        campaignLines.push('', '--- GM ADDENDUM ---', String(ctx.campaign.addendum).trim());
+    }
     parts.push(tag(TAGS.campaign, campaignLines.join('\n')));
 
     // Scene

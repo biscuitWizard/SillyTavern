@@ -92,6 +92,7 @@ import { writeDirectorPacing } from '../rag/writers/director-pacing.js';
 import { writeSheetMutationAudit } from '../rag/writers/sheet-mutation.js';
 import { extractAndWriteOpinion } from '../rag/writers/opinion.js';
 import { extractAndWriteNarratorContinuity } from '../rag/writers/narrator-continuity.js';
+import { stripPromptEcho } from '../actors/postprocess.js';
 import { formatToolResult, collapseOlderTurns, SUMMARY_TRIGGER_TOKENS } from './history.js';
 
 // A well-behaved turn looks like: speak(narrator) -> end_turn. We give the
@@ -813,7 +814,7 @@ async function dispatchSpeak({
             return { kind: 'end' };
         }
         ctx.memories_block = previousMemoriesBlock;
-        const text = (prose || '').trim();
+        const text = stripPromptEcho((prose || '').trim(), { name: 'Narrator' });
         await emit({
             kind: 'message',
             actor: 'narrator',
@@ -850,7 +851,45 @@ async function dispatchSpeak({
     // checks transient characters first). If the id is not in the scene
     // roster, surface a helpful tool_error and continue the loop so the
     // Director can recover via search_library / spawn_character / end_turn.
-    const inScene = (ctx.actors || []).some(a => a.id === decision.actor);
+    let inScene = (ctx.actors || []).some(a => a.id === decision.actor);
+
+    // Auto-spawn fallback: if the actor isn't in the roster but fuzzy-matches
+    // a name in the recent transcript, auto-spawn a transient so the Director
+    // doesn't waste a loop step.
+    if (!inScene && transientCharacters) {
+        const needle = String(decision.actor || '').toLowerCase();
+        const recentText = ctx.recent_transcript || '';
+        if (needle && fuzzyMatch(recentText, needle)) {
+            const displayName = decision.actor.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            const usedIds = new Set([
+                ...(ctx.actors || []).map(a => a.id),
+                ...(ctx.library_characters || []).map(c => c.id),
+                ...transientCharacters.keys(),
+            ]);
+            const id = generateTransientId(decision.actor, usedIds);
+            const now = new Date().toISOString();
+            const transient = {
+                id,
+                campaign_id: ctx.campaign?.id || '',
+                name: displayName,
+                is_player: false,
+                appearance: '',
+                personality: '',
+                voice: '',
+                background: '',
+                sheet: { stats: {}, statuses: {}, items: [], skills: [], notes: '' },
+                has_portrait: false,
+                created_at: now,
+                updated_at: now,
+            };
+            transientCharacters.set(id, transient);
+            ctx.actors = [...(ctx.actors || []), { id, name: displayName, is_player: false, appearance: '' }];
+            await emit({ kind: 'state', change: 'spawn', character_id: id, character_name: displayName, ephemeral: true });
+            decision.actor = id;
+            inScene = true;
+        }
+    }
+
     if (!inScene) {
         const suggestions = buildUnknownActorSuggestions(ctx, decision.actor);
         const message = `Actor "${decision.actor}" is not in the current scene roster.`;
@@ -939,7 +978,7 @@ async function dispatchSpeak({
         return { kind: 'end' };
     }
     ctx.memories_block = previousMemoriesBlock;
-    const text = (prose || '').trim();
+    const text = stripPromptEcho((prose || '').trim(), character);
 
     // Promote-on-speak: if the speaking character is a transient (created
     // via spawn_character: from_source: 'new'), persist them now and add to
@@ -1551,15 +1590,18 @@ async function dispatchSpawnNew({ ctx, decision, emit, transientCharacters }) {
     const id = generateTransientId(name, usedIds);
     const now = new Date().toISOString();
     /** @type {import('../library/schemas.js').Character} */
+    const spawnVoice = String(decision.voice || '').trim();
+    const spawnPersonality = String(decision.personality || '').trim();
+    const spawnBackground = String(decision.background || '').trim();
     const transient = {
         id,
         campaign_id: ctx.campaign?.id || '',
         name,
         is_player: false,
         appearance: brief,
-        personality: '',
-        voice: '',
-        background: '',
+        personality: spawnPersonality,
+        voice: spawnVoice,
+        background: spawnBackground,
         sheet: { stats: {}, statuses: {}, items: [], skills: [], notes: '' },
         has_portrait: false,
         created_at: now,
@@ -1571,6 +1613,9 @@ async function dispatchSpawnNew({ ctx, decision, emit, transientCharacters }) {
         name,
         is_player: false,
         appearance: brief,
+        personality: spawnPersonality,
+        voice: spawnVoice,
+        background: spawnBackground,
     }];
     await emit({
         kind: 'state',

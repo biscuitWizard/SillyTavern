@@ -108,8 +108,8 @@ describe('director dispatch: speak', () => {
     test('speak: <character_id> emits a message event with role=actor and the actor id', async () => {
         const ctx = baseCtx();
         const director = makeDirector([
-            { action: 'speak', actor: 'amelia', intent: 'greet warily', rationale: 'NPC turn' },
-            { action: 'end_turn', rationale: 'done' },
+            { action: 'speak', actor: 'amelia', intent: 'greet warily', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const actor = makeActor(() => 'Welcome, traveller.');
         const events = [];
@@ -133,8 +133,8 @@ describe('director dispatch: speak', () => {
     test('speak: <pc_id> is rejected as a recoverable tool_error — Director cannot speak for the player', async () => {
         const ctx = baseCtx();
         const director = makeDirector([
-            { action: 'speak', actor: 'jack', intent: 'speak as the PC', rationale: 'oops' },
-            { action: 'end_turn', rationale: 'recover' },
+            { action: 'speak', actor: 'jack', intent: 'speak as the PC', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const actor = makeActor(() => 'should not be called');
         const events = [];
@@ -159,9 +159,9 @@ describe('director dispatch: speak', () => {
         ctx.library_characters = [{ id: 'bran', name: 'Bran', appearance: 'a stout dwarf' }];
         const director = makeDirector([
             // First step: hallucinate "bartender" (not in scene, not in library).
-            { action: 'speak', actor: 'bartender', intent: 'greet the player', rationale: 'oops' },
+            { action: 'speak', actor: 'bartender', intent: 'greet the player', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
             // After the tool-result history shows the error, Director recovers by ending the turn.
-            { action: 'end_turn', rationale: 'no recovery available' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const actor = makeActor(() => 'should not be called');
         const events = [];
@@ -212,8 +212,8 @@ describe('director dispatch: speak', () => {
         const ctx = baseCtx();
         const originalInput = ctx.user_input;
         const director = makeDirector([
-            { action: 'speak', actor: 'amelia', intent: 'react to the player', rationale: 'NPC turn' },
-            { action: 'end_turn', rationale: 'amelia spoke' },
+            { action: 'speak', actor: 'amelia', intent: 'react to the player', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const actor = makeActor(() => 'I look up from my drink.');
         const events = [];
@@ -261,8 +261,8 @@ describe('director dispatch: spawn_character', () => {
     test('spawn_character: library, ref adds participant, emits state event, and continues', async () => {
         const ctx = baseCtx();
         const director = makeDirector([
-            { action: 'spawn_character', from_source: 'library', ref: 'bran', rationale: 'enter Bran' },
-            { action: 'end_turn', rationale: 'done' },
+            { action: 'spawn_character', from_source: 'library', ref: 'bran', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const actor = makeActor(() => 'never');
         const events = [];
@@ -296,8 +296,8 @@ describe('director dispatch: spawn_character', () => {
         // clean exit. addParticipant is never called.
         const ctx = baseCtx();
         const director = makeDirector([
-            { action: 'spawn_character', from_source: 'new', brief: 'a new face', rationale: 'invent' },
-            { action: 'end_turn', rationale: 'recovered after invalid_decision' },
+            { action: 'spawn_character', from_source: 'new', brief: 'a new face', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const actor = makeActor(() => 'never');
         const events = [];
@@ -326,8 +326,8 @@ describe('director dispatch: spawn_character', () => {
     test('spawn_character: library with already-present id is a no-op', async () => {
         const ctx = baseCtx();
         const director = makeDirector([
-            { action: 'spawn_character', from_source: 'library', ref: 'amelia', rationale: 're-enter amelia' },
-            { action: 'end_turn', rationale: 'done' },
+            { action: 'spawn_character', from_source: 'library', ref: 'amelia', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const actor = makeActor(() => 'never');
         const events = [];
@@ -350,8 +350,8 @@ describe('director dispatch: remove_character', () => {
     test('remove_character calls writer and emits state event change=remove', async () => {
         const ctx = baseCtx();
         const director = makeDirector([
-            { action: 'remove_character', character_id: 'amelia', rationale: 'she leaves' },
-            { action: 'end_turn', rationale: 'done' },
+            { action: 'remove_character', character_id: 'amelia', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const actor = makeActor(() => 'never');
         const events = [];
@@ -378,8 +378,8 @@ describe('director dispatch: remove_character', () => {
     test('remove_character with player id is rejected as a recoverable tool_error', async () => {
         const ctx = baseCtx();
         const director = makeDirector([
-            { action: 'remove_character', character_id: 'jack', rationale: 'oops' },
-            { action: 'end_turn', rationale: 'recover' },
+            { action: 'remove_character', character_id: 'jack', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const actor = makeActor(() => 'never');
         const events = [];

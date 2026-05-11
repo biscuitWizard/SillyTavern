@@ -118,7 +118,12 @@ export const directorTools = [
                 properties: {
                     actor: { type: 'string', description: 'Actor id ("narrator" for the World Narrator, otherwise an actor id).' },
                     intent: { type: 'string', maxLength: 240, description: 'DIRECTIVE, NOT PROSE. ~20 words max. Tell the actor WHAT beat to deliver and at what emotional pitch. No quoted dialogue.' },
-                    rationale: { type: 'string' },
+                    rationale: {
+                    type: 'string',
+                    minLength: 80,
+                    maxLength: 600,
+                    description: 'Reason out loud BEFORE choosing the action. Required structure (one short sentence per part): (1) What did the player just do or say? (2) What are the stakes / who has the spotlight? (3) Why this tool over the alternatives? (4) What is the next beat I expect after this? Keep it under 100 words.',
+                },
                 },
                 required: ['actor', 'intent', 'rationale'],
                 additionalProperties: false,
@@ -136,7 +141,12 @@ export const directorTools = [
                 properties: {
                     actor: { type: 'string', description: 'Character id attempting the action.' },
                     intent: { type: 'string', maxLength: 240, description: 'Short description of what the actor is trying to do. ~20 words max.' },
-                    rationale: { type: 'string' },
+                    rationale: {
+                    type: 'string',
+                    minLength: 80,
+                    maxLength: 600,
+                    description: 'Reason out loud BEFORE choosing the action. Required structure (one short sentence per part): (1) What did the player just do or say? (2) What are the stakes / who has the spotlight? (3) Why this tool over the alternatives? (4) What is the next beat I expect after this? Keep it under 100 words.',
+                },
                 },
                 required: ['actor', 'intent', 'rationale'],
                 additionalProperties: false,
@@ -153,7 +163,12 @@ export const directorTools = [
                 type: 'object',
                 properties: {
                     query: { type: 'string', description: 'Free-text query searched against off-stage character name, appearance, and background.' },
-                    rationale: { type: 'string' },
+                    rationale: {
+                    type: 'string',
+                    minLength: 80,
+                    maxLength: 600,
+                    description: 'Reason out loud BEFORE choosing the action. Required structure (one short sentence per part): (1) What did the player just do or say? (2) What are the stakes / who has the spotlight? (3) Why this tool over the alternatives? (4) What is the next beat I expect after this? Keep it under 100 words.',
+                },
                 },
                 required: ['query', 'rationale'],
                 additionalProperties: false,
@@ -173,7 +188,12 @@ export const directorTools = [
                     name: { type: 'string', description: 'For from_source:"new", the short display name.' },
                     brief: { type: 'string', description: 'For from_source:"new", a one-sentence description (appearance, role, voice).' },
                     on_join_message: { type: 'string' },
-                    rationale: { type: 'string' },
+                    rationale: {
+                    type: 'string',
+                    minLength: 80,
+                    maxLength: 600,
+                    description: 'Reason out loud BEFORE choosing the action. Required structure (one short sentence per part): (1) What did the player just do or say? (2) What are the stakes / who has the spotlight? (3) Why this tool over the alternatives? (4) What is the next beat I expect after this? Keep it under 100 words.',
+                },
                 },
                 required: ['from_source', 'rationale'],
                 additionalProperties: false,
@@ -191,7 +211,12 @@ export const directorTools = [
                 properties: {
                     character_id: { type: 'string' },
                     on_leave_message: { type: 'string' },
-                    rationale: { type: 'string' },
+                    rationale: {
+                    type: 'string',
+                    minLength: 80,
+                    maxLength: 600,
+                    description: 'Reason out loud BEFORE choosing the action. Required structure (one short sentence per part): (1) What did the player just do or say? (2) What are the stakes / who has the spotlight? (3) Why this tool over the alternatives? (4) What is the next beat I expect after this? Keep it under 100 words.',
+                },
                 },
                 required: ['character_id', 'rationale'],
                 additionalProperties: false,
@@ -214,7 +239,12 @@ export const directorTools = [
                         description: 'Optional categorical tag: faction | place | event | item | concept | npc-fact | misc.',
                     },
                     importance: { type: 'number' },
-                    rationale: { type: 'string' },
+                    rationale: {
+                    type: 'string',
+                    minLength: 80,
+                    maxLength: 600,
+                    description: 'Reason out loud BEFORE choosing the action. Required structure (one short sentence per part): (1) What did the player just do or say? (2) What are the stakes / who has the spotlight? (3) Why this tool over the alternatives? (4) What is the next beat I expect after this? Keep it under 100 words.',
+                },
                 },
                 required: ['title', 'body', 'tags', 'rationale'],
                 additionalProperties: false,
@@ -251,7 +281,12 @@ export const directorTools = [
                             ],
                         },
                     },
-                    rationale: { type: 'string' },
+                    rationale: {
+                    type: 'string',
+                    minLength: 80,
+                    maxLength: 600,
+                    description: 'Reason out loud BEFORE choosing the action. Required structure (one short sentence per part): (1) What did the player just do or say? (2) What are the stakes / who has the spotlight? (3) Why this tool over the alternatives? (4) What is the next beat I expect after this? Keep it under 100 words.',
+                },
                 },
                 required: ['character_id', 'ops', 'rationale'],
                 additionalProperties: false,
@@ -270,7 +305,12 @@ export const directorTools = [
                     character_id: { type: 'string', description: 'Must be in the current scene roster.' },
                     field: { type: 'string', enum: ['appearance', 'personality', 'voice', 'background'] },
                     value: { type: 'string', description: 'Full replacement text for the field.' },
-                    rationale: { type: 'string' },
+                    rationale: {
+                    type: 'string',
+                    minLength: 80,
+                    maxLength: 600,
+                    description: 'Reason out loud BEFORE choosing the action. Required structure (one short sentence per part): (1) What did the player just do or say? (2) What are the stakes / who has the spotlight? (3) Why this tool over the alternatives? (4) What is the next beat I expect after this? Keep it under 100 words.',
+                },
                 },
                 required: ['character_id', 'field', 'value', 'rationale'],
                 additionalProperties: false,
@@ -290,7 +330,12 @@ export const directorTools = [
                     setting: { type: 'string' },
                     suggested_participants: { type: 'array', items: { type: 'string' } },
                     hooks: { type: 'array', items: { type: 'string' } },
-                    rationale: { type: 'string' },
+                    rationale: {
+                    type: 'string',
+                    minLength: 80,
+                    maxLength: 600,
+                    description: 'Reason out loud BEFORE choosing the action. Required structure (one short sentence per part): (1) What did the player just do or say? (2) What are the stakes / who has the spotlight? (3) Why this tool over the alternatives? (4) What is the next beat I expect after this? Keep it under 100 words.',
+                },
                 },
                 required: ['name', 'setting', 'suggested_participants', 'hooks', 'rationale'],
                 additionalProperties: false,
@@ -306,7 +351,12 @@ export const directorTools = [
             parameters: {
                 type: 'object',
                 properties: {
-                    rationale: { type: 'string' },
+                    rationale: {
+                    type: 'string',
+                    minLength: 80,
+                    maxLength: 600,
+                    description: 'Reason out loud BEFORE choosing the action. Required structure (one short sentence per part): (1) What did the player just do or say? (2) What are the stakes / who has the spotlight? (3) Why this tool over the alternatives? (4) What is the next beat I expect after this? Keep it under 100 words.',
+                },
                     pacing_note: {
                         type: 'string',
                         description: 'Optional one-line pacing note recorded into director_memory for future turns.',
@@ -350,7 +400,12 @@ export const directorDecisionJsonSchema = {
                     maxLength: 240,
                     description: 'DIRECTIVE, NOT PROSE. ~20 words max. Tell the actor WHAT beat to deliver and at what emotional pitch. Never include quoted dialogue, never write the actor\'s lines for them. GOOD: "welcome the newcomer warmly, then steer them toward the dais". BAD: "Ephythithys smiles and says \'Come, child...\'".',
                 },
-                rationale: { type: 'string' },
+                rationale: {
+                    type: 'string',
+                    minLength: 80,
+                    maxLength: 600,
+                    description: 'Reason out loud BEFORE choosing the action. Required structure (one short sentence per part): (1) What did the player just do or say? (2) What are the stakes / who has the spotlight? (3) Why this tool over the alternatives? (4) What is the next beat I expect after this? Keep it under 100 words.',
+                },
             },
             required: ['action', 'actor', 'intent', 'rationale'],
             additionalProperties: false,
@@ -362,7 +417,12 @@ export const directorDecisionJsonSchema = {
                 action: { type: 'string', const: 'skill_check' },
                 actor: { type: 'string', description: 'Character id attempting the action.' },
                 intent: { type: 'string', maxLength: 240, description: 'Short description of what the actor is trying to do. ~20 words max. No prose, no dialogue.' },
-                rationale: { type: 'string' },
+                rationale: {
+                    type: 'string',
+                    minLength: 80,
+                    maxLength: 600,
+                    description: 'Reason out loud BEFORE choosing the action. Required structure (one short sentence per part): (1) What did the player just do or say? (2) What are the stakes / who has the spotlight? (3) Why this tool over the alternatives? (4) What is the next beat I expect after this? Keep it under 100 words.',
+                },
             },
             required: ['action', 'actor', 'intent', 'rationale'],
             additionalProperties: false,
@@ -376,7 +436,12 @@ export const directorDecisionJsonSchema = {
                     type: 'string',
                     description: 'Free-text query searched against off-stage character name, appearance, and background.',
                 },
-                rationale: { type: 'string' },
+                rationale: {
+                    type: 'string',
+                    minLength: 80,
+                    maxLength: 600,
+                    description: 'Reason out loud BEFORE choosing the action. Required structure (one short sentence per part): (1) What did the player just do or say? (2) What are the stakes / who has the spotlight? (3) Why this tool over the alternatives? (4) What is the next beat I expect after this? Keep it under 100 words.',
+                },
             },
             required: ['action', 'query', 'rationale'],
             additionalProperties: false,
@@ -397,10 +462,30 @@ export const directorDecisionJsonSchema = {
                 },
                 brief: {
                     type: 'string',
-                    description: 'For from_source: "new", a one-sentence description of who they are and how they read (appearance, role, voice).',
+                    description: 'For from_source: "new", a one-sentence description of who they are and how they read (appearance, role).',
+                },
+                voice: {
+                    type: 'string',
+                    maxLength: 240,
+                    description: 'Optional one-line speech style for new characters (e.g. "clipped military drawl, avoids contractions").',
+                },
+                personality: {
+                    type: 'string',
+                    maxLength: 240,
+                    description: 'Optional one-line personality sketch for new characters.',
+                },
+                background: {
+                    type: 'string',
+                    maxLength: 240,
+                    description: 'Optional one-line background for new characters.',
                 },
                 on_join_message: { type: 'string' },
-                rationale: { type: 'string' },
+                rationale: {
+                    type: 'string',
+                    minLength: 80,
+                    maxLength: 600,
+                    description: 'Reason out loud BEFORE choosing the action. Required structure (one short sentence per part): (1) What did the player just do or say? (2) What are the stakes / who has the spotlight? (3) Why this tool over the alternatives? (4) What is the next beat I expect after this? Keep it under 100 words.',
+                },
             },
             required: ['action', 'from_source', 'rationale'],
             additionalProperties: false,
@@ -412,7 +497,12 @@ export const directorDecisionJsonSchema = {
                 action: { type: 'string', const: 'remove_character' },
                 character_id: { type: 'string' },
                 on_leave_message: { type: 'string' },
-                rationale: { type: 'string' },
+                rationale: {
+                    type: 'string',
+                    minLength: 80,
+                    maxLength: 600,
+                    description: 'Reason out loud BEFORE choosing the action. Required structure (one short sentence per part): (1) What did the player just do or say? (2) What are the stakes / who has the spotlight? (3) Why this tool over the alternatives? (4) What is the next beat I expect after this? Keep it under 100 words.',
+                },
             },
             required: ['action', 'character_id', 'rationale'],
             additionalProperties: false,
@@ -430,7 +520,12 @@ export const directorDecisionJsonSchema = {
                     description: 'Optional categorical tag: faction | place | event | item | concept | npc-fact | misc.',
                 },
                 importance: { type: 'number' },
-                rationale: { type: 'string' },
+                rationale: {
+                    type: 'string',
+                    minLength: 80,
+                    maxLength: 600,
+                    description: 'Reason out loud BEFORE choosing the action. Required structure (one short sentence per part): (1) What did the player just do or say? (2) What are the stakes / who has the spotlight? (3) Why this tool over the alternatives? (4) What is the next beat I expect after this? Keep it under 100 words.',
+                },
             },
             required: ['action', 'title', 'body', 'tags', 'rationale'],
             additionalProperties: false,
@@ -545,7 +640,12 @@ export const directorDecisionJsonSchema = {
                         ],
                     },
                 },
-                rationale: { type: 'string' },
+                rationale: {
+                    type: 'string',
+                    minLength: 80,
+                    maxLength: 600,
+                    description: 'Reason out loud BEFORE choosing the action. Required structure (one short sentence per part): (1) What did the player just do or say? (2) What are the stakes / who has the spotlight? (3) Why this tool over the alternatives? (4) What is the next beat I expect after this? Keep it under 100 words.',
+                },
             },
             required: ['action', 'character_id', 'ops', 'rationale'],
             additionalProperties: false,
@@ -568,7 +668,12 @@ export const directorDecisionJsonSchema = {
                     type: 'string',
                     description: 'The full replacement text for the field. Write in second or third person, as the player will read this directly on the character sheet.',
                 },
-                rationale: { type: 'string' },
+                rationale: {
+                    type: 'string',
+                    minLength: 80,
+                    maxLength: 600,
+                    description: 'Reason out loud BEFORE choosing the action. Required structure (one short sentence per part): (1) What did the player just do or say? (2) What are the stakes / who has the spotlight? (3) Why this tool over the alternatives? (4) What is the next beat I expect after this? Keep it under 100 words.',
+                },
             },
             required: ['action', 'character_id', 'field', 'value', 'rationale'],
             additionalProperties: false,
@@ -582,7 +687,12 @@ export const directorDecisionJsonSchema = {
                 setting: { type: 'string' },
                 suggested_participants: { type: 'array', items: { type: 'string' } },
                 hooks: { type: 'array', items: { type: 'string' } },
-                rationale: { type: 'string' },
+                rationale: {
+                    type: 'string',
+                    minLength: 80,
+                    maxLength: 600,
+                    description: 'Reason out loud BEFORE choosing the action. Required structure (one short sentence per part): (1) What did the player just do or say? (2) What are the stakes / who has the spotlight? (3) Why this tool over the alternatives? (4) What is the next beat I expect after this? Keep it under 100 words.',
+                },
             },
             required: ['action', 'name', 'setting', 'suggested_participants', 'hooks', 'rationale'],
             additionalProperties: false,
@@ -592,7 +702,12 @@ export const directorDecisionJsonSchema = {
             type: 'object',
             properties: {
                 action: { type: 'string', const: 'end_turn' },
-                rationale: { type: 'string' },
+                rationale: {
+                    type: 'string',
+                    minLength: 80,
+                    maxLength: 600,
+                    description: 'Reason out loud BEFORE choosing the action. Required structure (one short sentence per part): (1) What did the player just do or say? (2) What are the stakes / who has the spotlight? (3) Why this tool over the alternatives? (4) What is the next beat I expect after this? Keep it under 100 words.',
+                },
                 pacing_note: {
                     type: 'string',
                     description: 'Optional one-line pacing note recorded into director_memory for future turns.',
@@ -628,7 +743,9 @@ export function validateIntentShape(intent) {
     if (/"[^"]{6,}"/.test(intent) || /\u201c[^\u201d]{6,}\u201d/.test(intent)) {
         return 'intent contains quoted dialogue — write a directive like "greet warmly and reassure", not the character\'s actual lines.';
     }
-    if (/'[^']{6,}'/.test(intent) && intent.length > 80) {
+    // Single-quote heuristic: require word-boundary-like context around
+    // the quotes so apostrophes in contractions (don't, nothin') don't fire.
+    if (/(?:^|[\s(])'[^']{20,}'(?:[\s,.!?;:)\-]|$)/.test(intent) && intent.length > 80) {
         return 'intent contains what looks like embedded speech — keep it to a short directive, not scripted dialogue.';
     }
     return null;
@@ -648,6 +765,7 @@ export function validateDirectorDecision(value) {
     const v = /** @type {any} */ (value);
     if (typeof v.action !== 'string') return 'decision.action must be a string';
     if (typeof v.rationale !== 'string') return 'decision.rationale must be a string';
+    if (v.rationale.length < 80) return `decision.rationale is too short (${v.rationale.length} chars, min 80). Think through: (1) what the player did, (2) stakes/spotlight, (3) why this tool, (4) expected next beat.`;
 
     switch (v.action) {
         case 'speak':

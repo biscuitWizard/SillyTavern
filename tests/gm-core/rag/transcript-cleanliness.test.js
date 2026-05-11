@@ -199,8 +199,8 @@ describe('Phase 7 — transcript cleanliness', () => {
             });
 
             const director = makeDirector([
-                { action: 'speak', actor: 'amelia', intent: 'greet the newcomer warily', rationale: 'NPC turn' },
-                { action: 'end_turn', rationale: 'done' },
+                { action: 'speak', actor: 'amelia', intent: 'greet the newcomer warily', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+                { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
             ]);
             const actor = makeActor(() => 'Welcome, traveller.');
 

@@ -104,8 +104,8 @@ describe('search_library', () => {
     test('returns matched off-stage characters via the messages[] history without emitting chat events', async () => {
         const ctx = baseCtx();
         const director = makeDirector([
-            { action: 'search_library', query: 'bartender', rationale: 'check if one already exists' },
-            { action: 'end_turn', rationale: 'director will spawn from library next turn' },
+            { action: 'search_library', query: 'bartender', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const actor = makeActor(() => 'never');
         const events = [];
@@ -141,8 +141,8 @@ describe('search_library', () => {
         const ctx = baseCtx();
         ctx.library_characters = [];
         const director = makeDirector([
-            { action: 'search_library', query: 'bartender', rationale: 'first check' },
-            { action: 'end_turn', rationale: 'will invent next turn' },
+            { action: 'search_library', query: 'bartender', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const actor = makeActor(() => 'never');
         const events = [];
@@ -169,9 +169,9 @@ describe('spawn_character: from_source = "new" (transient, promote-on-speak)', (
                 from_source: 'new',
                 name: 'the bartender',
                 brief: 'a thick-necked tavern keeper wiping a glass',
-                rationale: 'player addressed someone off-stage',
+                rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.',
             },
-            { action: 'end_turn', rationale: 'never spoke; bartender vanishes' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const actor = makeActor(() => 'never');
         const events = [];
@@ -210,14 +210,14 @@ describe('spawn_character: from_source = "new" (transient, promote-on-speak)', (
                 from_source: 'new',
                 name: 'the bartender',
                 brief: 'a thick-necked tavern keeper',
-                rationale: 'address player',
+                rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.',
             },
             // Loop mirrored "the_bartender" into ctx.actors with id derived
             // from the slugified name. The director can see it via the
             // (synthetic) actor list and address it on its next call.
             // We pre-compute the id below to drive the script.
-            { action: 'speak', actor: 'the_bartender', intent: 'gruff acknowledgement', rationale: 'NPC speaks' },
-            { action: 'end_turn', rationale: 'done' },
+            { action: 'speak', actor: 'the_bartender', intent: 'gruff acknowledgement', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const actor = makeActor(() => 'I keep wiping the glass. "Maybe."');
         const events = [];
@@ -266,8 +266,8 @@ describe('spawn_character: from_source = "new" (transient, promote-on-speak)', (
         // output must be schema-valid while keeping the surface forgiving.
         const ctx = baseCtx();
         const director = makeDirector([
-            { action: 'spawn_character', from_source: 'new', rationale: 'forgot fields' },
-            { action: 'end_turn', rationale: 'recovered after invalid_decision' },
+            { action: 'spawn_character', from_source: 'new', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const actor = makeActor(() => 'never');
         const events = [];
@@ -297,9 +297,9 @@ describe('remove_character: transient', () => {
     test('removing a transient character that never spoke uses memory-only path (no removeParticipant call)', async () => {
         const ctx = baseCtx();
         const director = makeDirector([
-            { action: 'spawn_character', from_source: 'new', name: 'a passing courier', brief: 'a winded young runner', rationale: 'flavor' },
-            { action: 'remove_character', character_id: 'a_passing_courier', rationale: 'changed mind' },
-            { action: 'end_turn', rationale: 'done' },
+            { action: 'spawn_character', from_source: 'new', name: 'a passing courier', brief: 'a winded young runner', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+            { action: 'remove_character', character_id: 'a_passing_courier', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const actor = makeActor(() => 'never');
         const events = [];

@@ -84,7 +84,11 @@ multi-actor experience needs to feel right:
 
 Shipped:
 
-- `src/gm-core/actors/prompts.js`
+- `src/gm-core/actors/prompts.js` — Actor system prompt uses **close third
+  person, present tense** (e.g., "*Gruff wipes the bar*", not "*I wipe the
+  bar*"). A **brevity contract** caps output at 4 sentences / 1 paragraph.
+- `src/gm-core/actors/postprocess.js` — post-process strip for echoed
+  prompt instructions (anti-echo defense).
 - `src/gm-core/director/loop.js` — extended with new dispatchers.
 - `src/gm-core/director/schemas.js`, `schemas.d.ts` — `SUPPORTED_ACTIONS`
   extended.

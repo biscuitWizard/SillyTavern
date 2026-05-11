@@ -83,6 +83,20 @@ Subsequent phases extend the union with `skill_check`,
 **Adding a variant is the only way to add a Director capability** —
 the dispatcher rejects unknown actions.
 
+### Reasoning contract (all phases)
+
+Every Director tool call requires `rationale` (≥ 80 chars) with a
+4-step structure: (1) what the player did, (2) stakes/spotlight,
+(3) why this tool, (4) expected next beat. This forces chain-of-thought
+before action.
+
+### Trivial-action exception (rule 7a)
+
+Not every player action should trigger `skill_check`. Casual
+conversation, ordering a drink, or scanning an unthreatened room are
+`speak` moments — the dice are reserved for outcomes where a different
+roll result would meaningfully change the next beat.
+
 `TurnEvent` (NDJSON wire format):
 
 ```ts

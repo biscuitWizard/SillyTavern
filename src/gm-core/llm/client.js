@@ -148,7 +148,10 @@ const FORCE_TEXT_JSON = new Set([
  * @property {string} [custom_url]            base URL for `source === 'custom'`
  * @property {number} [temperature]
  * @property {number} [top_p]
- * @property {number} [max_tokens]
+ * @property {number} [max_tokens]             Ignored on OpenAI-family path (brevity is prompt-driven).
+ *                                               Claude path still uses it (API requires it; defaults to 1024).
+ * @property {('low'|'medium'|'high')} [reasoning_effort]  OpenAI o-series / DeepSeek reasoning models.
+ * @property {{ type: 'enabled', budget_tokens?: number }} [thinking]  Anthropic thinking config.
  * @property {Record<string, unknown>} [extra]   provider-specific extras merged into the body
  */
 
@@ -642,7 +645,7 @@ function normaliseOpenAIToolCall(call, tools) {
             raw_arguments: JSON.stringify(rawArgs),
         };
     }
-    const rawStr = typeof rawArgs === 'string' ? rawArgs : '';
+    const rawStr = typeof rawArgs === 'string' ? stripThinkTags(rawArgs) : '';
     let parsed;
     try {
         parsed = rawStr ? parseJsonOrThrow(rawStr, `tool ${name} arguments`) : {};
@@ -832,7 +835,9 @@ function openaiBaseBody({ profile, messages }) {
     };
     if (typeof profile.temperature === 'number') body.temperature = profile.temperature;
     if (typeof profile.top_p === 'number') body.top_p = profile.top_p;
-    if (typeof profile.max_tokens === 'number') body.max_tokens = profile.max_tokens;
+    if (typeof profile.reasoning_effort === 'string') body.reasoning_effort = profile.reasoning_effort;
+    // max_tokens intentionally NOT sent on the OpenAI-family path.
+    // Verbosity is controlled via prompt-side brevity contracts (A2).
     // Inject repetition/frequency penalties for local backends only.
     // llama.cpp uses `repeat_penalty`; Ollama wraps it the same way.
     // User-provided `profile.extra` values win (applied via Object.assign below).
@@ -883,17 +888,32 @@ async function openaiRequest({ baseUrl, apiKey, profile, body, signal }) {
     return json;
 }
 
+const THINK_RE = /<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi;
+
+/**
+ * Strip reasoning-model `<think>` / `<thinking>` blocks from text.
+ * Keeps the clean prose/args; recoverable reasoning goes to debug logs.
+ */
+function stripThinkTags(text) {
+    if (typeof text !== 'string') return text;
+    return text.replace(THINK_RE, '').trimStart();
+}
+
 function extractOpenaiText(json) {
     const choice = json?.choices?.[0];
     const message = choice?.message;
     if (!message) {
         throw new LlmError('bad_response', 'no choices[0].message in response', true);
     }
-    if (typeof message.content === 'string') return message.content;
-    if (Array.isArray(message.content)) {
-        return message.content.map(p => (typeof p === 'string' ? p : (p?.text || ''))).join('');
+    let raw;
+    if (typeof message.content === 'string') {
+        raw = message.content;
+    } else if (Array.isArray(message.content)) {
+        raw = message.content.map(p => (typeof p === 'string' ? p : (p?.text || ''))).join('');
+    } else {
+        raw = '';
     }
-    return '';
+    return stripThinkTags(raw);
 }
 
 /** @param {any} json @returns {string | undefined} */
@@ -1118,6 +1138,7 @@ function claudeBaseBody({ profile, messages }) {
     if (systemParts.length) body.system = systemParts.join('\n\n');
     if (typeof profile.temperature === 'number') body.temperature = profile.temperature;
     if (typeof profile.top_p === 'number') body.top_p = profile.top_p;
+    if (profile.thinking && typeof profile.thinking === 'object') body.thinking = profile.thinking;
     if (profile.extra && typeof profile.extra === 'object') Object.assign(body, profile.extra);
     return body;
 }
@@ -1349,3 +1370,5 @@ function repairTruncatedJson(raw) {
         return null;
     }
 }
+
+export { openaiBaseBody as _openaiBaseBody, stripThinkTags as _stripThinkTags };

@@ -373,7 +373,7 @@ async function kickContinue() {
             scene_id: state.scene.id,
             user_input: '',
             director_profile: directorProfile,
-            actor_profile: narratorProfile,
+            actor_profile: currentLlmProfile('actor') || narratorProfile,
             summarizer_profile: summarizerProfile,
         });
         await streamTurnResponse(response);
@@ -424,7 +424,7 @@ async function regenerateFromIdx(idx) {
     try {
         const response = await api.regenerateSceneMessage(state.scene.id, idx, {
             director_profile: directorProfile,
-            actor_profile: narratorProfile,
+            actor_profile: currentLlmProfile('actor') || narratorProfile,
             summarizer_profile: summarizerProfile,
         });
         const transcript = await api.getSceneTranscript(state.scene.id, 0);

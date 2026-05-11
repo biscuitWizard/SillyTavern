@@ -102,7 +102,7 @@ describe('director dispatch: skill_check (card-only flow)', () => {
         const ruleset = loadDnd5e();
         const ctx = baseCtx();
         const director = makeDirector([
-            { action: 'skill_check', actor: 'jack', intent: 'jump the ledge', rationale: 'risky leap' },
+            { action: 'skill_check', actor: 'jack', intent: 'jump the ledge', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
             {
                 required: true,
                 skill_id: 'athletics',
@@ -112,8 +112,8 @@ describe('director dispatch: skill_check (card-only flow)', () => {
                 justification: 'long horizontal jump with broken footing',
             },
             // Post-roll: Director must speak before end_turn.
-            { action: 'speak', actor: 'narrator', intent: 'describe the leap', rationale: 'consequence' },
-            { action: 'end_turn', rationale: 'ledge resolved' },
+            { action: 'speak', actor: 'narrator', intent: 'describe the leap', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const actor = makeActor(() => 'Jack lands on the far side, breath ragged.');
 
@@ -162,7 +162,7 @@ describe('director dispatch: skill_check (card-only flow)', () => {
         const ruleset = loadDnd5e();
         const ctx = baseCtx();
         const director = makeDirector([
-            { action: 'skill_check', actor: 'jack', intent: 'open an unlocked door', rationale: 'no risk' },
+            { action: 'skill_check', actor: 'jack', intent: 'open an unlocked door', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
             {
                 required: false,
                 skill_id: null,
@@ -171,7 +171,7 @@ describe('director dispatch: skill_check (card-only flow)', () => {
                 failure_severity: null,
                 justification: 'door is unlocked, no consequence',
             },
-            { action: 'end_turn', rationale: 'no roll needed' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const actor = makeActor(() => 'should not be called');
 
@@ -196,8 +196,8 @@ describe('director dispatch: skill_check (card-only flow)', () => {
         const ruleset = loadDnd5e();
         const ctx = baseCtx();
         const director = makeDirector([
-            { action: 'skill_check', actor: 'bran', intent: 'sneak', rationale: 'oops' },
-            { action: 'end_turn', rationale: 'recovered after unknown_actor' },
+            { action: 'skill_check', actor: 'bran', intent: 'sneak', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const actor = makeActor(() => 'never');
         const events = [];
@@ -225,7 +225,7 @@ describe('director loop: post-roll speak constraint', () => {
         const ruleset = loadDnd5e();
         const ctx = baseCtx();
         const director = makeDirector([
-            { action: 'skill_check', actor: 'jack', intent: 'jump the ledge', rationale: 'risky' },
+            { action: 'skill_check', actor: 'jack', intent: 'jump the ledge', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
             {
                 required: true,
                 skill_id: 'athletics',
@@ -235,11 +235,11 @@ describe('director loop: post-roll speak constraint', () => {
                 justification: 'broken footing',
             },
             // Director tries end_turn immediately — should be rejected.
-            { action: 'end_turn', rationale: 'done (wrong)' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
             // Director corrects to speak.
-            { action: 'speak', actor: 'narrator', intent: 'describe the leap', rationale: 'consequence' },
+            { action: 'speak', actor: 'narrator', intent: 'describe the leap', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
             // Now end_turn is allowed.
-            { action: 'end_turn', rationale: 'ledge resolved' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const actor = makeActor(() => 'Jack lands safely.');
 
@@ -265,7 +265,7 @@ describe('director loop: post-roll speak constraint', () => {
         const ruleset = loadDnd5e();
         const ctx = baseCtx();
         const director = makeDirector([
-            { action: 'skill_check', actor: 'jack', intent: 'jump the ledge', rationale: 'risky' },
+            { action: 'skill_check', actor: 'jack', intent: 'jump the ledge', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
             {
                 required: true,
                 skill_id: 'athletics',
@@ -275,10 +275,10 @@ describe('director loop: post-roll speak constraint', () => {
                 justification: 'broken footing',
             },
             // Director tries another skill_check — should be rejected.
-            { action: 'skill_check', actor: 'jack', intent: 'balance on ledge', rationale: 'another roll' },
+            { action: 'skill_check', actor: 'jack', intent: 'balance on ledge', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
             // Director corrects to speak.
-            { action: 'speak', actor: 'narrator', intent: 'describe the leap', rationale: 'consequence' },
-            { action: 'end_turn', rationale: 'done' },
+            { action: 'speak', actor: 'narrator', intent: 'describe the leap', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const actor = makeActor(() => 'Jack lands safely.');
 
@@ -303,7 +303,7 @@ describe('director loop: post-roll speak constraint', () => {
         const ctx = baseCtx();
         // Director stubbornly tries end_turn 5 times after a roll.
         const director = makeDirector([
-            { action: 'skill_check', actor: 'jack', intent: 'jump the ledge', rationale: 'risky' },
+            { action: 'skill_check', actor: 'jack', intent: 'jump the ledge', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
             {
                 required: true,
                 skill_id: 'athletics',
@@ -312,11 +312,11 @@ describe('director loop: post-roll speak constraint', () => {
                 failure_severity: 'severe',
                 justification: 'broken footing',
             },
-            { action: 'end_turn', rationale: 'try 1' },
-            { action: 'end_turn', rationale: 'try 2' },
-            { action: 'end_turn', rationale: 'try 3' },
-            { action: 'end_turn', rationale: 'try 4' },
-            { action: 'end_turn', rationale: 'try 5' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const actor = makeActor(() => 'never');
 
@@ -345,7 +345,7 @@ describe('director loop: skill_check recoverable adjudicator errors', () => {
         const ruleset = loadDnd5e();
         const ctx = baseCtx();
         const director = makeDirector([
-            { action: 'skill_check', actor: 'jack', intent: 'recall what this rune means', rationale: 'lore lookup' },
+            { action: 'skill_check', actor: 'jack', intent: 'recall what this rune means', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
             {
                 required: true,
                 skill_id: 'Religion',
@@ -354,7 +354,7 @@ describe('director loop: skill_check recoverable adjudicator errors', () => {
                 failure_severity: 'minor',
                 justification: 'recalling iconography',
             },
-            { action: 'end_turn', rationale: 'recovered' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const actor = makeActor(() => 'never');
 
@@ -390,15 +390,15 @@ describe('director loop: skill_check recoverable adjudicator errors', () => {
         const ruleset = loadDnd5e();
         const ctx = baseCtx();
         const director = makeDirector([
-            { action: 'skill_check', actor: 'jack', intent: 'iconography', rationale: '1' },
+            { action: 'skill_check', actor: 'jack', intent: 'iconography', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
             { required: true, skill_id: 'Religion', ability_id: 'int', dc: 12, failure_severity: 'minor', justification: '1' },
-            { action: 'skill_check', actor: 'jack', intent: 'iconography', rationale: '2' },
+            { action: 'skill_check', actor: 'jack', intent: 'iconography', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
             { required: true, skill_id: 'Religion', ability_id: 'int', dc: 12, failure_severity: 'minor', justification: '2' },
-            { action: 'skill_check', actor: 'jack', intent: 'iconography', rationale: '3' },
+            { action: 'skill_check', actor: 'jack', intent: 'iconography', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
             { required: true, skill_id: 'Religion', ability_id: 'int', dc: 12, failure_severity: 'minor', justification: '3' },
-            { action: 'skill_check', actor: 'jack', intent: 'iconography', rationale: '4' },
+            { action: 'skill_check', actor: 'jack', intent: 'iconography', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
             { required: true, skill_id: 'Religion', ability_id: 'int', dc: 12, failure_severity: 'minor', justification: '4' },
-            { action: 'end_turn', rationale: 'should not reach' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const actor = makeActor(() => 'never');
 
@@ -429,8 +429,8 @@ describe('director loop: skill_check recoverable adjudicator errors', () => {
     test('skill_check with no ruleset is recoverable: tool_error + Director recovers via end_turn', async () => {
         const ctx = baseCtx();
         const director = makeDirector([
-            { action: 'skill_check', actor: 'jack', intent: 'jump the ledge', rationale: 'risky leap' },
-            { action: 'end_turn', rationale: 'recovered after no_ruleset' },
+            { action: 'skill_check', actor: 'jack', intent: 'jump the ledge', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const actor = makeActor(() => 'never');
 

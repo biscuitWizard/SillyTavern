@@ -32,7 +32,7 @@ The prod stack provides all LLM inference. These are always available on the hos
 | Service        | URL                        | Purpose                         |
 |----------------|----------------------------|---------------------------------|
 | llama-server   | `http://localhost:8180/v1` | Chat / RP model (EVA-Qwen)     |
-| llama-director | `http://localhost:8182/v1` | Director (structured output)    |
+| llama-director | `http://localhost:8182/v1` | Director (structured output + CoT reasoning) |
 | ollama         | `http://localhost:11434`   | RAG embeddings (nomic-embed-text) |
 
 These are configured in the ST web UI under API settings → per-role URL overrides:
@@ -61,6 +61,21 @@ Use `cursor-ide-browser` MCP tools against **http://localhost:8001**:
 
 For API routes, use `curl http://localhost:8001/api/gm/...` via the Shell tool.
 
+## Reasoning model for llama-director (optional)
+
+The `llama-director` slot (port 8182) is the swap point for native chain-of-thought reasoning. Recommended models (similar VRAM to EVA-Qwen-32B Q5_K_M):
+
+- **Qwen3-32B-Thinking** — best balance of tool-calling quality and reasoning trace
+- **QwQ-32B-Preview** — alternative with stronger pure reasoning but weaker JSON discipline
+- **DeepSeek-R1-Distill-Qwen-32B** — strong reasoning, may need stricter schema
+
+To swap, set `DIRECTOR_MODEL_FILE` before starting the prod stack:
+```bash
+DIRECTOR_MODEL_FILE=Qwen3-32B-Thinking-Q5_K_M.gguf docker compose -f docker-compose.prod.yml up -d llama-director
+```
+
+The app automatically strips `<think>`/`<thinking>` tags from reasoning model output. The `--reasoning-format auto` flag is already set in the compose file.
+
 ## Port reference
 
 | Port  | Owner             | Notes                          |
@@ -71,5 +86,5 @@ For API routes, use `curl http://localhost:8001/api/gm/...` via the Shell tool.
 | 6334  | Dev Qdrant gRPC   | Started by `npm run dev`       |
 | 8080  | Prod app          | Portainer stack                |
 | 8180  | Prod llama-server | Shared with dev                |
-| 8182  | Prod llama-director | Shared with dev              |
+| 8182  | Prod llama-director | Shared with dev; swap slot for reasoning models |
 | 11434 | Prod Ollama       | Shared with dev                |

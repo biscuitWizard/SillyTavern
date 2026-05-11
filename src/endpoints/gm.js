@@ -2245,7 +2245,7 @@ async function runStreamingTurn(args) {
         .sort((a, b) => Number(b.is_player) - Number(a.is_player));
     const offSceneCharacters = characters.filter(c => !participantIds.has(c.id) && !c.is_player);
     const ctx = {
-        campaign: { id: campaign.id, name: campaign.name, brief: campaign.brief, ruleset_id: campaign.ruleset_id },
+        campaign: { id: campaign.id, name: campaign.name, brief: campaign.brief, ruleset_id: campaign.ruleset_id, addendum: campaign.addendum },
         scene: { id: found.scene.id, name: found.scene.name, location: found.scene.location, status: found.scene.status },
         actors: inSceneActors.map(c => ({
             id: c.id,

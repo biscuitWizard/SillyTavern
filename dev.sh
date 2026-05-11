@@ -8,6 +8,11 @@
 # Uses prod LLM services (llama-server :8180, llama-director :8182,
 # ollama :11434) — no extra GPU containers needed.
 #
+# To swap the Director to a reasoning model, set DIRECTOR_MODEL_FILE
+# before starting the prod stack:
+#   DIRECTOR_MODEL_FILE=Qwen3-32B-Thinking-Q5_K_M.gguf docker compose -f docker-compose.prod.yml up -d
+# The app strips <think>/<thinking> tags automatically.
+#
 # Usage:
 #   ./dev.sh          # start (or restart) dev
 #   npm run dev       # same thing via package.json

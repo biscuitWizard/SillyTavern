@@ -75,10 +75,13 @@ strict, separate prompts.
   notes (`narrator_memory`); never sees character memories.
 
 - **Actor (AI character)** — an LLM persona for any non-player
-  character in the scene. Sees its own sheet (rendered as YAML), its
-  own first-person memories (RAG), world facts (RAG), and a recent
-  transcript window. Never sees other characters' sheets, other
-  characters' memories, or the Director's rationale.
+  character in the scene. Writes in **close third person**, present
+  tense, in that character's voice. Sees its own sheet (rendered as
+  YAML), its own character memories (RAG), world facts (RAG), and a
+  recent transcript window. Never sees other characters' sheets,
+  other characters' memories, or the Director's rationale. A
+  **brevity contract** in the system prompt caps output at 4 sentences
+  / 1 paragraph to keep table-play pacing.
 
 ## The core loop, in plain English
 
@@ -107,6 +110,47 @@ When the player types something in an active scene:
 
 The loop is implemented server-side and streams results to the
 frontend as `TurnEvent`s over NDJSON.
+
+### Director hardening rules
+
+- **Rule 7a (trivial-action exception):** Not every player action is a
+  check. Casual conversation, ordering a drink, or scanning an
+  unthreatened room should be handled as `speak` moments, not dice.
+- **Spawn-then-speak guarantee:** if a character is not in the actor
+  list and the Director wants them to talk, it must `spawn_character`
+  first and then `speak` on the next loop step. An auto-spawn fallback
+  in `dispatchSpeak` covers the common case (fuzzy name match in
+  recent narrator prose).
+- **Reasoning contract:** every Director tool call requires a
+  `rationale` field (≥ 80 chars) that walks through 4 steps: what the
+  player did, stakes/spotlight, why this tool, and expected next beat.
+  This forces chain-of-thought before action and improves decision
+  quality.
+- **Campaign addendum:** `campaign.addendum` (the GM's free-form
+  addendum text) is wired through to the Director user prompt so
+  campaign-level instructions are never silently dropped.
+
+### Sampling defaults
+
+`max_tokens` is intentionally **NOT** sent on OpenAI-family transports.
+Brevity lives in prompts — the actor and narrator brevity contracts
+(1–4 sentences / 1 paragraph caps) are the enforcement mechanism.
+Claude's API still requires `max_tokens` (defaults to 1024). For
+local models, the `llama-server` CLI flag (`-n`) is the deployment-time
+safety net.
+
+### Anti-echo defenses
+
+Local models (especially EVA-Qwen on cold-start NPCs) sometimes echo
+the closing instruction verbatim. Two layers defend against this:
+
+1. **Prompt-side:** when the speaker has no prior assistant turns in the
+   transcript, a synthetic `(ready)` primer turn is spliced in before
+   the direction, breaking the "mirror the last user message" pattern.
+2. **Post-process:** `stripPromptEcho(text, character)` strips known
+   instruction suffixes, `<director_direction>` blocks, and fenced
+   code-block wrappers before the text reaches the player-visible
+   transcript.
 
 ## Skill checks
 

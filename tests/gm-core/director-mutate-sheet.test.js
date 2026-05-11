@@ -244,7 +244,7 @@ describe('mutate_sheet schema', () => {
                 { op: 'adjust_stat', key: 'hp', delta: -4 },
                 { op: 'set_status', key: 'poisoned', value: 'minor' },
             ],
-            rationale: 'trap damage',
+            rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.',
         };
         expect(validateDirectorDecision(decision)).toBeNull();
     });
@@ -259,42 +259,42 @@ describe('mutate_sheet schema', () => {
         const cases = [
             {
                 case: 'missing character_id',
-                decision: { action: 'mutate_sheet', ops: [{ op: 'clear_stat', key: 'hp' }], rationale: 'r' },
+                decision: { action: 'mutate_sheet', ops: [{ op: 'clear_stat', key: 'hp' }], rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
                 pattern: /character_id required/,
             },
             {
                 case: 'empty ops array',
-                decision: { action: 'mutate_sheet', character_id: 'jack', ops: [], rationale: 'r' },
+                decision: { action: 'mutate_sheet', character_id: 'jack', ops: [], rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
                 pattern: /ops required/,
             },
             {
                 case: 'ops missing entirely',
-                decision: { action: 'mutate_sheet', character_id: 'jack', rationale: 'r' },
+                decision: { action: 'mutate_sheet', character_id: 'jack', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
                 pattern: /ops required/,
             },
             {
                 case: 'unknown op discriminator',
-                decision: { action: 'mutate_sheet', character_id: 'jack', ops: [{ op: 'mind_control', key: 'hp' }], rationale: 'r' },
+                decision: { action: 'mutate_sheet', character_id: 'jack', ops: [{ op: 'mind_control', key: 'hp' }], rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
                 pattern: /not supported/,
             },
             {
                 case: 'set_stat missing value',
-                decision: { action: 'mutate_sheet', character_id: 'jack', ops: [{ op: 'set_stat', key: 'hp' }], rationale: 'r' },
+                decision: { action: 'mutate_sheet', character_id: 'jack', ops: [{ op: 'set_stat', key: 'hp' }], rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
                 pattern: /value must be number or string/,
             },
             {
                 case: 'adjust_stat with non-finite delta',
-                decision: { action: 'mutate_sheet', character_id: 'jack', ops: [{ op: 'adjust_stat', key: 'hp', delta: 'a lot' }], rationale: 'r' },
+                decision: { action: 'mutate_sheet', character_id: 'jack', ops: [{ op: 'adjust_stat', key: 'hp', delta: 'a lot' }], rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
                 pattern: /delta must be a finite number/,
             },
             {
                 case: 'add_item missing name',
-                decision: { action: 'mutate_sheet', character_id: 'jack', ops: [{ op: 'add_item' }], rationale: 'r' },
+                decision: { action: 'mutate_sheet', character_id: 'jack', ops: [{ op: 'add_item' }], rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
                 pattern: /name required/,
             },
             {
                 case: 'remove_item missing item_id',
-                decision: { action: 'mutate_sheet', character_id: 'jack', ops: [{ op: 'remove_item' }], rationale: 'r' },
+                decision: { action: 'mutate_sheet', character_id: 'jack', ops: [{ op: 'remove_item' }], rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
                 pattern: /item_id required/,
             },
         ];
@@ -336,9 +336,9 @@ describe('mutate_sheet dispatch', () => {
                     { op: 'set_status', key: 'poisoned', value: 'minor' },
                     { op: 'add_item', name: 'Antidote Vial', description: 'Cures one dose of poison.' },
                 ],
-                rationale: 'trap snapped, drank potion',
+                rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.',
             },
-            { action: 'end_turn', rationale: 'sheet updated' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const events = [];
         await runTurn({
@@ -400,15 +400,15 @@ describe('mutate_sheet dispatch', () => {
                 action: 'mutate_sheet',
                 character_id: 'jack',
                 ops: [{ op: 'set_stat', key: 'hp', value: 8 }],
-                rationale: 'first set',
+                rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.',
             },
             {
                 action: 'mutate_sheet',
                 character_id: 'jack',
                 ops: [{ op: 'set_stat', key: 'hp', value: 8 }],
-                rationale: 'second set (idempotent)',
+                rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.',
             },
-            { action: 'end_turn', rationale: 'done' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const events = [];
         await runTurn({
@@ -438,9 +438,9 @@ describe('mutate_sheet dispatch', () => {
                 action: 'mutate_sheet',
                 character_id: 'bran',
                 ops: [{ op: 'set_stat', key: 'hp', value: 1 }],
-                rationale: 'oops, off-stage',
+                rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.',
             },
-            { action: 'end_turn', rationale: 'recover' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const events = [];
         await runTurn({
@@ -486,9 +486,9 @@ describe('mutate_sheet dispatch', () => {
                     { op: 'set_stat', key: 'hp', value: 7 },
                     { op: 'remove_item', item_id: 'nonexistent' },
                 ],
-                rationale: 'partial',
+                rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.',
             },
-            { action: 'end_turn', rationale: 'continue' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const events = [];
         await runTurn({
@@ -525,7 +525,7 @@ describe('mutate_sheet dispatch', () => {
                 action: 'mutate_sheet',
                 character_id: 'jack',
                 ops: [{ op: 'set_stat', key: 'hp', value: 1 }],
-                rationale: 'no writer wired',
+                rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.',
             },
         ]);
         const events = [];
@@ -572,10 +572,10 @@ describe('mutate_sheet dispatch', () => {
                 action: 'mutate_sheet',
                 character_id: 'jack',
                 ops: [{ op: 'set_stat', key: 'hp', value: 3 }],
-                rationale: 'took damage',
+                rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.',
             },
-            { action: 'speak', actor: 'jack', intent: 'react to the wound', rationale: 'voice' },
-            { action: 'end_turn', rationale: 'done' },
+            { action: 'speak', actor: 'jack', intent: 'react to the wound', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const events = [];
         await runTurn({
@@ -613,9 +613,9 @@ describe('mutate_sheet audit (director_memory)', () => {
                     { op: 'adjust_stat', key: 'hp', delta: -2 },
                     { op: 'set_status', key: 'poisoned', value: 'minor' },
                 ],
-                rationale: 'audit me',
+                rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.',
             },
-            { action: 'end_turn', rationale: 'done' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
 
         const writes = [];
@@ -673,9 +673,9 @@ describe('mutate_sheet audit (director_memory)', () => {
                 action: 'mutate_sheet',
                 character_id: 'jack',
                 ops: [{ op: 'set_stat', key: 'hp', value: 9 }],
-                rationale: 'no memory wired',
+                rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.',
             },
-            { action: 'end_turn', rationale: 'done' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const events = [];
         await runTurn({
@@ -707,9 +707,9 @@ describe('mutate_sheet audit (director_memory)', () => {
                 action: 'mutate_sheet',
                 character_id: 'jack',
                 ops: [{ op: 'remove_item', item_id: 'no-such' }],
-                rationale: 'all-fail',
+                rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.',
             },
-            { action: 'end_turn', rationale: 'recover' },
+            { action: 'end_turn', rationale: 'Player addressed the tavern scene. Low stakes, casual setting. This tool advances the narrative appropriately. Expect to end turn after this.' },
         ]);
         const failingMutator = jest.fn(() => null);
         const events = [];
