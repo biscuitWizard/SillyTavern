@@ -17,6 +17,8 @@
  *   - .mes_edit_done    →  PUT  /messages/:line_index   (then update chat[])
  *   - .mes_edit_delete  →  DELETE /messages/:line_index (then refetch + replay)
  *   - .swipe_left/right →  POST /messages/:line_index/regenerate (last_mes only)
+ *   - .tt_regenerate_from_here →  POST /messages/:line_index/regenerate (any
+ *                          player mes — injected by a MutationObserver)
  *   - #option_continue  →  handleSceneTurn('') — kicks the Director without
  *                          new player input (scene-stuck recovery)
  *   - #option_regenerate →  same as .swipe_right on the last mes
@@ -35,6 +37,9 @@ import { chat as stChat, messageEdit as stMessageEdit } from '../../script.js';
 let installed = false;
 let regenerationInFlight = false;
 
+/** @type {MutationObserver | null} */
+let regenBtnObserver = null;
+
 /**
  * Install document-level capture listeners. Idempotent — repeated calls
  * are no-ops, mirroring `installSceneInputHandlers` in scene.js.
@@ -43,6 +48,59 @@ export function installSceneMessageActions() {
     if (installed) return;
     installed = true;
     document.addEventListener('click', onCaptureClick, { capture: true });
+    startRegenButtonObserver();
+}
+
+/**
+ * Tear down the MutationObserver that injects regenerate buttons.
+ * Called from `teardownSceneShell` in scene.js.
+ */
+export function teardownSceneMessageActions() {
+    if (regenBtnObserver) {
+        regenBtnObserver.disconnect();
+        regenBtnObserver = null;
+    }
+}
+
+/**
+ * Inject a "Regenerate reply" button into every player `.mes` element's
+ * `extraMesButtons` container. A MutationObserver watches `#chat` for
+ * new nodes (streamed beats, replays); an initial sweep covers messages
+ * already rendered at install time.
+ */
+function startRegenButtonObserver() {
+    if (regenBtnObserver) regenBtnObserver.disconnect();
+
+    const injectInto = (/** @type {Element} */ mes) => {
+        if (mes.getAttribute('is_user') !== 'true') return;
+        if (mes.querySelector('.tt_regenerate_from_here')) return;
+        const container = mes.querySelector('.extraMesButtons');
+        if (!container) return;
+        const btn = document.createElement('div');
+        btn.title = 'Regenerate reply';
+        btn.className = 'mes_button tt_regenerate_from_here fa-solid fa-rotate-right';
+        container.prepend(btn);
+    };
+
+    // Sweep messages already in the DOM.
+    document.querySelectorAll('#chat .mes[is_user="true"]').forEach(injectInto);
+
+    // Watch for new .mes nodes added by addOneMessage / replay.
+    const chatEl = document.getElementById('chat');
+    if (!chatEl) return;
+    regenBtnObserver = new MutationObserver((mutations) => {
+        for (const m of mutations) {
+            for (const node of m.addedNodes) {
+                if (!(node instanceof Element)) continue;
+                if (node.classList.contains('mes')) {
+                    injectInto(node);
+                } else {
+                    node.querySelectorAll?.('.mes[is_user="true"]')?.forEach(injectInto);
+                }
+            }
+        }
+    });
+    regenBtnObserver.observe(chatEl, { childList: true, subtree: true });
 }
 
 /** @param {MouseEvent} ev */
@@ -67,7 +125,7 @@ function onCaptureClick(ev) {
         ev.preventDefault();
         ev.stopImmediatePropagation();
         closeOptionsMenu();
-        regenerateLastMes();
+        regenerateFromIdx(lastMesIdx());
         return;
     }
     // Hamburger menu: Impersonate is hidden via CSS. Belt-and-braces:
@@ -131,6 +189,18 @@ function onCaptureClick(ev) {
         return;
     }
 
+    // Per-player-mes "Regenerate reply" button (injected by observer).
+    const regenBtn = closestWithClass(target, 'tt_regenerate_from_here');
+    if (regenBtn) {
+        const mes = regenBtn.closest('.mes');
+        const idx = mesIdxFromEl(mes);
+        if (idx === null) return;
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        regenerateFromIdx(idx);
+        return;
+    }
+
     // Per-mes swipe-regenerate. ST emits `.swipe_left` / `.swipe_right`
     // — we treat both as "regenerate" because the scene model has only
     // one canonical AI continuation per player input (no swipe history).
@@ -141,12 +211,10 @@ function onCaptureClick(ev) {
     if (swipeBtn) {
         const mes = swipeBtn.closest('.mes');
         if (!mes) return;
-        // Only act when the swipe is on the *last* mes — regenerating
-        // mid-history would orphan beats below it.
         if (!mes.classList.contains('last_mes')) return;
         ev.preventDefault();
         ev.stopImmediatePropagation();
-        regenerateLastMes();
+        regenerateFromIdx(lastMesIdx());
     }
 }
 
@@ -298,18 +366,27 @@ async function kickContinue() {
 }
 
 /**
- * Regenerate from the most-recent player input. The server figures out
- * which line index that was (it walks back from the last line); we
- * pass the index of the last mes as the upper bound.
+ * Regenerate from the most-recent player input. Delegates to
+ * `regenerateFromIdx` with the highest mesid on screen.
  */
 async function regenerateLastMes() {
+    const idx = lastMesIdx();
+    if (idx >= 0) await regenerateFromIdx(idx);
+}
+
+/**
+ * Regenerate AI replies starting from a specific transcript index.
+ * The server walks back to the nearest player line at-or-before `idx`,
+ * drops everything after it, and runs a fresh Director turn.
+ *
+ * @param {number} idx  mesid / JSONL line index to regenerate from.
+ */
+async function regenerateFromIdx(idx) {
     if (regenerationInFlight) return;
     const state = currentSceneState();
     if (!state) return;
     if (state.readOnly || state.scene.status === 'closed') return;
-
-    const lastMes = lastMesIdx();
-    if (lastMes < 0) return;
+    if (idx < 0) return;
 
     const directorProfile = currentLlmProfile('director');
     const narratorProfile = currentLlmProfile('narrator');
@@ -321,14 +398,11 @@ async function regenerateLastMes() {
     const summarizerProfile = currentLlmProfile('summarizer');
     regenerationInFlight = true;
     try {
-        const response = await api.regenerateSceneMessage(state.scene.id, lastMes, {
+        const response = await api.regenerateSceneMessage(state.scene.id, idx, {
             director_profile: directorProfile,
             actor_profile: narratorProfile,
             summarizer_profile: summarizerProfile,
         });
-        // Truncate the on-screen transcript to match what the server
-        // just truncated on disk. The simplest path is a fresh fetch +
-        // replay; the new beats will stream in afterwards.
         const transcript = await api.getSceneTranscript(state.scene.id, 0);
         enterSceneMode({
             campaign: state.campaign,

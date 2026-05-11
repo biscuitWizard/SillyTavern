@@ -1417,6 +1417,67 @@ router.delete('/scenes/:id/messages/:line_index', async (request, response) => {
 });
 
 /**
+ * Best-effort cascade-delete RAG records derived from a batch of dropped
+ * transcript lines. Mirrors the per-line DELETE handler's cascade but
+ * works across an arbitrary slice so regenerate + rewind can clean up
+ * after a bulk truncation.
+ *
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @param {string} campaignId
+ * @param {string} sceneId
+ * @param {{ line: import('../gm-core/scenes/schemas.js').TranscriptLine, originalIndex: number }[]} droppedLines
+ * @returns {Promise<{ attempted: boolean, removed: number, errors: string[] }>}
+ */
+async function cascadeRagForDroppedLines(directories, campaignId, sceneId, droppedLines) {
+    const cascade = { attempted: false, removed: 0, errors: /** @type {string[]} */ ([]) };
+    if (!droppedLines || droppedLines.length === 0) return cascade;
+
+    let svc;
+    try {
+        svc = await getMemoryService(directories);
+    } catch (_) {
+        return cascade;
+    }
+    if (!svc || typeof svc.deleteRecordsBySource !== 'function') return cascade;
+    cascade.attempted = true;
+
+    const prefixesSeen = new Set();
+    let hasNarratorBeat = false;
+
+    for (const { line, originalIndex } of droppedLines) {
+        const role = line?.extra?.role;
+        const isBeat = role === 'actor' || role === 'narrator' || role === 'roll' || line?.extra?.kind === 'roll';
+        if (!isBeat) continue;
+        if (role === 'narrator' || line?.extra?.kind === 'roll') hasNarratorBeat = true;
+
+        const opinionPrefix = `opinion-extractor:${sceneId}:msg-${originalIndex}`;
+        if (!prefixesSeen.has(opinionPrefix)) {
+            prefixesSeen.add(opinionPrefix);
+            try {
+                const r = await svc.deleteRecordsBySource({ campaignId, sourcePrefix: opinionPrefix });
+                cascade.removed += r.removed;
+                cascade.errors.push(...r.errors);
+            } catch (err) {
+                cascade.errors.push(`cascade opinion: ${err?.message || String(err)}`);
+            }
+        }
+    }
+
+    if (hasNarratorBeat) {
+        const narratorPrefix = `narrator-continuity:${sceneId}`;
+        try {
+            const r = await svc.deleteRecordsBySource({ campaignId, sourcePrefix: narratorPrefix });
+            cascade.removed += r.removed;
+            cascade.errors.push(...r.errors);
+        } catch (err) {
+            cascade.errors.push(`cascade narrator: ${err?.message || String(err)}`);
+        }
+    }
+
+    return cascade;
+}
+
+/**
  * POST /api/gm/scenes/:id/messages/:line_index/regenerate
  *
  * Truncate the transcript so that everything strictly AFTER the most
@@ -1469,6 +1530,13 @@ router.post('/scenes/:id/messages/:line_index/regenerate', async (request, respo
     }
     const userInput = String(allLines[playerIdx].mes || '').trim();
 
+    // Capture the lines that will be dropped so we can cascade-purge
+    // their derived RAG records after truncation.
+    const droppedSlice = allLines.slice(playerIdx + 1).map((line, i) => ({
+        line,
+        originalIndex: playerIdx + 1 + i,
+    }));
+
     // Truncate inclusive: keep [0..playerIdx], drop everything after.
     try {
         await transcript.truncateAfter(directories, campaign.id, found.scene.id, playerIdx);
@@ -1477,6 +1545,10 @@ router.post('/scenes/:id/messages/:line_index/regenerate', async (request, respo
         console.error('[gm] regenerate truncate failed', err);
         return response.status(500).json({ error: 'failed to truncate transcript' });
     }
+
+    // Best-effort RAG cascade for the dropped lines.
+    cascadeRagForDroppedLines(directories, campaign.id, found.scene.id, droppedSlice)
+        .catch(err => console.warn('[gm] regenerate cascade failed', err?.message || err));
 
     return runStreamingTurn({
         request,
@@ -1488,9 +1560,76 @@ router.post('/scenes/:id/messages/:line_index/regenerate', async (request, respo
         director_profile,
         actor_profile,
         summarizer_profile,
-        // Player line is already on disk from the original turn — don't
-        // re-append it in `runStreamingTurn`.
         skipPlayerLinePersist: true,
+    });
+});
+
+/**
+ * POST /api/gm/scenes/:id/messages/:line_index/rewind-to-before
+ *
+ * Drop the player line at-or-before `line_index` AND everything after
+ * it. Returns the player's original text so the frontend can restore it
+ * to the input bar. No Director turn is run.
+ *
+ * Used by the Stop button: abort the streaming turn, then call this to
+ * clean up whatever got persisted during the partial turn.
+ */
+router.post('/scenes/:id/messages/:line_index/rewind-to-before', async (request, response) => {
+    const directories = request.user.directories;
+    const found = sceneStore.findById(directories, request.params.id);
+    if (!found) return response.status(404).json({ error: 'scene not found' });
+    if (found.scene.status === 'closed') return response.status(409).json({ error: 'scene is closed' });
+
+    const idx = Number(request.params.line_index);
+    if (!Number.isInteger(idx) || idx < 0) {
+        return response.status(400).json({ error: 'line_index must be a non-negative integer' });
+    }
+
+    const campaign = campaignStore.get(directories, found.campaign_id);
+    if (!campaign) return response.status(404).json({ error: 'campaign not found' });
+
+    const allLines = transcript.readLines(directories, campaign.id, found.scene.id, 0);
+    if (idx >= allLines.length) {
+        return response.status(404).json({ error: 'line not found' });
+    }
+
+    let playerIdx = -1;
+    for (let i = Math.min(idx, allLines.length - 1); i >= 0; i--) {
+        if (allLines[i]?.is_user) { playerIdx = i; break; }
+    }
+    if (playerIdx === -1) {
+        return response.status(409).json({
+            error: 'no preceding player input found — nothing to rewind',
+        });
+    }
+
+    const playerInput = String(allLines[playerIdx].mes || '').trim();
+    const droppedSlice = allLines.slice(playerIdx).map((line, i) => ({
+        line,
+        originalIndex: playerIdx + i,
+    }));
+
+    // Truncate: keep [0..playerIdx-1], drop the player line and everything after.
+    try {
+        await transcript.truncateAfter(directories, campaign.id, found.scene.id, playerIdx - 1);
+        sceneStore.refreshMessageCount(directories, campaign.id, found.scene.id);
+    } catch (err) {
+        console.error('[gm] rewind truncate failed', err);
+        return response.status(500).json({ error: 'failed to truncate transcript' });
+    }
+
+    let cascade = { attempted: false, removed: 0, errors: /** @type {string[]} */ ([]) };
+    try {
+        cascade = await cascadeRagForDroppedLines(directories, campaign.id, found.scene.id, droppedSlice);
+    } catch (err) {
+        console.warn('[gm] rewind cascade failed', err?.message || err);
+    }
+
+    const scene = sceneStore.findById(directories, found.scene.id)?.scene || found.scene;
+    return response.json({
+        removed: { player_input: playerInput, count: droppedSlice.length },
+        scene,
+        cascade,
     });
 });
 

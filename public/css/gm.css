@@ -135,6 +135,18 @@ body.tt-mode-scene #send_form.no-connection #send_textarea {
     opacity: 1 !important;
 }
 
+/* During a turn (tt-busy) swap the paper-plane for the stop icon so the
+   player can abort generation mid-stream. */
+body.tt-mode-scene.tt-busy #send_but {
+    display: none !important;
+}
+body.tt-mode-scene.tt-busy #mes_stop {
+    display: flex !important;
+}
+body.tt-mode-scene:not(.tt-busy) #mes_stop {
+    display: none !important;
+}
+
 /* Hide ST extensions wand in scene mode — extensions are not part of the
    scene model and the wand menu offers nothing the GM core wires through.
 */

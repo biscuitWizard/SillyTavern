@@ -414,6 +414,21 @@ export async function regenerateSceneMessage(sceneId, lineIndex, body, signal) {
 }
 
 /**
+ * Rewind the transcript to just before the most-recent player line at
+ * or before `lineIndex`. The player line and everything after it is
+ * dropped. Returns `{ removed: { player_input, count }, scene, cascade }`.
+ *
+ * @param {string} sceneId
+ * @param {number} lineIndex
+ * @returns {Promise<{ removed: { player_input: string, count: number }, scene: any, cascade: any }>}
+ */
+export async function rewindToBefore(sceneId, lineIndex) {
+    return request(`/scenes/${encodeURIComponent(sceneId)}/messages/${encodeURIComponent(String(lineIndex))}/rewind-to-before`, {
+        method: 'POST',
+    });
+}
+
+/**
  * Phase 8: triggers the scene-end pipeline. Returns the full payload so
  * the caller can render `memories_extracted` / `summary.headline` in
  * the toast or detail view.

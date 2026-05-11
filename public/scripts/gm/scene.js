@@ -26,9 +26,17 @@ import { handleTurnEvent as dispatchTurnEvent } from './turn-events.js';
 import { renderLeftSidebar, teardownLeftSidebar } from './sidebar-left.js';
 import { renderRightSidebar, teardownRightSidebar } from './sidebar-right.js';
 import { setActiveCampaign } from './sheet-panel.js';
-import { installSceneMessageActions } from './scene-message-actions.js';
+import { installSceneMessageActions, teardownSceneMessageActions } from './scene-message-actions.js';
+import { chat as stChat } from '../../script.js';
 
 let abortCurrentTurn = null;
+
+/**
+ * Tracks the in-flight turn so `stopAndRewind` can abort it and restore
+ * the player's text. `null` when no turn is active.
+ * @type {{ input: string, playerIdx: number, controller: AbortController } | null}
+ */
+let currentTurn = null;
 
 /**
  * Render the Scene view. The scene fits in the same UI slot as the
@@ -242,11 +250,9 @@ function teardownSceneShell() {
     clearSceneState();
     teardownLeftSidebar();
     teardownRightSidebar();
-    // The scene topbar lives inside #gm-root (this view's mount). The
-    // router's next renderer will call mount.replaceChildren(...) so we
-    // don't need to remove the bar here, but explicit cleanup keeps the
-    // body class flip and the DOM consistent if we ever route somewhere
-    // that doesn't repaint #gm-root immediately.
+    teardownSceneMessageActions();
+    document.body.classList.remove('tt-busy');
+    currentTurn = null;
     const bar = document.getElementById('gm-scene-topbar');
     if (bar && bar.parentNode) bar.parentNode.removeChild(bar);
     document.querySelectorAll('.gm-scene-sidebar-host').forEach(node => {
@@ -350,6 +356,19 @@ function sceneDocClickHandler(ev) {
     if (!document.body.classList.contains('tt-mode-scene')) return;
     const target = /** @type {Element|null} */(ev.target);
     if (!target) return;
+
+    // Stop button — abort the current turn and rewind.
+    const stopBtn = target.id === 'mes_stop' || target.classList?.contains('mes_stop')
+        ? target
+        : target.closest('#mes_stop, .mes_stop');
+    if (stopBtn) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        ev.stopImmediatePropagation();
+        stopAndRewind();
+        return;
+    }
+
     // Match either the send button or anything inside it.
     const sendBtn = target.id === 'send_but' ? target : target.closest('#send_but');
     if (!sendBtn) return;
@@ -443,11 +462,6 @@ async function handleSceneTurn(userInput) {
     const { campaign, scene, readOnly, characters } = state;
     if (readOnly || scene.status === 'closed') return;
 
-    // Pre-flight: a SillyTavern connection profile must be selected before
-    // the GM core can dispatch. The per-role model overrides on that
-    // profile (`gm-director-model`, `gm-narrator-model`) are what
-    // distinguish Director vs Narrator at request time; the rest of the
-    // profile (provider, URL, secret) is shared.
     const directorProfile = currentLlmProfile('director');
     const narratorProfile = currentLlmProfile('narrator');
     if (!directorProfile || !narratorProfile || !hasUsableLlmProfile()) {
@@ -461,13 +475,16 @@ async function handleSceneTurn(userInput) {
         return;
     }
 
+    // The player line's JSONL index is chat[].length BEFORE we append
+    // it (the server-side appendLine gives it the same position).
+    const playerIdx = Array.isArray(stChat) ? stChat.length : 0;
+
     appendPlayerLine(input);
-    // The `/api/gm/turn` endpoint persists the player line itself before
-    // the Director loop runs (so the JSONL is never desynced even when the
-    // turn errors). No need to double-write from the frontend.
 
     const controller = new AbortController();
     abortCurrentTurn = controller;
+    currentTurn = { input, playerIdx, controller };
+    document.body.classList.add('tt-busy');
     setChip('Director thinking…');
 
     const summarizerProfile = currentLlmProfile('summarizer');
@@ -495,6 +512,8 @@ async function handleSceneTurn(userInput) {
         setTimeout(() => setChip(''), 3000);
     } finally {
         abortCurrentTurn = null;
+        currentTurn = null;
+        document.body.classList.remove('tt-busy');
         const ta = document.getElementById('send_textarea');
         if (ta instanceof HTMLTextAreaElement) ta.focus();
     }
@@ -534,6 +553,63 @@ async function consumeTurnStream(response, { characters }) {
         }
     }
     setChip('');
+}
+
+/**
+ * Abort the in-flight turn, rewind the transcript to just before the
+ * player's pose, and restore the pose text to the input bar so the
+ * player can edit and resend. No-op when no turn is active.
+ */
+async function stopAndRewind() {
+    if (!currentTurn) return;
+    const { input, playerIdx, controller } = currentTurn;
+
+    // 1. Abort the streaming fetch — the server-side loop sees
+    //    `request.on('close')` and aborts its AbortController too.
+    try { controller.abort(); } catch (_) { /* ignore */ }
+    abortCurrentTurn = null;
+    currentTurn = null;
+
+    const state = currentSceneState();
+    if (!state) {
+        document.body.classList.remove('tt-busy');
+        setChip('');
+        return;
+    }
+
+    // 2. Tell the server to drop the player line + any beats that
+    //    streamed before we aborted.
+    setChip('Rewinding…');
+    try {
+        await api.rewindToBefore(state.scene.id, playerIdx);
+    } catch (err) {
+        console.error('[gm] rewindToBefore failed', err);
+    }
+
+    // 3. Refetch the transcript and repaint the chat substrate.
+    try {
+        const transcript = await api.getSceneTranscript(state.scene.id, 0);
+        enterSceneMode({
+            campaign: state.campaign,
+            scene: state.scene,
+            player: state.player,
+            transcript,
+        });
+    } catch (err) {
+        console.error('[gm] post-rewind transcript fetch failed', err);
+    }
+
+    // 4. Restore the player's text to the textarea.
+    document.querySelectorAll('#send_textarea').forEach(node => {
+        if (!(node instanceof HTMLTextAreaElement)) return;
+        node.value = input;
+        try { node.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) { /* ignore */ }
+    });
+
+    document.body.classList.remove('tt-busy');
+    setChip('');
+    const ta = document.getElementById('send_textarea');
+    if (ta instanceof HTMLTextAreaElement) ta.focus();
 }
 
 window.__ttHandleSceneTurn = handleSceneTurn;
