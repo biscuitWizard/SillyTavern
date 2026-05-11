@@ -137,6 +137,7 @@ async function runSummarizer({ summarizerClient, dropped, signal }) {
             system: summarizerSystemPrompt(),
             user: summarizerUserPrompt(transcript),
             signal,
+            role: 'summarizer',
         });
         const text = String(recap || '').trim();
         if (text) return text;

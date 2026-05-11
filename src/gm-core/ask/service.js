@@ -116,6 +116,7 @@ export async function ask(args) {
         schema: ASK_REPLY_SCHEMA,
         schemaName: 'AskReply',
         signal,
+        role: 'ask',
     });
 
     const reply = String(raw?.reply || '').trim();

@@ -99,6 +99,7 @@ export async function extractAndWriteNarratorContinuity(args) {
             user: buildUserPrompt({ sceneName, location, prose }),
             schema: CONTINUITY_SCHEMA,
             schemaName: 'NarratorContinuity',
+            role: 'narrator_continuity_writer',
         });
     } catch (err) {
         console.warn('[rag.narrator-continuity] extractor failed', err?.message || err);

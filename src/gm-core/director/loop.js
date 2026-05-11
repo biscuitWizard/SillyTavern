@@ -74,6 +74,7 @@
  * separation keeps the loop testable from Node without spinning up Express.
  */
 
+import { makeDebugEvent, emitDebugEvent } from '../debug/bus.js';
 import { directorSystemPrompt, directorUserPrompt } from './prompts.js';
 import { narratorSystemPrompt, narratorUserPrompt } from '../narrator/prompts.js';
 import { actorSystemPrompt, actorUserPrompt, actorPostRollUserPrompt } from '../actors/prompts.js';
@@ -251,6 +252,18 @@ export async function runTurn({
     ];
     let lastPromptTokens = 0;
 
+    const spanEvent = makeDebugEvent({
+        kind: 'span_start',
+        headline: 'Turn span start',
+        detail: { label: 'turn', user_input: ctx.user_input, scene_id: ctx.scene?.id },
+    });
+    if (spanEvent) emitDebugEvent(spanEvent);
+
+    const emitSpanEnd = (reason) => {
+        const ev = makeDebugEvent({ kind: 'span_end', headline: `Turn span end (${reason})`, detail: { label: 'turn', end_reason: reason } });
+        if (ev) emitDebugEvent(ev);
+    };
+
     // Recoverable-error rate limiter. The Director can recover from a tool
     // failure on the next step IF it picks a different action. If it keeps
     // emitting decisions that produce the same error code, we eventually
@@ -307,6 +320,7 @@ export async function runTurn({
 
     while (step < maxSteps) {
         if (signal?.aborted) {
+            emitSpanEnd('aborted');
             await emit({ kind: 'end_of_turn', reason: 'aborted' });
             return;
         }
@@ -322,6 +336,7 @@ export async function runTurn({
                 schemaName: 'DirectorDecision',
                 onUsage: (u) => { if (u && Number.isFinite(u.prompt_tokens)) lastPromptTokens = u.prompt_tokens; },
                 signal,
+                role: 'director',
             });
         } catch (err) {
             // Network / timeout / HTTP failures are infrastructure issues
@@ -333,6 +348,7 @@ export async function runTurn({
             // below catches the case where we DO get a decision but
             // dispatch can't act on it.
             await emitError(emit, err, 'director');
+            emitSpanEnd('error');
             await emit({ kind: 'end_of_turn', reason: 'error' });
             return;
         }
@@ -348,6 +364,7 @@ export async function runTurn({
                     message: `${validationErr} (gave up after ${MAX_SAME_TOOL_ERROR} retries)`,
                     retryable: false,
                 });
+                emitSpanEnd('error');
                 await emit({ kind: 'end_of_turn', reason: 'error' });
                 return;
             }
@@ -376,6 +393,7 @@ export async function runTurn({
                     message: `Action "${decision.action}" is not yet implemented in this phase (gave up after ${MAX_SAME_TOOL_ERROR} retries).`,
                     retryable: false,
                 });
+                emitSpanEnd('error');
                 await emit({ kind: 'end_of_turn', reason: 'error' });
                 return;
             }
@@ -397,6 +415,13 @@ export async function runTurn({
         // user message immediately after.
         directorHistory.push({ role: 'assistant', content: JSON.stringify(decision) });
 
+        const dbgDecision = makeDebugEvent({
+            kind: 'tool_decision',
+            headline: `Director: ${decision.action}${decision.actor ? ' ' + decision.actor : ''}`,
+            detail: { step, decision },
+        });
+        if (dbgDecision) emitDebugEvent(dbgDecision);
+
         if (decision.action === 'end_turn') {
             // Phase 7: persist a director pacing note to director_memory if
             // the Director provided one via the optional `pacing_note` field.
@@ -409,6 +434,7 @@ export async function runTurn({
                     pacingNote: decision.pacing_note,
                 }).catch(() => {});
             }
+            emitSpanEnd('director');
             await emit({ kind: 'end_of_turn', reason: 'director' });
             return;
         }
@@ -479,11 +505,13 @@ export async function runTurn({
         } else {
             // Unreachable: any newly supported action should have a branch above.
             await emit({ kind: 'error', code: 'internal', message: `Unhandled supported action ${decision.action}` });
+            emitSpanEnd('error');
             await emit({ kind: 'end_of_turn', reason: 'error' });
             return;
         }
 
         if (outcome.kind === 'end') {
+            emitSpanEnd('error');
             await emit({ kind: 'end_of_turn', reason: 'error' });
             return;
         }
@@ -502,6 +530,7 @@ export async function runTurn({
                     message: `Director repeated the same recoverable error (${outcome.tool_error_key}) more than ${MAX_SAME_TOOL_ERROR} times; ending turn.`,
                     retryable: false,
                 });
+                emitSpanEnd('error');
                 await emit({ kind: 'end_of_turn', reason: 'error' });
                 return;
             }
@@ -510,6 +539,13 @@ export async function runTurn({
             // step so a recovered Director gets a clean slate.
             resetToolErrorCounts();
         }
+
+        const dbgResult = makeDebugEvent({
+            kind: 'tool_result',
+            headline: `Result: ${(outcome.summary || '').slice(0, 100)}`,
+            detail: { step, summary: outcome.summary || '', tool_error_key: outcome.tool_error_key },
+        });
+        if (dbgResult) emitDebugEvent(dbgResult);
 
         directorHistory.push({
             role: 'user',
@@ -537,6 +573,7 @@ export async function runTurn({
     }
 
     void lastMemoryWriteId; // reserved for future debug hooks
+    emitSpanEnd('cap');
     await emit({ kind: 'end_of_turn', reason: 'cap' });
 }
 
@@ -678,6 +715,7 @@ async function dispatchSpeak({
                 system: narratorSystemPrompt(),
                 user: narratorUserPrompt(ctx, decision.intent || ''),
                 signal,
+                role: 'narrator',
             });
         } catch (err) {
             ctx.memories_block = previousMemoriesBlock;
@@ -804,6 +842,7 @@ async function dispatchSpeak({
             system: actorSystemPrompt(ctx, character),
             user: actorUserPrompt(ctx, character, decision.intent || ''),
             signal,
+            role: 'actor',
         });
     } catch (err) {
         ctx.memories_block = previousMemoriesBlock;
@@ -1278,7 +1317,7 @@ async function dispatchSkillCheck({ ctx, decision, ruleset, adjudicatorClient, a
             system = narratorSystemPrompt();
             user = narratorPostRollUserPrompt(ctx, promptArgs);
         }
-        const prose = await actorClient.chat({ system, user, signal });
+        const prose = await actorClient.chat({ system, user, signal, role: voiceChoice.kind === 'actor' ? 'actor' : 'narrator' });
         narration = String(prose || '').trim();
     } catch (err) {
         ctx.memories_block = previousMemoriesBlock;

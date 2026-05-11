@@ -147,6 +147,7 @@ export async function runSceneEndPipeline(args) {
             schema: SCENE_SUMMARY_SCHEMA,
             schemaName: 'SceneSummary',
             signal,
+            role: 'scene_summary',
         });
         summary = buildSceneSummary({
             ...raw,
@@ -174,6 +175,7 @@ export async function runSceneEndPipeline(args) {
                     schema: MEMORY_EXTRACTION_SCHEMA,
                     schemaName: 'SceneEndMemoryExtraction',
                     signal,
+                    role: 'memory_extraction',
                 });
                 return { character, result: normaliseExtraction(raw) };
             } catch (err) {

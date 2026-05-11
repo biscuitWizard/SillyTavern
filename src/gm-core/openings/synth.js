@@ -53,6 +53,7 @@ export async function synthesizeOpening({ campaign, playerCharacter, client, sig
         schema: OPENING_SITUATION_SCHEMA,
         schemaName: 'OpeningSituation',
         signal,
+        role: 'opening',
     });
     const situation = buildCurrentSituation({
         recap: raw?.recap,
@@ -103,6 +104,7 @@ export async function recapFromSceneEnd({
         schema: SCENE_END_RECAP_SCHEMA,
         schemaName: 'SceneEndRecap',
         signal,
+        role: 'opening',
     });
     const situation = buildCurrentSituation({
         recap: raw?.recap,

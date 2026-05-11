@@ -30,6 +30,9 @@ import * as summaryStore from '../gm-core/scenes/summary-store.js';
 import { runSceneEndPipeline } from '../gm-core/scenes/end-pipeline.js';
 import { createLlmClient } from '../gm-core/llm/client.js';
 import { runTurn } from '../gm-core/director/loop.js';
+import { withDebugContext } from '../gm-core/debug/context.js';
+import { subscribe } from '../gm-core/debug/bus.js';
+import { readEvents, clearEvents } from '../gm-core/debug/store.js';
 import { getRuleset, getRulesetFor, listRulesetSummaries } from '../gm-core/rulesets/index.js';
 import * as participants from '../gm-core/scenes/participants.js';
 import { ragRouter } from '../gm-core/rag/routes.js';
@@ -354,7 +357,11 @@ router.post('/campaigns/:cid/opening', async (request, response) => {
     }
 
     try {
-        const opening = await synthesizeOpening({
+        const opening = await withDebugContext({
+            directories,
+            campaign_id: campaign.id,
+            scope: 'opening',
+        }, () => synthesizeOpening({
             campaign: { name: campaign.name, brief: campaign.brief, ruleset_id: campaign.ruleset_id },
             playerCharacter: {
                 name: player.name,
@@ -363,7 +370,7 @@ router.post('/campaigns/:cid/opening', async (request, response) => {
                 background: player.background,
             },
             client,
-        });
+        }));
         const updated = campaignStore.updateCurrentSituation(directories, campaign.id, opening);
         return response.json({ campaign: updated, current_situation: updated?.current_situation ?? opening });
     } catch (err) {
@@ -475,7 +482,11 @@ router.post('/campaigns/:cid/ask', async (request, response) => {
     });
 
     try {
-        const result = await runAsk({
+        const result = await withDebugContext({
+            directories,
+            campaign_id: campaign.id,
+            scope: 'ask',
+        }, () => runAsk({
             directories,
             campaign,
             playerCharacter: player,
@@ -485,7 +496,7 @@ router.post('/campaigns/:cid/ask', async (request, response) => {
             memoryService,
             sceneIndex,
             signal: abortController.signal,
-        });
+        }));
         campaignStore.touch(directories, campaign.id);
         return response.json({
             reply: result.reply,
@@ -564,7 +575,11 @@ router.post('/campaigns/:cid/plot', async (request, response) => {
     /** @type {import('../gm-core/plot/service.js').PlotDecision} */
     let decision;
     try {
-        decision = await runPlotDecide({
+        decision = await withDebugContext({
+            directories,
+            campaign_id: campaign.id,
+            scope: 'plot',
+        }, () => runPlotDecide({
             campaign,
             playerCharacter: player,
             recentSceneHeadlines,
@@ -573,7 +588,7 @@ router.post('/campaigns/:cid/plot', async (request, response) => {
             client,
             memoryService,
             signal: abortController.signal,
-        });
+        }));
     } catch (err) {
         console.error('[gm.plot] failed', err);
         return response.status(502).json({ error: 'plot failed', details: err?.message || String(err) });
@@ -1634,7 +1649,12 @@ router.post('/scenes/:id/end', async (request, response) => {
     });
 
     try {
-        const result = await runSceneEndPipeline({
+        const result = await withDebugContext({
+            directories,
+            scene_id: found.scene.id,
+            campaign_id: campaign.id,
+            scope: 'scene_end',
+        }, () => runSceneEndPipeline({
             directories,
             campaignId: campaign.id,
             campaign: { name: campaign.name, brief: campaign.brief },
@@ -1646,7 +1666,7 @@ router.post('/scenes/:id/end', async (request, response) => {
             sceneIndex,
             dryRun,
             signal: abortController.signal,
-        });
+        }));
         return response.json({
             scene: result.scene ?? found.scene,
             summary: result.summary,
@@ -1710,7 +1730,12 @@ router.post('/turn', async (request, response) => {
         return response.status(409).json({ error: 'scene is closed' });
     }
 
-    return runStreamingTurn({
+    return withDebugContext({
+        directories,
+        scene_id: scene_id,
+        campaign_id: campaign_id,
+        scope: 'turn',
+    }, () => runStreamingTurn({
         request,
         response,
         directories,
@@ -1720,7 +1745,7 @@ router.post('/turn', async (request, response) => {
         director_profile,
         actor_profile,
         summarizer_profile,
-    });
+    }));
 });
 
 /**
@@ -2092,6 +2117,51 @@ async function runStreamingTurn(args) {
  *
  * @param {{ started_at?: string, message_count?: number }} scene
  */
+
+/* -------- Debug events (read / stream / clear) -------- */
+
+router.get('/debug-events', (request, response) => {
+    const { scene_id, campaign_id, since, limit } = request.query;
+    if (!campaign_id) return response.status(400).json({ error: 'campaign_id is required' });
+    const events = readEvents(request.user.directories, /** @type {string} */ (campaign_id), scene_id || null, {
+        since: since || undefined,
+        limit: limit ? parseInt(/** @type {string} */ (limit), 10) : undefined,
+    });
+    response.json(events);
+});
+
+router.get('/debug-events/stream', (request, response) => {
+    const { scene_id, campaign_id } = request.query;
+    if (!campaign_id) return response.status(400).json({ error: 'campaign_id is required' });
+
+    response.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+    });
+    response.write(':ok\n\n');
+
+    const unsub = subscribe({ scene_id: /** @type {string | undefined} */ (scene_id), campaign_id: /** @type {string} */ (campaign_id) }, (event) => {
+        response.write(`data: ${JSON.stringify(event)}\n\n`);
+    });
+
+    const keepAlive = setInterval(() => {
+        response.write(':keepalive\n\n');
+    }, 20000);
+
+    request.on('close', () => {
+        unsub();
+        clearInterval(keepAlive);
+    });
+});
+
+router.delete('/debug-events', async (request, response) => {
+    const { scene_id, campaign_id } = request.query;
+    if (!campaign_id) return response.status(400).json({ error: 'campaign_id is required' });
+    await clearEvents(request.user.directories, /** @type {string} */ (campaign_id), scene_id || null);
+    response.json({ ok: true });
+});
+
 function computeSceneIndex(scene) {
     if (!scene) return 0;
     const started = Date.parse(scene.started_at || '') || 0;

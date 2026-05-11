@@ -123,6 +123,7 @@ export async function extractAndWriteOpinion(args) {
             user: buildUserPrompt({ character, scene: { id: sceneId }, transcriptTail, lastMessage }),
             schema: OPINION_SCHEMA,
             schemaName: 'OpinionExtraction',
+            role: 'opinion_writer',
         });
     } catch (err) {
         console.warn('[rag.opinion] extractor failed', err?.message || err);

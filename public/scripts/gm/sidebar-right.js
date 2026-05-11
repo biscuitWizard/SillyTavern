@@ -1,9 +1,12 @@
 /**
- * Right sidebar — in-scene roster (Scene view only).
+ * Right sidebar — tabbed panel (Scene view only).
  *
- * Lists every character in `scene.participants` with portrait + name. Click
- * a card to view their sheet (NPC sheets render through the same modal but
- * editing is unrestricted — the player decides what their NPCs look like).
+ * Tab 1 – "In Scene" roster: lists every character in `scene.participants`
+ * with portrait + name.  Click a card to view their sheet.
+ *
+ * Tab 2 – "Event Log": debug panel showing GM-core events (LLM calls,
+ * tool decisions, etc.). The actual content is rendered by
+ * `./event-log/index.js`; this module only provides the mount container.
  *
  * "Add NPC" opens a small picker:
  *   - Existing campaign characters not already in the scene → click to add.
@@ -18,9 +21,36 @@ import { openSheetPanel } from './sheet-panel.js';
 import { openCharacterWizard } from './character-wizard.js';
 import { onStateEvent } from './turn-events.js';
 
+const TAB_STORAGE_KEY = 'tt_sidebar_right_tab';
+const DEFAULT_TAB = 'roster';
+
 let activeRoot = null;
 let activeUnsubState = null;
 let activeRefresh = null;
+let eventLogMountEl = null;
+let eventLogTornDown = true;
+
+/**
+ * Returns the container element for the Event Log tab body, or null if
+ * not mounted yet.  Other modules use this to inject content.
+ */
+export function getEventLogMount() {
+    return eventLogMountEl || null;
+}
+
+/* -------- Tab helpers -------- */
+
+function readPersistedTab() {
+    try {
+        const v = localStorage.getItem(TAB_STORAGE_KEY);
+        if (v === 'roster' || v === 'eventlog') return v;
+    } catch (_) { /* storage may be blocked */ }
+    return DEFAULT_TAB;
+}
+
+function persistTab(tab) {
+    try { localStorage.setItem(TAB_STORAGE_KEY, tab); } catch (_) { /* ignore */ }
+}
 
 /**
  * @param {{ campaign: any, scene: any, characters: any[] }} params
@@ -39,17 +69,39 @@ export function renderRightSidebar({ campaign, scene, characters }) {
         charactersList: Array.isArray(characters) ? characters.slice() : [],
     };
 
+    /* ---- Tab strip ---- */
+    const tabStrip = document.createElement('div');
+    tabStrip.className = 'gm-sidebar-tabs';
+
+    const rosterTabBtn = document.createElement('button');
+    rosterTabBtn.className = 'gm-sidebar-tab';
+    rosterTabBtn.dataset.tab = 'roster';
+    rosterTabBtn.textContent = 'In Scene';
+
+    const eventLogTabBtn = document.createElement('button');
+    eventLogTabBtn.className = 'gm-sidebar-tab';
+    eventLogTabBtn.dataset.tab = 'eventlog';
+    eventLogTabBtn.textContent = 'Event Log';
+
+    tabStrip.append(rosterTabBtn, eventLogTabBtn);
+    root.append(tabStrip);
+
+    /* ---- Roster tab body ---- */
+    const rosterBody = document.createElement('div');
+    rosterBody.className = 'gm-sidebar-tab-body';
+    rosterBody.dataset.tab = 'roster';
+
     const header = document.createElement('div');
     header.className = 'gm-sidebar-header';
     const title = document.createElement('div');
     title.className = 'gm-sidebar-title';
     title.textContent = 'In scene';
     header.append(title);
-    root.append(header);
+    rosterBody.append(header);
 
     const list = document.createElement('div');
     list.className = 'gm-sidebar-roster';
-    root.append(list);
+    rosterBody.append(list);
 
     const actions = document.createElement('div');
     actions.className = 'gm-sidebar-actions';
@@ -59,8 +111,18 @@ export function renderRightSidebar({ campaign, scene, characters }) {
     addBtn.innerHTML = '<i class="fa-solid fa-user-plus"></i> Add to scene';
     addBtn.addEventListener('click', () => openPicker(state, root, addBtn));
     actions.append(addBtn);
-    root.append(actions);
+    rosterBody.append(actions);
 
+    root.append(rosterBody);
+
+    /* ---- Event Log tab body ---- */
+    const eventLogBody = document.createElement('div');
+    eventLogBody.className = 'gm-sidebar-tab-body';
+    eventLogBody.dataset.tab = 'eventlog';
+    root.append(eventLogBody);
+    eventLogMountEl = eventLogBody;
+
+    /* ---- Roster refresh logic ---- */
     const refreshList = () => {
         list.innerHTML = '';
         const idsInScene = state.scene.participants;
@@ -80,6 +142,50 @@ export function renderRightSidebar({ campaign, scene, characters }) {
 
     refreshList();
 
+    /* ---- Tab switching ---- */
+    const activateTab = async (tab) => {
+        for (const btn of tabStrip.querySelectorAll('.gm-sidebar-tab')) {
+            btn.classList.toggle('active', btn.dataset.tab === tab);
+        }
+        for (const body of root.querySelectorAll('.gm-sidebar-tab-body')) {
+            body.style.display = body.dataset.tab === tab ? '' : 'none';
+        }
+        persistTab(tab);
+
+        if (tab === 'eventlog') {
+            if (eventLogTornDown) {
+                try {
+                    const { renderEventLog } = await import('./event-log/index.js');
+                    renderEventLog(eventLogBody, {
+                        sceneId: state.scene.id,
+                        campaignId: state.campaign.id,
+                    });
+                    eventLogTornDown = false;
+                } catch (err) {
+                    console.error('[gm] event-log mount failed', err);
+                }
+            }
+        } else {
+            if (!eventLogTornDown) {
+                try {
+                    const { teardownEventLog } = await import('./event-log/index.js');
+                    teardownEventLog();
+                } catch (_) { /* ignore */ }
+                eventLogTornDown = true;
+            }
+        }
+    };
+
+    tabStrip.addEventListener('click', (ev) => {
+        const btn = ev.target.closest('.gm-sidebar-tab');
+        if (!btn) return;
+        activateTab(btn.dataset.tab);
+    });
+
+    const initialTab = readPersistedTab();
+    activateTab(initialTab);
+
+    /* ---- Live state subscription ---- */
     activeRoot = root;
     activeRefresh = async () => {
         try {
@@ -105,8 +211,6 @@ export function renderRightSidebar({ campaign, scene, characters }) {
         } else if (ev.change === 'remove' && ev.character_id) {
             state.scene.participants = state.scene.participants.filter(id => id !== ev.character_id);
         }
-        // Pull a fresh roster so any Director-spawned NPC we don't yet
-        // know about (impossible today; defensive) shows up correctly.
         if (activeRefresh) activeRefresh();
         else refreshList();
     });
@@ -119,8 +223,15 @@ export function teardownRightSidebar() {
         try { activeUnsubState(); } catch (_) { /* ignore */ }
         activeUnsubState = null;
     }
+    if (!eventLogTornDown) {
+        import('./event-log/index.js')
+            .then(m => m.teardownEventLog())
+            .catch(() => {});
+        eventLogTornDown = true;
+    }
     activeRefresh = null;
     activeRoot = null;
+    eventLogMountEl = null;
 }
 
 /* -------- Roster row -------- */

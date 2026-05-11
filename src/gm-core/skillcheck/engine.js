@@ -59,6 +59,7 @@ export async function decide({ ruleset, intent, actorName, client, signal }) {
             schema,
             schemaName: 'SkillCheckDecision',
             signal,
+            role: 'adjudicator',
         });
     } catch (err) {
         if (err instanceof LlmError) throw err;

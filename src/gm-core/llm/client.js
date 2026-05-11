@@ -35,6 +35,7 @@
 
 import { readSecret, SECRET_KEYS } from '../../endpoints/secrets.js';
 import { LlmError } from './errors.js';
+import { makeDebugEvent, emitDebugEvent } from '../debug/bus.js';
 export { LlmError };
 
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -224,33 +225,125 @@ export function createLlmClient({ userDirectories, profile }) {
     return {
         profile,
 
-        async chat({ system, user, messages, onUsage, signal } = /** @type {any} */({})) {
+        async chat({ system, user, messages, onUsage, signal, role } = /** @type {any} */({})) {
             const { signal: s, cancel } = withTimeout(signal);
             const msgs = resolveMessages({ system, user, messages });
+            const t0 = Date.now();
+            /** @type {import('../debug/schemas.js').LlmCallDetail['usage']} */
+            let capturedUsage;
+            const wrappedOnUsage = (u) => {
+                capturedUsage = u ?? undefined;
+                if (onUsage) onUsage(u);
+            };
             try {
+                let result;
                 if (profile.source === 'claude') {
-                    return await claudeChat({ baseUrl, apiKey, profile, messages: msgs, onUsage, signal: s });
+                    result = await claudeChat({ baseUrl, apiKey, profile, messages: msgs, onUsage: wrappedOnUsage, signal: s });
+                } else if (OPENAI_FAMILY.has(profile.source)) {
+                    result = await openaiChat({ baseUrl, apiKey, profile, messages: msgs, onUsage: wrappedOnUsage, signal: s });
+                } else {
+                    throw new LlmError('unsupported_source', `source not supported: ${profile.source}`, false);
                 }
-                if (OPENAI_FAMILY.has(profile.source)) {
-                    return await openaiChat({ baseUrl, apiKey, profile, messages: msgs, onUsage, signal: s });
-                }
-                throw new LlmError('unsupported_source', `source not supported: ${profile.source}`, false);
+                const ev = makeDebugEvent({
+                    kind: 'llm_call',
+                    headline: `${role || 'other'}: chat call`,
+                    detail: {
+                        role: role || 'other',
+                        mode: 'chat',
+                        provider: profile.source,
+                        model: profile.model,
+                        base_url: baseUrl,
+                        messages: msgs,
+                        raw_response: result,
+                        usage: capturedUsage,
+                        duration_ms: Date.now() - t0,
+                        message_count: msgs.length,
+                    },
+                });
+                if (ev) emitDebugEvent(ev);
+                return result;
+            } catch (err) {
+                const ev = makeDebugEvent({
+                    kind: 'llm_call',
+                    headline: `${role || 'other'}: chat call (error)`,
+                    detail: {
+                        role: role || 'other',
+                        mode: 'chat',
+                        provider: profile.source,
+                        model: profile.model,
+                        base_url: baseUrl,
+                        messages: msgs,
+                        usage: capturedUsage,
+                        duration_ms: Date.now() - t0,
+                        error: { code: err?.code || 'unknown', message: err?.message || String(err) },
+                        message_count: msgs.length,
+                    },
+                });
+                if (ev) emitDebugEvent(ev);
+                throw err;
             } finally {
                 cancel();
             }
         },
 
-        async structured({ system, user, messages, schema, schemaName, onUsage, signal } = /** @type {any} */({})) {
+        async structured({ system, user, messages, schema, schemaName, onUsage, signal, role } = /** @type {any} */({})) {
             const { signal: s, cancel } = withTimeout(signal);
             const msgs = resolveMessages({ system, user, messages });
+            const t0 = Date.now();
+            /** @type {import('../debug/schemas.js').LlmCallDetail['usage']} */
+            let capturedUsage;
+            const wrappedOnUsage = (u) => {
+                capturedUsage = u ?? undefined;
+                if (onUsage) onUsage(u);
+            };
             try {
+                let result;
                 if (profile.source === 'claude') {
-                    return await claudeStructured({ baseUrl, apiKey, profile, messages: msgs, schema, schemaName, onUsage, signal: s });
+                    result = await claudeStructured({ baseUrl, apiKey, profile, messages: msgs, schema, schemaName, onUsage: wrappedOnUsage, signal: s });
+                } else if (OPENAI_FAMILY.has(profile.source)) {
+                    result = await openaiStructured({ baseUrl, apiKey, profile, messages: msgs, schema, schemaName, onUsage: wrappedOnUsage, signal: s });
+                } else {
+                    throw new LlmError('unsupported_source', `source not supported: ${profile.source}`, false);
                 }
-                if (OPENAI_FAMILY.has(profile.source)) {
-                    return await openaiStructured({ baseUrl, apiKey, profile, messages: msgs, schema, schemaName, onUsage, signal: s });
-                }
-                throw new LlmError('unsupported_source', `source not supported: ${profile.source}`, false);
+                const ev = makeDebugEvent({
+                    kind: 'llm_call',
+                    headline: `${role || 'other'}: structured call`,
+                    detail: {
+                        role: role || 'other',
+                        mode: 'structured',
+                        provider: profile.source,
+                        model: profile.model,
+                        base_url: baseUrl,
+                        schema_name: schemaName,
+                        messages: msgs,
+                        parsed: result,
+                        usage: capturedUsage,
+                        duration_ms: Date.now() - t0,
+                        message_count: msgs.length,
+                    },
+                });
+                if (ev) emitDebugEvent(ev);
+                return result;
+            } catch (err) {
+                const ev = makeDebugEvent({
+                    kind: 'llm_call',
+                    headline: `${role || 'other'}: structured call (error)`,
+                    detail: {
+                        role: role || 'other',
+                        mode: 'structured',
+                        provider: profile.source,
+                        model: profile.model,
+                        base_url: baseUrl,
+                        schema_name: schemaName,
+                        messages: msgs,
+                        usage: capturedUsage,
+                        duration_ms: Date.now() - t0,
+                        error: { code: err?.code || 'unknown', message: err?.message || String(err) },
+                        message_count: msgs.length,
+                    },
+                });
+                if (ev) emitDebugEvent(ev);
+                throw err;
             } finally {
                 cancel();
             }

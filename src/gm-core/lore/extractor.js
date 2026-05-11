@@ -107,6 +107,7 @@ export async function extractAndWrite({ directories, campaignId, campaign, clien
         user: buildUserPrompt(campaign),
         schema: EXTRACTOR_SCHEMA,
         schemaName: 'LoreExtraction',
+        role: 'lore',
     });
     const entries = Array.isArray(result?.entries) ? result.entries : [];
     const written = writeCoreLoreFile(directories, campaignId, 'auto-extract', entries);

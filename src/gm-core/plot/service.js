@@ -102,6 +102,7 @@ export async function decide(args) {
         schema: PLOT_DECISION_SCHEMA,
         schemaName: 'PlotDecision',
         signal,
+        role: 'plot',
     });
 
     return normaliseDecision(raw);
