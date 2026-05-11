@@ -72,11 +72,7 @@ export function enterSceneMode({ campaign: _campaign, scene: _scene, player, tra
                 // so ST's index-based handlers don't shift under us.
                 appendRollCard({
                     card: line.extra.card,
-                    narration: line.extra.narration || line.mes || '',
                     actorAvatar: line.force_avatar || null,
-                    narrationSpeakerName: line.extra.narration_speaker_name || null,
-                    narrationSpeakerRole: line.extra.narration_speaker_role || 'narrator',
-                    narrationSpeakerAvatar: line.extra.narration_speaker_avatar || null,
                     persistInChat: true,
                 });
                 continue;
@@ -155,37 +151,20 @@ export function appendActorLine({ actor, name, text, role, avatar = null }) {
 }
 
 /**
- * Append a styled roll card directly into `#chat`, bypassing ST's
- * `addOneMessage`. The card is one combined bubble (per the user's UX):
- * d20 icon, actor + skill header, breakdown line, success/fail badge,
- * severity pill (on failure), and the post-roll narration as the body.
- *
- * The post-roll prose may be voiced by either the World Narrator (default,
- * environmental checks) or by an in-scene NPC (social checks: persuade /
- * intimidate / etc — the target reacts in their own voice). The body is
- * labelled accordingly via `narrationSpeakerName` / `narrationSpeakerRole`.
- *
- * We push a placeholder entry into `chat[]` so ST's index-based handlers
- * (delete, swipe, edit) don't desync. The placeholder is `is_system: true`
- * with `extra.kind: 'roll'` so transcript-replay code can recognise it.
+ * Append a card-only roll card into `#chat`, bypassing ST's `addOneMessage`.
+ * The card shows: d20 icon, actor + skill header, breakdown expression,
+ * success/fail badge, severity pill (on failure), and the justification.
+ * The post-roll consequence is delivered as a separate `speak` beat.
  *
  * @param {{
  *   card: any,
- *   narration: string,
  *   actorAvatar?: string | null,
- *   narrationSpeakerName?: string | null,
- *   narrationSpeakerRole?: 'narrator' | 'actor',
- *   narrationSpeakerAvatar?: string | null,
  *   persistInChat?: boolean,
  * }} args
  */
 export function appendRollCard({
     card,
-    narration,
     actorAvatar = null,
-    narrationSpeakerName = null,
-    narrationSpeakerRole = 'narrator',
-    narrationSpeakerAvatar = null,
     persistInChat = true,
 }) {
     if (!card || typeof card !== 'object') return;
@@ -195,28 +174,17 @@ export function appendRollCard({
             is_user: false,
             is_system: true,
             send_date: new Date().toISOString(),
-            mes: narration || '',
+            mes: '',
             extra: {
                 role: 'roll',
                 kind: 'roll',
                 card,
-                narration,
-                narration_speaker_name: narrationSpeakerName || null,
-                narration_speaker_role: narrationSpeakerRole || 'narrator',
-                narration_speaker_avatar: narrationSpeakerAvatar || null,
             },
             force_avatar: actorAvatar || undefined,
         });
     }
     document.querySelectorAll('#chat').forEach(chatEl => {
-        const node = buildRollCardElement({
-            card,
-            narration,
-            actorAvatar,
-            narrationSpeakerName,
-            narrationSpeakerRole,
-            narrationSpeakerAvatar,
-        });
+        const node = buildRollCardElement({ card, actorAvatar });
         chatEl.appendChild(node);
     });
     scrollChatToBottom();
@@ -233,19 +201,10 @@ export function appendRollCard({
  * }} args
  * @returns {HTMLElement}
  */
-function buildRollCardElement({
-    card,
-    narration,
-    actorAvatar,
-    narrationSpeakerName = null,
-    narrationSpeakerRole = 'narrator',
-    narrationSpeakerAvatar = null,
-}) {
+function buildRollCardElement({ card, actorAvatar }) {
     const outcome = card.outcome === 'success' ? 'success' : 'failure';
     const severity = (card.severity || '').toLowerCase();
     const wrap = document.createElement('div');
-    // Mark as a `mes` so ST's chat container styling sets the spacing
-    // correctly, then layer our own classes on top.
     wrap.className = `mes gm-roll-card outcome-${outcome}`;
     if (severity) wrap.classList.add(`severity-${severity}`);
     if (card.crit === 'natural_20') wrap.classList.add('crit-success');
@@ -307,36 +266,6 @@ function buildRollCardElement({
         just.textContent = card.justification;
         wrap.appendChild(just);
     }
-
-    const speakerLabel = (narrationSpeakerName || (narrationSpeakerRole === 'actor' ? 'Actor' : 'Narrator')).trim();
-    const speakerKindClass = narrationSpeakerRole === 'actor' ? 'speaker-actor' : 'speaker-narrator';
-    const bodyWrap = document.createElement('div');
-    bodyWrap.className = `gm-roll-card-body ${speakerKindClass}`;
-
-    // Mini speaker chip above the body so it's clear who voiced the
-    // consequence — matters most when an NPC reacts in their own voice
-    // for a social check (otherwise it would look like a generic narrator
-    // paragraph that puts dialogue in their mouth).
-    const speakerRow = document.createElement('div');
-    speakerRow.className = 'gm-roll-card-speaker';
-    if (narrationSpeakerAvatar) {
-        const av = document.createElement('span');
-        av.className = 'gm-roll-card-speaker-avatar';
-        av.style.backgroundImage = `url("${narrationSpeakerAvatar}")`;
-        speakerRow.appendChild(av);
-    }
-    const speakerName = document.createElement('span');
-    speakerName.className = 'gm-roll-card-speaker-name';
-    speakerName.textContent = speakerLabel;
-    speakerRow.appendChild(speakerName);
-    bodyWrap.appendChild(speakerRow);
-
-    const bodyText = document.createElement('div');
-    bodyText.className = 'gm-roll-card-body-text';
-    bodyText.textContent = (narration || '').trim();
-    bodyWrap.appendChild(bodyText);
-
-    wrap.appendChild(bodyWrap);
 
     if (actorAvatar) {
         wrap.dataset.actorAvatar = String(actorAvatar);

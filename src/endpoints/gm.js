@@ -42,6 +42,7 @@ import { createMemoryService } from '../gm-core/rag/service.js';
 import { reconcile, readPendingDeletes, writePendingDeletes, readRootPendingDeletes, writeRootPendingDeletes } from '../gm-core/rag/reconcile.js';
 import { ingestCore } from '../gm-core/lore/ingest.js';
 import { collectionNameFor, parseCollectionName } from '../gm-core/rag/schemas.js';
+import { migrate as migrateRollNarration } from '../gm-core/scenes/migrations/0001-split-roll-narration.js';
 
 export const router = express.Router();
 router.use('/rag', ragRouter);
@@ -205,6 +206,14 @@ router.get('/campaigns/:id', (request, response) => {
     const reconcileKey = `${directories.root}::${campaign.id}`;
     if (!reconcileOnceCache.has(reconcileKey)) {
         reconcileOnceCache.set(reconcileKey, Date.now());
+        try {
+            const migrationResult = migrateRollNarration(directories, campaign.id);
+            if (migrationResult.migrated > 0) {
+                console.log(`[gm.migration] 0001-split-roll-narration: ${campaign.id}: migrated=${migrationResult.migrated} skipped=${migrationResult.skipped}`);
+            }
+        } catch (err) {
+            console.warn('[gm.migration] 0001-split-roll-narration failed', err?.message || err);
+        }
         getMemoryService(directories)
             .then(service => reconcile({
                 memoryService: service,
@@ -1890,28 +1899,21 @@ async function runStreamingTurn(args) {
                 console.error('[gm] persist actor line failed', persistErr);
             }
         }
-        // Persist roll events as a single transcript line carrying both the
-        // card payload (in `extra.card`) and the post-roll narration (`mes`).
-        // We mark them `is_system: true` so SillyTavern does not render them
-        // through the default chat-bubble renderer; the frontend's roll-card
-        // branch picks up the line via `extra.kind === 'roll'` and replaces
-        // it with a styled card.
+        // Persist roll events as a card-only transcript line. The post-roll
+        // consequence is delivered by the Director's next `speak` action
+        // which is persisted as its own message line. We mark this
+        // `is_system: true` so ST does not render it through the default
+        // chat-bubble renderer; the frontend picks it up via
+        // `extra.kind === 'roll'` and renders a styled card.
         if (ev && ev.kind === 'roll') {
             try {
                 const speaker = ev.actor_id && charactersById.has(ev.actor_id)
                     ? charactersById.get(ev.actor_id)
                     : null;
-                // The post-roll prose may be voiced by a *different* character
-                // than the actor who rolled (Director picked `voice: <NPC id>`
-                // for a social check). Surface that explicitly so the frontend
-                // can credit the right speaker on top of the card body.
-                const narrationSpeaker = ev.narration_speaker_id && charactersById.has(ev.narration_speaker_id)
-                    ? charactersById.get(ev.narration_speaker_id)
-                    : null;
                 const line = {
                     name: ev.actor_name || speaker?.name || 'System',
                     force_avatar: portraitUrl(speaker),
-                    mes: ev.narration || '',
+                    mes: '',
                     is_user: false,
                     is_system: true,
                     send_date: new Date().toISOString(),
@@ -1919,14 +1921,9 @@ async function runStreamingTurn(args) {
                         role: 'roll',
                         kind: 'roll',
                         card: ev.card,
-                        narration: ev.narration,
                         actor_id: ev.actor_id,
                         actor_name: ev.actor_name,
                         intent: ev.intent,
-                        narration_speaker_id: ev.narration_speaker_id || null,
-                        narration_speaker_name: ev.narration_speaker_name || null,
-                        narration_speaker_role: ev.narration_speaker_role || 'narrator',
-                        narration_speaker_avatar: portraitUrl(narrationSpeaker) || null,
                     },
                 };
                 await transcript.appendLine(directories, campaign.id, found.scene.id, line);

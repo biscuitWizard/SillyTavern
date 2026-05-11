@@ -2154,6 +2154,7 @@ body.tt-mode-scene #chat .mes.gm-roll-card .mes_edit {
 body.tt-mode-scene #chat .mes.gm-roll-card {
     display: flex;
     flex-direction: column;
+    flex-shrink: 0;
     align-items: stretch;
     gap: 10px;
     padding: 14px 16px;
@@ -2167,7 +2168,6 @@ body.tt-mode-scene #chat .mes.gm-roll-card {
     color: var(--gm-text);
     box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
     position: relative;
-    overflow: hidden;
     width: 100%;
 }
 
@@ -2180,6 +2180,8 @@ body.tt-mode-scene #chat .mes.gm-roll-card::before {
     left: 0;
     right: 0;
     height: 3px;
+    border-top-left-radius: inherit;
+    border-top-right-radius: inherit;
     background: var(--gm-roll-accent, var(--gm-accent));
 }
 
@@ -2350,65 +2352,6 @@ body.tt-mode-scene #chat .mes.gm-roll-card::before {
     font-style: italic;
     line-height: 1.4;
     padding: 0 2px;
-}
-
-.gm-roll-card-body {
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px solid var(--gm-border);
-    border-radius: 10px;
-    padding: 10px 14px 12px;
-    color: var(--gm-text);
-    font-size: 14px;
-    line-height: 1.55;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-}
-
-/* When the post-roll prose is voiced by an NPC (social check: persuade,
-   intimidate, deceive — the target reacts in their own voice), give the
-   body a subtle accent that matches the actor message styling so it reads
-   as "this is the NPC speaking" rather than a generic narrator paragraph. */
-.gm-roll-card-body.speaker-actor {
-    background: rgba(120, 132, 200, 0.07);
-    border-color: rgba(120, 132, 200, 0.22);
-}
-
-.gm-roll-card-speaker {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 11px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: #c8cee0;
-    opacity: 0.85;
-}
-
-.gm-roll-card-body.speaker-actor .gm-roll-card-speaker {
-    color: #d6def8;
-    opacity: 1;
-}
-
-.gm-roll-card-speaker-avatar {
-    display: inline-block;
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background-size: cover;
-    background-position: center;
-    background-color: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    flex-shrink: 0;
-}
-
-.gm-roll-card-speaker-name {
-    line-height: 1.2;
-}
-
-.gm-roll-card-body-text {
-    white-space: pre-wrap;
 }
 
 @media (max-width: 600px) {

@@ -10,9 +10,9 @@
  *   - RollCard:           chat-side payload the frontend renders into a
  *                         styled bubble.
  *
- * Wire shape: per the chosen UX (single combined card with narration inside),
- * the loop emits ONE `kind: 'roll'` event after the post-roll narrator
- * finishes. The event carries `card: RollCard` and `narration: string`.
+ * Wire shape: the loop emits a card-only `kind: 'roll'` event after the
+ * dice land. The event carries `card: RollCard`. The post-roll consequence
+ * is delivered as a separate `speak` beat by the Director.
  */
 
 import type { SeverityLevel } from '../rulesets/schemas.d.ts';

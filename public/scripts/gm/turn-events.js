@@ -79,25 +79,9 @@ export function handleTurnEvent(ev, ui) {
             ? ui.characters.get(ev.actor_id)
             : null;
         const avatar = speaker ? api.getPortraitUrl(speaker) : null;
-        const narrationSpeakerRole = ev.narration_speaker_role || 'narrator';
-        let narrationSpeakerName = ev.narration_speaker_name || null;
-        let narrationSpeakerAvatar = null;
-        if (narrationSpeakerRole === 'actor' && ev.narration_speaker_id && ui.characters?.get) {
-            const ns = ui.characters.get(ev.narration_speaker_id);
-            if (ns) {
-                narrationSpeakerName = narrationSpeakerName || ns.name;
-                narrationSpeakerAvatar = api.getPortraitUrl(ns);
-            }
-        } else if (narrationSpeakerRole === 'narrator') {
-            narrationSpeakerName = narrationSpeakerName || 'Narrator';
-        }
         appendRollCard({
             card: ev.card,
-            narration: ev.narration || '',
             actorAvatar: avatar,
-            narrationSpeakerName,
-            narrationSpeakerRole,
-            narrationSpeakerAvatar,
         });
         return;
     }

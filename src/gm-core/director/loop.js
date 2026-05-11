@@ -77,11 +77,10 @@
 import { makeDebugEvent, emitDebugEvent } from '../debug/bus.js';
 import { directorSystemPrompt, directorUserPrompt } from './prompts.js';
 import { narratorSystemPrompt, narratorUserPrompt } from '../narrator/prompts.js';
-import { actorSystemPrompt, actorUserPrompt, actorPostRollUserPrompt } from '../actors/prompts.js';
+import { actorSystemPrompt, actorUserPrompt } from '../actors/prompts.js';
 import { directorDecisionJsonSchema, validateDirectorDecision, SUPPORTED_ACTIONS } from './schemas.js';
 import { LlmError } from '../llm/errors.js';
 import * as skillEngine from '../skillcheck/engine.js';
-import { narratorPostRollUserPrompt } from '../skillcheck/prompts.js';
 import { formatSections } from '../rag/injection.js';
 import { writeAddLore } from '../rag/writers/lore-add.js';
 import { writeDirectorPacing } from '../rag/writers/director-pacing.js';
@@ -212,6 +211,10 @@ export async function runTurn({
     const transientCharacters = new Map();
     /** @type {Set<string>} */
     const promotedTransients = new Set();
+
+    // Post-roll constraint: after a successful skill_check roll, the Director
+    // MUST `speak` before it can `end_turn` or `skill_check` again.
+    let pendingPostRollSpeak = false;
 
     /** @param {string} id */
     const resolveCharacter = (id) => {
@@ -422,6 +425,36 @@ export async function runTurn({
         });
         if (dbgDecision) emitDebugEvent(dbgDecision);
 
+        // Post-roll constraint: after a skill_check roll, the Director MUST
+        // `speak` before it can `end_turn` or `skill_check` again. Other
+        // actions (mutate_sheet, add_lore, etc.) are allowed as intermediate
+        // steps — only the terminal/roll-doubling actions are gated.
+        if (pendingPostRollSpeak && (decision.action === 'end_turn' || decision.action === 'skill_check')) {
+            const key = 'skill_check:speak_required';
+            const exhausted = noteToolError(key);
+            if (exhausted) {
+                await emit({
+                    kind: 'error',
+                    code: 'tool_error_loop',
+                    message: `Director refused to speak after a skill_check roll more than ${MAX_SAME_TOOL_ERROR} times; ending turn.`,
+                    retryable: false,
+                });
+                await emit({ kind: 'end_of_turn', reason: 'error' });
+                return;
+            }
+            const message = `A skill_check just resolved. You MUST pick \`speak\` (narrator or an in-scene NPC) to deliver the consequence BEFORE you can \`${decision.action}\`. The player needs to see/hear what happened.`;
+            await recordRecoverableToolError({
+                tool: 'skill_check',
+                code: 'speak_required',
+                message,
+                suggestions: [
+                    'Pick `speak` with actor: "narrator" for environmental consequences, or actor: "<npc_id>" for social consequences.',
+                    'Your intent should describe what the player sees/hears as a result of the roll.',
+                ],
+            });
+            continue;
+        }
+
         if (decision.action === 'end_turn') {
             // Phase 7: persist a director pacing note to director_memory if
             // the Director provided one via the optional `pacing_note` field.
@@ -462,14 +495,10 @@ export async function runTurn({
                 decision,
                 ruleset: ruleset || null,
                 adjudicatorClient: adjudicator,
-                actorClient,
                 rng,
                 emit,
                 signal,
                 findCharacter: resolveCharacter,
-                memoryService,
-                cid,
-                sceneIndex,
             });
         } else if (decision.action === 'search_library') {
             outcome = await dispatchSearchLibrary({ ctx, decision });
@@ -514,6 +543,15 @@ export async function runTurn({
             emitSpanEnd('error');
             await emit({ kind: 'end_of_turn', reason: 'error' });
             return;
+        }
+
+        // Post-roll flag management: set after a successful roll, clear
+        // after a successful speak.
+        if (decision.action === 'skill_check' && !outcome.tool_error_key && outcome.rollLanded) {
+            pendingPostRollSpeak = true;
+        }
+        if (decision.action === 'speak' && !outcome.tool_error_key) {
+            pendingPostRollSpeak = false;
         }
 
         // If the dispatcher emitted a recoverable tool_error, count it
@@ -1051,10 +1089,8 @@ function formatToolError({ tool, code, message, suggestions }) {
  * 3. Call `engine.decide(...)` — strict, structured, no RAG.
  * 4. If the decision says no roll is needed, emit a status note and return
  *    control to the loop (Director gets to pick the next beat).
- * 5. Otherwise: roll the dice (pure), call the post-roll Narrator with the
- *    outcome, emit ONE combined `kind: 'roll'` event with both the card and
- *    the narration. Append a synthetic transcript-tail entry so subsequent
- *    Director steps in the same turn can reason about the result.
+ * 5. Otherwise: roll the dice (pure), emit a card-only `kind: 'roll'` event.
+ *    The Director's next beat MUST be a `speak` to deliver the consequence.
  *
  * @param {{
  *   ctx: import('./prompts.js').TurnContext,
@@ -1068,7 +1104,7 @@ function formatToolError({ tool, code, message, suggestions }) {
  *   findCharacter?: (characterId: string) => import('../library/schemas.js').Character | null,
  * }} args
  */
-async function dispatchSkillCheck({ ctx, decision, ruleset, adjudicatorClient, actorClient, rng, emit, signal, findCharacter, memoryService, cid, sceneIndex }) {
+async function dispatchSkillCheck({ ctx, decision, ruleset, adjudicatorClient, rng, emit, signal, findCharacter }) {
     if (!ruleset) {
         const message = 'skill_check: no ruleset is loaded for this campaign. Pick a non-roll beat (speak / narrator) or end_turn.';
         await emit({
@@ -1137,14 +1173,6 @@ async function dispatchSkillCheck({ ctx, decision, ruleset, adjudicatorClient, a
             signal,
         });
     } catch (err) {
-        // Recoverable: the adjudicator returned a malformed / out-of-ruleset
-        // decision (most commonly a wrong-cased skill_id). Surface as a
-        // tool_error and let the Director pick a different beat — a
-        // different skill, narrator prose, or end_turn — rather than
-        // halting the whole turn. The validation error message itself
-        // (e.g. `decision.skill_id "Religion" is not in ruleset "dnd5e"`)
-        // is preserved verbatim so the Director can see exactly what
-        // shape was rejected.
         const errCode = (err && /** @type {any} */(err).code) || 'adjudicator_failed';
         const errMsg = (err && /** @type {any} */(err).message) || String(err);
         const validSkills = (ruleset.skills || []).map(s => s.id);
@@ -1169,9 +1197,6 @@ async function dispatchSkillCheck({ ctx, decision, ruleset, adjudicatorClient, a
     }
 
     if (!skillDecision.required) {
-        // The adjudicator declined the roll. Surface a soft status so the
-        // player can see something happened, then return to the loop without
-        // forcing a narrator beat — the Director gets to pick the next move.
         await emit({
             kind: 'status',
             phase: 'directing',
@@ -1207,8 +1232,6 @@ async function dispatchSkillCheck({ ctx, decision, ruleset, adjudicatorClient, a
         };
     }
 
-    // Build the chat-side card before we kick off the narrator so we can
-    // pass the rendered details into the prose prompt.
     const card = skillEngine.renderRollCard({
         ruleset,
         character,
@@ -1217,175 +1240,20 @@ async function dispatchSkillCheck({ ctx, decision, ruleset, adjudicatorClient, a
         intent: String(decision.intent || ''),
     });
 
-    // Decide who voices the post-roll consequence.
-    //
-    // The Director can pick `voice: '<character_id>'` for social checks
-    // (persuade, intimidate, deceive) so the target NPC reacts in their
-    // own first-person voice; otherwise we default to the World Narrator
-    // (environmental / world checks: climb, perceive, sneak, lockpick).
-    //
-    // We degrade gracefully: a hallucinated voice id (not in scene, or
-    // pointing at the actor performing the check, or pointing at the
-    // player character) silently falls back to narrator voice. We never
-    // tool-error out of a successful roll; the prose still has to land.
-    const requestedVoice = typeof decision.voice === 'string' ? decision.voice.trim() : '';
-    /** @type {{ kind: 'narrator' } | { kind: 'actor', character: import('../library/schemas.js').Character }} */
-    let voiceChoice = { kind: 'narrator' };
-    if (requestedVoice && requestedVoice !== 'narrator') {
-        if (requestedVoice === actorId) {
-            console.warn(`[loop.skillcheck] Director picked voice = self ("${requestedVoice}"); falling back to narrator voice.`);
-        } else {
-            const voiceTarget = (ctx.actors || []).find(a => a.id === requestedVoice);
-            if (!voiceTarget) {
-                console.warn(`[loop.skillcheck] Director picked voice = "${requestedVoice}" who is not in scene; falling back to narrator voice.`);
-            } else if (voiceTarget.is_player) {
-                console.warn(`[loop.skillcheck] Director picked voice = player character "${requestedVoice}"; falling back to narrator voice (player drives PC).`);
-            } else {
-                const voiceCharacter = findCharacter ? findCharacter(requestedVoice) : null;
-                if (!voiceCharacter) {
-                    console.warn(`[loop.skillcheck] Director picked voice = "${requestedVoice}" but the character record could not be loaded; falling back to narrator voice.`);
-                } else {
-                    voiceChoice = { kind: 'actor', character: voiceCharacter };
-                }
-            }
-        }
-    }
-
-    // MEMORIES block for the post-roll beat. Per role:
-    //   - narrator voice → world_lore + narrator_memory (same shape as
-    //                      the `speak: narrator` branch).
-    //   - actor voice    → that NPC's own character_memory + a slice of
-    //                      world_lore + player_journal (same as the
-    //                      `speak: <actor>` branch). Crucially: NEVER
-    //                      another character's memory, even though the
-    //                      reactor isn't the one rolling.
-    const previousMemoriesBlock = ctx.memories_block;
-    if (memoryService && cid) {
-        try {
-            if (voiceChoice.kind === 'actor') {
-                const slice = await memoryService.for_character({
-                    campaignId: cid,
-                    characterId: voiceChoice.character.id,
-                    queryText: String(decision.intent || character.name),
-                });
-                ctx.memories_block = formatSections([
-                    { kind: 'character_memory', label: voiceChoice.character.id, hits: slice.character, max: 4 },
-                    { kind: 'world_lore', hits: slice.world, max: 5 },
-                    { kind: 'player_journal', hits: slice.player_journal, max: 1 },
-                ]);
-            } else {
-                const slice = await memoryService.for_narrator({
-                    campaignId: cid,
-                    queryText: String(decision.intent || character.name),
-                });
-                ctx.memories_block = formatSections([
-                    { kind: 'world_lore', hits: slice.world },
-                    { kind: 'narrator_memory', hits: slice.narrator, max: 4 },
-                ]);
-            }
-        } catch (err) {
-            console.warn('[loop.skillcheck.post_roll] memory injection failed', err?.message || err);
-            ctx.memories_block = '';
-        }
-    }
-
-    let narration = '';
-    let narrationSpeaker = 'Narrator';
-    let narrationRole = 'narrator';
-    let narrationActorId = null;
-    try {
-        const promptArgs = {
-            actor_name: character.name,
-            skill_name: card.skill_name,
-            ability_name: card.ability_name,
-            dc: card.dc,
-            total: outcome.total,
-            d20: outcome.d20,
-            success: outcome.success,
-            severity: skillDecision.failure_severity,
-            crit: outcome.crit,
-            intent: String(decision.intent || ''),
-        };
-        let system, user;
-        if (voiceChoice.kind === 'actor') {
-            system = actorSystemPrompt(ctx, voiceChoice.character);
-            user = actorPostRollUserPrompt(ctx, voiceChoice.character, promptArgs);
-            narrationSpeaker = voiceChoice.character.name;
-            narrationRole = 'actor';
-            narrationActorId = voiceChoice.character.id;
-        } else {
-            system = narratorSystemPrompt();
-            user = narratorPostRollUserPrompt(ctx, promptArgs);
-        }
-        const prose = await actorClient.chat({ system, user, signal, role: voiceChoice.kind === 'actor' ? 'actor' : 'narrator' });
-        narration = String(prose || '').trim();
-    } catch (err) {
-        ctx.memories_block = previousMemoriesBlock;
-        await emitError(emit, err, voiceChoice.kind === 'actor' ? `actor:post_roll:${voiceChoice.character.id}` : 'narrator:post_roll');
-        return { kind: 'end' };
-    }
-    ctx.memories_block = previousMemoriesBlock;
-
     await emit({
         kind: 'roll',
         actor_id: character.id,
         actor_name: character.name,
         intent: String(decision.intent || ''),
         card,
-        narration,
-        narration_speaker_id: narrationActorId,
-        narration_speaker_name: narrationSpeaker,
-        narration_speaker_role: narrationRole,
     });
 
-    if (memoryService && cid) {
-        if (narrationRole === 'actor' && narrationActorId) {
-            // The reactor is now the speaker — extract opinion memory for
-            // them, mirroring the `speak: <actor>` branch. Their reaction
-            // prose is what the rest of the scene will remember.
-            extractAndWriteOpinion({
-                memoryService,
-                client: actorClient,
-                campaignId: cid,
-                character: voiceChoice.kind === 'actor' ? voiceChoice.character : null,
-                sceneId: ctx.scene?.id || '',
-                sceneIndex,
-                messageIndex: Date.now(),
-                lastMessage: narration,
-                transcriptTail: ctx.recent_transcript || '',
-            }).then(result => {
-                for (const rec of result.hits || []) {
-                    emit({ kind: 'memory_write', memory_kind: 'character_memory', record_id: rec.id, title: rec.content, character_id: narrationActorId }).catch(() => {});
-                }
-            }).catch(() => {});
-        } else {
-            // Narrator continuity from the post-roll beat (existing path).
-            extractAndWriteNarratorContinuity({
-                memoryService,
-                client: actorClient,
-                campaignId: cid,
-                sceneId: ctx.scene?.id || '',
-                sceneName: ctx.scene?.name,
-                location: ctx.scene?.location,
-                sceneIndex,
-                prose: narration,
-            }).catch(() => {});
-        }
-    }
-
-    // Synthesise a single recent-transcript line so subsequent Director steps
-    // in the same turn can reason about what happened. We do NOT echo the
-    // dice math — just the outcome and the prose, since that's what an
-    // observer at the table would carry forward.
     const verdict = outcome.success ? 'succeeded' : 'failed';
     appendToTail(ctx, 'System', `[${character.name} ${verdict} their ${card.skill_name} check vs DC ${card.dc}]`);
-    appendToTail(ctx, narrationSpeaker, narration);
-    const voiceClause = narrationRole === 'actor'
-        ? `${narrationSpeaker} reacted in their own voice`
-        : 'The Narrator already described the consequence';
     return {
         kind: 'continue',
-        summary: `${character.name} ${verdict} a ${card.skill_name} check vs DC ${card.dc} (d20=${outcome.d20}, total=${outcome.total}). ${voiceClause}. The roll has resolved and the consequence has been delivered. Default to end_turn — do NOT fire another skill_check for the same intent; the player's next turn drives what happens next.`,
+        rollLanded: true,
+        summary: `${character.name} ${verdict} a ${card.skill_name} check vs DC ${card.dc} (d20=${outcome.d20}, total=${outcome.total}). The roll card is now visible to the player. You MUST pick \`speak\` next (narrator for environmental consequence, or an in-scene NPC id for social consequence). Your \`intent\` should describe what happens as a result of the ${verdict === 'succeeded' ? 'success' : `failure (severity: ${skillDecision.failure_severity || 'unspecified'})`}.`,
     };
 }
 
