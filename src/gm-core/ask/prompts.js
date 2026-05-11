@@ -10,6 +10,8 @@
  * `world_lore` record so future scenes / Ask exchanges can retrieve it.
  */
 
+import { tag, TAGS } from '../prompts/tags.js';
+
 export const ASK_REPLY_SCHEMA = {
     $schema: 'https://json-schema.org/draft/2020-12/schema',
     title: 'AskReply',
@@ -139,51 +141,42 @@ function formatAskTail(entries, maxChars = 2400) {
  * }} ctx
  */
 export function buildAskUser(ctx) {
-    const lines = [];
-    lines.push(`Campaign: ${ctx.campaign?.name || 'Untitled'}`);
-    if (ctx.campaign?.brief) lines.push(`Brief: ${truncate(ctx.campaign.brief, 600)}`);
-    if (ctx.campaign?.addendum) lines.push(`GM addendum: ${truncate(ctx.campaign.addendum, 400)}`);
+    const parts = [];
+    const campaignLines = [ctx.campaign?.name || 'Untitled'];
+    if (ctx.campaign?.brief) campaignLines.push(`Brief: ${truncate(ctx.campaign.brief, 600)}`);
+    if (ctx.campaign?.addendum) campaignLines.push(`GM addendum: ${truncate(ctx.campaign.addendum, 400)}`);
+    parts.push(tag(TAGS.campaign, campaignLines.join('\n')));
 
     if (ctx.playerCharacter) {
-        lines.push('');
-        lines.push(`Player character: ${ctx.playerCharacter.name || 'The PC'}`);
-        if (ctx.playerCharacter.background) lines.push(`Background: ${truncate(ctx.playerCharacter.background, 300)}`);
+        const pcLines = [ctx.playerCharacter.name || 'The PC'];
+        if (ctx.playerCharacter.background) pcLines.push(`Background: ${truncate(ctx.playerCharacter.background, 300)}`);
+        parts.push(tag(TAGS.player_character, pcLines.join('\n')));
     }
 
-    lines.push('');
     if (ctx.currentSituation) {
-        lines.push('Where things stand right now:');
-        if (ctx.currentSituation.recap) lines.push(`- Recap: ${ctx.currentSituation.recap}`);
-        if (ctx.currentSituation.location) lines.push(`- Location: ${ctx.currentSituation.location}`);
-        if (ctx.currentSituation.time) lines.push(`- Time: ${ctx.currentSituation.time}`);
+        const sitLines = [];
+        if (ctx.currentSituation.recap) sitLines.push(`Recap: ${ctx.currentSituation.recap}`);
+        if (ctx.currentSituation.location) sitLines.push(`Location: ${ctx.currentSituation.location}`);
+        if (ctx.currentSituation.time) sitLines.push(`Time: ${ctx.currentSituation.time}`);
         if (ctx.currentSituation.nearby_characters?.length) {
-            lines.push(`- Nearby: ${ctx.currentSituation.nearby_characters.join(', ')}`);
+            sitLines.push(`Nearby: ${ctx.currentSituation.nearby_characters.join(', ')}`);
         }
+        parts.push(tag(TAGS.situation, sitLines.join('\n')));
     } else {
-        lines.push('Where things stand right now: (no situation snapshot on file yet)');
+        parts.push(tag(TAGS.situation, '(no situation snapshot on file yet)'));
     }
 
     if (Array.isArray(ctx.recentSceneHeadlines) && ctx.recentSceneHeadlines.length) {
-        lines.push('');
-        lines.push('Recent scene history:');
-        for (const h of ctx.recentSceneHeadlines.slice(0, 3)) {
-            lines.push(`- ${truncate(h, 200)}`);
-        }
+        const headlines = ctx.recentSceneHeadlines.slice(0, 3).map(h => `- ${truncate(h, 200)}`);
+        parts.push(tag(TAGS.scene_history, headlines.join('\n')));
     }
 
-    lines.push('');
-    lines.push('World lore on file (top hits for this question):');
-    lines.push(formatLoreHits(ctx.loreHits));
+    parts.push(tag(TAGS.world_lore, formatLoreHits(ctx.loreHits)));
+    parts.push(tag(TAGS.ask_history, formatAskTail(ctx.transcriptTail)));
+    parts.push(tag(TAGS.player_input, String(ctx.question || '').trim() || '(empty question)'));
 
-    lines.push('');
-    lines.push('Recent Ask exchanges:');
-    lines.push(formatAskTail(ctx.transcriptTail));
-
-    lines.push('');
-    lines.push(`Player asks: ${String(ctx.question || '').trim() || '(empty question)'}`);
-    lines.push('');
-    lines.push('Produce the AskReply JSON.');
-    return lines.join('\n');
+    parts.push('Produce the AskReply JSON.');
+    return parts.filter(Boolean).join('\n\n');
 }
 
 /** @param {string} s @param {number} max */

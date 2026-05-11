@@ -215,7 +215,7 @@ describe('director loop: collapses history when prompt_tokens exceeds budget', (
         // System prompt + initial user prompt were preserved.
         expect(finalCall[0].role).toBe('system');
         expect(finalCall[1].role).toBe('user');
-        expect(finalCall[1].content).toContain('# Player input this turn');
+        expect(finalCall[1].content).toContain('<player_input>');
     });
 
     test('when usage reports null (provider omits usage), no collapse is attempted', async () => {

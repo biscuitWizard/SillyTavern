@@ -16,6 +16,8 @@
  * bias" framing: when the action is reasonable, lean into it.
  */
 
+import { tag, TAGS } from '../prompts/tags.js';
+
 export const PLOT_DECISION_SCHEMA = {
     $schema: 'https://json-schema.org/draft/2020-12/schema',
     title: 'PlotDecision',
@@ -130,60 +132,54 @@ function formatLoreHits(hits) {
  * }} ctx
  */
 export function buildPlotUser(ctx) {
-    const lines = [];
-    lines.push(`Campaign: ${ctx.campaign?.name || 'Untitled'}`);
-    if (ctx.campaign?.brief) lines.push(`Brief: ${truncate(ctx.campaign.brief, 600)}`);
-    if (ctx.campaign?.addendum) lines.push(`GM addendum: ${truncate(ctx.campaign.addendum, 400)}`);
+    const parts = [];
+    const campaignLines = [ctx.campaign?.name || 'Untitled'];
+    if (ctx.campaign?.brief) campaignLines.push(`Brief: ${truncate(ctx.campaign.brief, 600)}`);
+    if (ctx.campaign?.addendum) campaignLines.push(`GM addendum: ${truncate(ctx.campaign.addendum, 400)}`);
+    parts.push(tag(TAGS.campaign, campaignLines.join('\n')));
 
     if (ctx.playerCharacter) {
-        lines.push('');
-        lines.push(`Player character: ${ctx.playerCharacter.name || 'The PC'}`);
-        if (ctx.playerCharacter.background) lines.push(`Background: ${truncate(ctx.playerCharacter.background, 240)}`);
-        if (ctx.playerCharacter.personality) lines.push(`Personality: ${truncate(ctx.playerCharacter.personality, 200)}`);
+        const pcLines = [ctx.playerCharacter.name || 'The PC'];
+        if (ctx.playerCharacter.background) pcLines.push(`Background: ${truncate(ctx.playerCharacter.background, 240)}`);
+        if (ctx.playerCharacter.personality) pcLines.push(`Personality: ${truncate(ctx.playerCharacter.personality, 200)}`);
         const sheet = ctx.playerCharacter.sheet || {};
         if (Array.isArray(sheet.skills) && sheet.skills.length) {
-            lines.push(`Skills: ${sheet.skills.slice(0, 12).join(', ')}`);
+            pcLines.push(`Skills: ${sheet.skills.slice(0, 12).join(', ')}`);
         }
         if (Array.isArray(sheet.items) && sheet.items.length) {
-            lines.push(`Items: ${sheet.items.slice(0, 8).map(i => i.name).filter(Boolean).join(', ')}`);
+            pcLines.push(`Items: ${sheet.items.slice(0, 8).map(i => i.name).filter(Boolean).join(', ')}`);
         }
+        parts.push(tag(TAGS.player_character, pcLines.join('\n')));
     }
 
-    lines.push('');
     if (ctx.currentSituation) {
-        lines.push('Where things stand right now:');
-        if (ctx.currentSituation.recap) lines.push(`- Recap: ${ctx.currentSituation.recap}`);
-        if (ctx.currentSituation.location) lines.push(`- Location: ${ctx.currentSituation.location}`);
-        if (ctx.currentSituation.time) lines.push(`- Time: ${ctx.currentSituation.time}`);
+        const sitLines = [];
+        if (ctx.currentSituation.recap) sitLines.push(`Recap: ${ctx.currentSituation.recap}`);
+        if (ctx.currentSituation.location) sitLines.push(`Location: ${ctx.currentSituation.location}`);
+        if (ctx.currentSituation.time) sitLines.push(`Time: ${ctx.currentSituation.time}`);
         if (ctx.currentSituation.nearby_characters?.length) {
-            lines.push(`- Nearby: ${ctx.currentSituation.nearby_characters.join(', ')}`);
+            sitLines.push(`Nearby: ${ctx.currentSituation.nearby_characters.join(', ')}`);
         }
+        parts.push(tag(TAGS.situation, sitLines.join('\n')));
     } else {
-        lines.push('Where things stand right now: (no situation snapshot on file yet — assume the PC is at a sensible starting beat)');
+        parts.push(tag(TAGS.situation, '(no situation snapshot on file yet — assume the PC is at a sensible starting beat)'));
     }
 
     if (Array.isArray(ctx.recentSceneHeadlines) && ctx.recentSceneHeadlines.length) {
-        lines.push('');
-        lines.push('Recent scene history:');
-        for (const h of ctx.recentSceneHeadlines.slice(0, 3)) {
-            lines.push(`- ${truncate(h, 200)}`);
-        }
+        const headlines = ctx.recentSceneHeadlines.slice(0, 3).map(h => `- ${truncate(h, 200)}`);
+        parts.push(tag(TAGS.scene_history, headlines.join('\n')));
     }
 
-    lines.push('');
-    lines.push('World lore on file (top hits for this intent):');
-    lines.push(formatLoreHits(ctx.loreHits));
+    parts.push(tag(TAGS.world_lore, formatLoreHits(ctx.loreHits)));
 
     if (Array.isArray(ctx.nearbyRoster) && ctx.nearbyRoster.length) {
-        lines.push('');
-        lines.push(`Known NPCs you may pull into the scene: ${ctx.nearbyRoster.slice(0, 12).join(', ')}`);
+        parts.push(tag(TAGS.actors, `Known NPCs you may pull into the scene: ${ctx.nearbyRoster.slice(0, 12).join(', ')}`));
     }
 
-    lines.push('');
-    lines.push(`Player intent: ${String(ctx.intent || '').trim() || '(empty intent)'}`);
-    lines.push('');
-    lines.push('Decide now. Produce the PlotDecision JSON.');
-    return lines.join('\n');
+    parts.push(tag(TAGS.player_input, String(ctx.intent || '').trim() || '(empty intent)'));
+
+    parts.push('Decide now. Produce the PlotDecision JSON.');
+    return parts.filter(Boolean).join('\n\n');
 }
 
 /** @param {string} s @param {number} max */

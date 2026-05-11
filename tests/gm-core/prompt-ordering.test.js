@@ -23,9 +23,9 @@ const SHEET_MARKER_KEY = 'M0_ORDERING_PROBE_KEY';
 const SHEET_MARKER_VALUE = 'M0_ORDERING_PROBE_VALUE';
 
 const memoriesBlock = [
-    '--- BEGIN MEMORIES (character_memory: jack) ---',
+    '<character_memory id="jack">',
     '- I owe Lila a debt I cannot ignore. (importance 0.70)',
-    '--- END MEMORIES ---',
+    '</character_memory>',
 ].join('\n');
 
 const character = {
@@ -68,7 +68,7 @@ describe('M0 prompt ordering: sheet AFTER RAG', () => {
 
     test('actorUserPrompt places sheet YAML after the MEMORIES block', () => {
         const user = actorUserPrompt(ctx, character, 'push the door open');
-        const memoriesIdx = user.indexOf('--- BEGIN MEMORIES');
+        const memoriesIdx = user.indexOf('<character_memory');
         const sheetIdx = user.indexOf(SHEET_MARKER_KEY);
         expect(memoriesIdx).toBeGreaterThanOrEqual(0);
         expect(sheetIdx).toBeGreaterThanOrEqual(0);
@@ -78,35 +78,26 @@ describe('M0 prompt ordering: sheet AFTER RAG', () => {
     test('actorUserPrompt without memories still emits the sheet (defensive: order check is conditional)', () => {
         const ctxNoMem = { ...ctx, memories_block: '' };
         const user = actorUserPrompt(ctxNoMem, character, 'push the door open');
-        expect(user).not.toContain('--- BEGIN MEMORIES');
+        expect(user).not.toContain('<character_memory');
         expect(user).toContain(SHEET_MARKER_KEY);
     });
 
     test('narratorUserPrompt: any future sheet/character data lives strictly after MEMORIES', () => {
         const user = narratorUserPrompt(ctx, 'set the scene as Jack steps inside');
-        const memoriesIdx = user.indexOf('--- BEGIN MEMORIES');
+        const memoriesIdx = user.indexOf('<character_memory');
         expect(memoriesIdx).toBeGreaterThanOrEqual(0);
-        // Today the Narrator does not render any sheet, so SHEET_MARKER_KEY
-        // should be absent. Pin that to detect any future regression that
-        // accidentally splices a sheet into the Narrator prompt.
         expect(user).not.toContain(SHEET_MARKER_KEY);
-        // The narrator prompt must NOT carry the system prompt by accident.
         const sys = narratorSystemPrompt();
-        expect(sys).not.toContain('--- BEGIN MEMORIES');
+        expect(sys).not.toContain('<character_memory');
     });
 
     test('directorUserPrompt: MEMORIES sits before user input', () => {
         const user = directorUserPrompt(ctx);
-        const memoriesIdx = user.indexOf('--- BEGIN MEMORIES');
-        const userInputIdx = user.indexOf('# Player input this turn');
+        const memoriesIdx = user.indexOf('<character_memory');
+        const userInputIdx = user.indexOf('<player_input>');
         expect(memoriesIdx).toBeGreaterThanOrEqual(0);
         expect(userInputIdx).toBeGreaterThan(memoriesIdx);
-        // The initial user prompt must NOT carry a `# LAST BEAT` block any
-        // more — that lived under `ctx.last_beat` before the agent-loop
-        // refactor; tool results now flow as proper user-role messages
-        // appended to the per-turn history.
         expect(user).not.toContain('# LAST BEAT');
-        // No sheet content should leak into the Director's prompt either.
         expect(user).not.toContain(SHEET_MARKER_KEY);
         const sys = directorSystemPrompt(ctx);
         expect(sys).not.toContain(SHEET_MARKER_KEY);

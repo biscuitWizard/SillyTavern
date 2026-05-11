@@ -20,6 +20,8 @@
  * refresh fixtures together with the regression keywords below.
  */
 
+import { tag, TAGS } from '../prompts/tags.js';
+
 export const MEMORY_EXTRACTION_SCHEMA = {
     $schema: 'https://json-schema.org/draft/2020-12/schema',
     title: 'SceneEndMemoryExtraction',
@@ -105,26 +107,25 @@ export const MEMORY_EXTRACTION_SYSTEM_PROMPT = [
  * }} ctx
  */
 export function buildExtractionUser(ctx) {
-    const lines = [];
-    lines.push(`Character: ${ctx.character.name}${ctx.character.is_player ? ' (player character)' : ''}`);
-    if (ctx.character.personality) {
-        lines.push(`Personality: ${truncate(ctx.character.personality, 400)}`);
-    }
-    lines.push('');
-    lines.push(`Scene: ${ctx.scene?.name || ctx.scene?.id || 'Untitled scene'}`);
-    if (ctx.scene?.location) lines.push(`Location: ${ctx.scene.location}`);
-    lines.push('');
-    lines.push(`Headline: ${ctx.summary?.headline || ''}`);
-    if (ctx.summary?.summary) {
-        lines.push('Summary:');
-        lines.push(ctx.summary.summary);
-    }
-    lines.push('');
-    lines.push('Transcript:');
-    lines.push((ctx.transcriptTail || '').trim() || '(empty transcript)');
-    lines.push('');
-    lines.push(`What does ${ctx.character.name} carry forward from this scene? 0–3 first-person memories.`);
-    return lines.join('\n');
+    const parts = [];
+
+    const charLines = [`${ctx.character.name}${ctx.character.is_player ? ' (player character)' : ''}`];
+    if (ctx.character.personality) charLines.push(`Personality: ${truncate(ctx.character.personality, 400)}`);
+    parts.push(tag(TAGS.character, charLines.join('\n')));
+
+    const sceneLines = [ctx.scene?.name || ctx.scene?.id || 'Untitled scene'];
+    if (ctx.scene?.location) sceneLines.push(`Location: ${ctx.scene.location}`);
+    parts.push(tag(TAGS.scene, sceneLines.join('\n')));
+
+    const summaryLines = [];
+    if (ctx.summary?.headline) summaryLines.push(`Headline: ${ctx.summary.headline}`);
+    if (ctx.summary?.summary) summaryLines.push(ctx.summary.summary);
+    if (summaryLines.length) parts.push(tag(TAGS.scene_summary, summaryLines.join('\n')));
+
+    parts.push(tag(TAGS.transcript, (ctx.transcriptTail || '').trim() || '(empty transcript)'));
+
+    parts.push(`What does ${ctx.character.name} carry forward from this scene? 0–3 first-person memories.`);
+    return parts.filter(Boolean).join('\n\n');
 }
 
 /** @param {string} s @param {number} max */

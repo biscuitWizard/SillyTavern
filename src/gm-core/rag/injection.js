@@ -1,8 +1,8 @@
 /**
- * Format retrieval hits as MEMORIES blocks for prompt injection.
+ * Format retrieval hits as XML-tagged memory blocks for prompt injection.
  *
- * The output has a fixed header/footer pattern so a downstream
- * "transcript-cleanliness" assertion can grep for `--- BEGIN MEMORIES`
+ * The output uses `<kind>...</kind>` tags so a downstream
+ * "transcript-cleanliness" assertion can grep for the opening tag
  * in the JSONL transcript and fail the build if it ever lands there.
  * RAG snippets must NEVER appear in the JSONL — they live in the prompt
  * for one call and that's it.
@@ -14,12 +14,16 @@
  * @typedef {import('./schemas.d.ts').RetrievalHit} RetrievalHit
  */
 
-const HEADER_PREFIX = '--- BEGIN MEMORIES';
-const FOOTER = '--- END MEMORIES ---';
+/**
+ * The opening-tag prefix used by the transcript-cleanliness test to detect
+ * leakage. Any memory block opens with `<{kind}` (e.g. `<world_lore>`,
+ * `<character_memory id="jack">`).
+ */
+const HEADER_PREFIX = '<world_lore';
 
 /**
- * Render a list of hits as a single block. Returns '' when hits is empty
- * so the caller can splice unconditionally.
+ * Render a list of hits as a single XML-tagged block. Returns '' when
+ * hits is empty so the caller can splice unconditionally.
  *
  * @param {RetrievalHit[]} hits
  * @param {{ kind: string, label?: string, max?: number }} opts
@@ -48,8 +52,8 @@ export function formatBlock(hits, { kind, label, max = 6 }) {
         lines.push(`- ${head}${oneLine(hit.record.content)}${tags}${importance}`);
     }
     if (lines.length === 0) return '';
-    const headLabel = label ? `${kind}: ${label}` : kind;
-    return [`${HEADER_PREFIX} (${headLabel}) ---`, ...lines, FOOTER, ''].join('\n');
+    const attrStr = label ? ` id="${label}"` : '';
+    return [`<${kind}${attrStr}>`, ...lines, `</${kind}>`].join('\n');
 }
 
 /**
@@ -64,7 +68,7 @@ export function formatSections(sections) {
         const block = formatBlock(s.hits || [], { kind: s.kind, label: s.label, max: s.max });
         if (block) out.push(block);
     }
-    return out.join('\n');
+    return out.join('\n\n');
 }
 
 /** @param {string} text */
@@ -73,4 +77,4 @@ function oneLine(text) {
 }
 
 export const INJECTION_HEADER_PREFIX = HEADER_PREFIX;
-export const INJECTION_FOOTER = FOOTER;
+export const INJECTION_FOOTER = '</world_lore>';

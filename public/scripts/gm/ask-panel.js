@@ -140,7 +140,8 @@ export function renderAskPanel(mount, { campaign, onBack }) {
                 { ...optimisticPlayer, pending: false },
             );
             rerender();
-            showError(`Ask failed: ${err?.message || err}`);
+            const detail = err?.body?.details || err?.message || String(err);
+            showError(`Ask failed: ${detail}`);
         } finally {
             busy = false;
             submit.disabled = false;

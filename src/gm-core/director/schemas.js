@@ -104,7 +104,8 @@ export const directorDecisionJsonSchema = {
                 },
                 intent: {
                     type: 'string',
-                    description: 'What this actor should attempt to convey or do this beat.',
+                    maxLength: 240,
+                    description: 'DIRECTIVE, NOT PROSE. ~20 words max. Tell the actor WHAT beat to deliver and at what emotional pitch. Never include quoted dialogue, never write the actor\'s lines for them. GOOD: "welcome the newcomer warmly, then steer them toward the dais". BAD: "Ephythithys smiles and says \'Come, child...\'".',
                 },
                 rationale: { type: 'string' },
             },
@@ -117,7 +118,7 @@ export const directorDecisionJsonSchema = {
             properties: {
                 action: { type: 'string', const: 'skill_check' },
                 actor: { type: 'string', description: 'Character id attempting the action.' },
-                intent: { type: 'string' },
+                intent: { type: 'string', maxLength: 240, description: 'Short description of what the actor is trying to do. ~20 words max. No prose, no dialogue.' },
                 rationale: { type: 'string' },
             },
             required: ['action', 'actor', 'intent', 'rationale'],
@@ -361,6 +362,36 @@ export const directorDecisionJsonSchema = {
 };
 
 /**
+ * Check whether an `intent` string looks like prose rather than a short
+ * stage direction. Returns a human-readable error string or null on pass.
+ *
+ * Flags:
+ *   - length > 240
+ *   - contains paragraph breaks
+ *   - contains paired quotation marks with 6+ chars between them
+ *     (i.e. embedded dialogue)
+ *
+ * @param {string} intent
+ * @returns {string | null}
+ */
+export function validateIntentShape(intent) {
+    if (typeof intent !== 'string') return null;
+    if (intent.length > 240) {
+        return `intent is ${intent.length} chars (max 240). Shorten it to a brief directive — tell the actor WHAT to convey, not HOW.`;
+    }
+    if (/\n\n/.test(intent)) {
+        return 'intent contains paragraph breaks — it should be a single short directive, not prose.';
+    }
+    if (/"[^"]{6,}"/.test(intent) || /\u201c[^\u201d]{6,}\u201d/.test(intent)) {
+        return 'intent contains quoted dialogue — write a directive like "greet warmly and reassure", not the character\'s actual lines.';
+    }
+    if (/'[^']{6,}'/.test(intent) && intent.length > 80) {
+        return 'intent contains what looks like embedded speech — keep it to a short directive, not scripted dialogue.';
+    }
+    return null;
+}
+
+/**
  * Lightweight runtime check for a Director decision, just covering the bits
  * the dispatcher actually reads. The LLM client already enforces the schema
  * via structured-output mode where supported; this is a defensive last
@@ -379,11 +410,11 @@ export function validateDirectorDecision(value) {
         case 'speak':
             if (typeof v.actor !== 'string' || !v.actor) return 'speak.actor required';
             if (typeof v.intent !== 'string') return 'speak.intent required';
-            return null;
+            return validateIntentShape(v.intent);
         case 'skill_check':
             if (typeof v.actor !== 'string' || !v.actor) return 'skill_check.actor required';
             if (typeof v.intent !== 'string') return 'skill_check.intent required';
-            return null;
+            return validateIntentShape(v.intent);
         case 'search_library':
             if (typeof v.query !== 'string' || !v.query.trim()) return 'search_library.query required';
             return null;

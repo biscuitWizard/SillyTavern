@@ -19,6 +19,8 @@
  * `add_lore` (writes through `writers/lore-add.js`).
  */
 
+import { tag, TAGS } from '../prompts/tags.js';
+
 /**
  * @typedef {object} TurnContext
  * @property {{ id: string, name: string, brief: string, ruleset_id?: string }} campaign
@@ -26,6 +28,9 @@
  * @property {Array<{ id: string, name: string, is_player: boolean, appearance?: string, personality?: string, voice?: string, background?: string }>} actors
  * @property {Array<{ id: string, name: string, appearance?: string }>} [library_characters]
  * @property {string} recent_transcript    a tail of the JSONL, formatted for the LLM
+ * @property {Array<{ name: string, mes: string, is_user?: boolean, is_system?: boolean, extra?: any }>} [transcript_lines]
+ *                                          Structured transcript lines for multi-turn message building.
+ *                                          Plumbed from the endpoint alongside the flat `recent_transcript`.
  * @property {string} user_input           the player's original input for this turn (immutable across the loop)
  * @property {string} [memories_block]     pre-rendered MEMORIES block from MemoryService (Phase 7).
  *                                          The HTTP wrapper builds it before dispatch and the
@@ -61,6 +66,10 @@ export function directorSystemPrompt(_ctx) {
         '# Speaking actions (produce visible output)',
         '- `speak` with `actor: "narrator"` — give the World Narrator an `intent` describing the *single* beat to convey. The Narrator writes the prose; you do not.',
         '- `speak` with `actor: "<character_id>"` — invite a specific NPC in the scene to speak/act in character. The character id MUST be one of the ids listed in the "Actors in this scene" block below; you may NOT pick the player character, and you may NOT pick a name that is not on that list.',
+        '  **`intent` is a DIRECTIVE, not prose.** ~20 words max. Tell the actor WHAT to convey and at what emotional pitch. The actor writes their own lines.',
+        '    GOOD: "welcome the newcomer warmly, then steer the conversation toward the dais"',
+        '    BAD:  "Ephythithys smiles warmly at Miriana. \'Come, child, come. There\'s no need for fear here.\'"',
+        '  If you write prose or quoted dialogue in `intent`, the engine will reject it and ask you to retry.',
         '- `skill_check` with `actor: "<character_id>"` and `intent: "<short description of what they\'re trying to do>"` — when an action has uncertain outcome and real consequence (climbing, sneaking, persuading, fighting through a hazard, casting a risky spell, etc.). The engine picks the skill, DC, severity, and rolls the dice. You do NOT pick the skill or DC. Pick `skill_check` BEFORE asking the Narrator to describe an attempt with stakes — let the dice land first.',
         '  - After a `skill_check` resolves, your NEXT decision MUST be `speak` (narrator or an in-scene NPC) to deliver the consequence. You may NOT `end_turn` or `skill_check` again until something speaks.',
         '  - Heuristic for who speaks the consequence: if the check was social/interpersonal (persuade, deceive, intimidate, charm), pick the target NPC via `speak: "<npc_id>"`. If it was environmental/world (climb, perceive, sneak, lockpick), pick `speak: "narrator"`.',
@@ -101,7 +110,7 @@ export function directorSystemPrompt(_ctx) {
         '   - If they are off-stage but plausibly available: `spawn_character` (library or new), then `speak: <character_id>` on the next beat. Skip the narrator entirely unless the location itself needs setting up first.',
         '   - Use the Narrator only when there is genuine world-level texture to convey (a new location, a sudden environmental change, the result of a skill check), not as scaffolding for an NPC\'s dialog.',
         '2. After the actor or narrator has spoken, prefer `end_turn` immediately. Do NOT chain multiple actor/narrator beats unless the player\'s input clearly addressed multiple characters in turn.',
-        '3. Never use `intent` to write the actual prose. Tell the actor *what* to convey, not *how*.',
+        '3. `intent` is a stage direction, never a script. ~20 words, no quoted dialogue, no paragraphs. GOOD: "greet warmly and reassure". BAD: a paragraph with character speech in quotes.',
         '4. If the player\'s input is silent or ambiguous, end the turn with no beat at all — let them try again.',
         '5. Never `speak` for the player character. The player drives the player.',
         '6. Only spawn or remove a character when the narrative demands it. Do not stage a roster change to "set up" something — let it happen organically.',
@@ -114,7 +123,7 @@ export function directorSystemPrompt(_ctx) {
         '- Inventing a character id that does not appear in the actor list. Use `search_library` or `spawn_character` first.',
         '- Asking the Narrator to "describe the room", "introduce NPCs", and "set the mood" as separate beats — fold them into ONE intent.',
         '- Repeating the same intent in different words across multiple beats.',
-        '- Using `intent` as a place to write paragraphs of prose. Intent is a directive, ~20 words max.',
+        '- Using `intent` to write paragraphs of prose or quoted dialogue. Intent is a directive (~20 words). The engine will reject prose-shaped intents.',
         '',
         'The `rationale` field is internal — one short sentence explaining the choice.',
     ].join('\n');
@@ -124,58 +133,59 @@ export function directorSystemPrompt(_ctx) {
  * @param {TurnContext} ctx
  */
 export function directorUserPrompt(ctx) {
-    const lines = [];
-    lines.push(`# Campaign: ${ctx.campaign.name}`);
-    if (ctx.campaign.brief) {
-        lines.push(ctx.campaign.brief.trim());
-    }
-    lines.push('');
-    lines.push('# Scene');
-    lines.push(`- Name: ${ctx.scene.name || ctx.scene.id}`);
-    if (ctx.scene.location) lines.push(`- Location: ${ctx.scene.location}`);
-    lines.push(`- Status: ${ctx.scene.status}`);
-    lines.push('');
+    const parts = [];
 
+    // Campaign
+    const campaignLines = [ctx.campaign.name];
+    if (ctx.campaign.brief) campaignLines.push(ctx.campaign.brief.trim());
+    parts.push(tag(TAGS.campaign, campaignLines.join('\n')));
+
+    // Scene
+    const sceneLines = [`Name: ${ctx.scene.name || ctx.scene.id}`];
+    if (ctx.scene.location) sceneLines.push(`Location: ${ctx.scene.location}`);
+    sceneLines.push(`Status: ${ctx.scene.status}`);
+    parts.push(tag(TAGS.scene, sceneLines.join('\n')));
+
+    // Actors
     if (ctx.actors && ctx.actors.length) {
-        lines.push('# Actors in this scene');
+        const actorLines = [];
         for (const a of ctx.actors) {
             const role = a.is_player ? 'Player Character (do NOT speak as them)' : 'NPC';
-            lines.push(`- id: \`${a.id}\` — **${a.name}** (${role})`);
+            actorLines.push(`- id: \`${a.id}\` — **${a.name}** (${role})`);
             const blurbs = [];
             if (a.appearance) blurbs.push(`Appearance: ${truncate(a.appearance, 240)}`);
             if (a.personality) blurbs.push(`Personality: ${truncate(a.personality, 240)}`);
             if (a.voice) blurbs.push(`Voice: ${truncate(a.voice, 240)}`);
             if (a.background) blurbs.push(`Background: ${truncate(a.background, 480)}`);
-            for (const b of blurbs) lines.push(`  - ${b}`);
+            for (const b of blurbs) actorLines.push(`  - ${b}`);
         }
-        lines.push('');
+        parts.push(tag(TAGS.actors, actorLines.join('\n')));
     }
 
+    // Library
     if (ctx.library_characters && ctx.library_characters.length) {
-        lines.push('# Library (off-stage characters available to spawn)');
+        const libLines = [];
         for (const a of ctx.library_characters) {
-            lines.push(`- id: \`${a.id}\` — **${a.name}**${a.appearance ? ` — ${truncate(a.appearance, 160)}` : ''}`);
+            libLines.push(`- id: \`${a.id}\` — **${a.name}**${a.appearance ? ` — ${truncate(a.appearance, 160)}` : ''}`);
         }
-        lines.push('');
+        parts.push(tag(TAGS.library, libLines.join('\n')));
     }
 
+    // Transcript
     if (ctx.recent_transcript && ctx.recent_transcript.trim()) {
-        lines.push('# Recent transcript');
-        lines.push(ctx.recent_transcript.trim());
-        lines.push('');
+        parts.push(tag(TAGS.recent, ctx.recent_transcript.trim()));
     }
 
+    // Memories
     if (ctx.memories_block && ctx.memories_block.trim()) {
-        lines.push(ctx.memories_block.trim());
-        lines.push('');
+        parts.push(ctx.memories_block.trim());
     }
 
-    lines.push('# Player input this turn');
-    lines.push(ctx.user_input || '(empty)');
-    lines.push('');
+    // Player input
+    parts.push(tag(TAGS.player_input, ctx.user_input || '(empty)'));
 
-    lines.push('Decide the FIRST beat for this player turn. Return one DirectorDecision JSON object. After the engine dispatches your decision you will be re-invoked with the result appended to this conversation; keep going until you emit `end_turn`.');
-    return lines.join('\n');
+    parts.push('Decide the FIRST beat for this player turn. Return one DirectorDecision JSON object. After the engine dispatches your decision you will be re-invoked with the result appended to this conversation; keep going until you emit `end_turn`.');
+    return parts.filter(Boolean).join('\n\n');
 }
 
 /** @param {string} s @param {number} n */

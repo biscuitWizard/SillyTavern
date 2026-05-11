@@ -2,7 +2,7 @@
  * Phase 7: injection block format invariants.
  *
  *   - Empty hits → empty string (caller can splice unconditionally).
- *   - Block carries the canonical `--- BEGIN MEMORIES ({kind}) ---` header
+ *   - Block carries canonical XML tags (e.g. `<character_memory id="jack">`)
  *     so the transcript-cleanliness assertion can grep for it.
  *   - Dedupes by record id.
  *   - Caps at the requested max.
@@ -40,11 +40,10 @@ describe('formatBlock', () => {
         expect(formatBlock([], { kind: 'character_memory' })).toBe('');
     });
 
-    test('opens with BEGIN MEMORIES + kind label, closes with END MEMORIES', () => {
+    test('opens with <kind id="label"> tag, closes with </kind>', () => {
         const out = formatBlock([baseRec('a', 'first')], { kind: 'character_memory', label: 'jack' });
-        expect(out).toContain(INJECTION_HEADER_PREFIX);
-        expect(out).toContain('character_memory: jack');
-        expect(out.trim().endsWith(INJECTION_FOOTER)).toBe(true);
+        expect(out).toContain('<character_memory id="jack">');
+        expect(out.trim().endsWith('</character_memory>')).toBe(true);
     });
 
     test('dedupes by id', () => {

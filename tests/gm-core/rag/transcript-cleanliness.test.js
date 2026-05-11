@@ -198,30 +198,30 @@ describe('Phase 7 — transcript cleanliness', () => {
                 sceneIndex: 0,
             });
 
-            // 1. Director's user prompt SHOULD carry the MEMORIES block.
+            // 1. Director's user prompt SHOULD carry memory XML tags.
             const directorUser = director.calls.map(c => c.user).join('\n---\n');
-            expect(directorUser).toContain('BEGIN MEMORIES');
+            expect(directorUser).toMatch(/<(world_lore|director_memory)/);
             // The director sees world + director_memory; should never see character_memory.
             expect(directorUser).not.toContain('CHARACTER_NEEDLE');
             // Adjudicator is not used here (no skill_check), so we can also assert
-            // none of the system prompts carry the MEMORIES block at all.
-            for (const c of director.calls) expect(c.system).not.toContain('BEGIN MEMORIES');
+            // none of the system prompts carry memory tags at all.
+            for (const c of director.calls) expect(c.system).not.toMatch(/<(world_lore|character_memory|director_memory)/);
 
-            // 2. Actor user prompt SHOULD carry the MEMORIES block (character + world).
+            // 2. Actor user prompt SHOULD carry the memory XML tags (character + world).
             const actorUser = actor.calls.map(c => c.user).join('\n---\n');
-            expect(actorUser).toContain('BEGIN MEMORIES');
+            expect(actorUser).toMatch(/<(character_memory|world_lore)/);
             expect(actorUser).toContain('CHARACTER_NEEDLE');
             // Actor must NEVER see director_memory or narrator_memory.
             expect(actorUser).not.toContain('DIRECTOR_NEEDLE');
             expect(actorUser).not.toContain('NARRATOR_NEEDLE');
 
-            // 3. NONE of the emitted message texts should contain the MEMORIES
-            //    header or any of the needles. (The actor was asked to reply
+            // 3. NONE of the emitted message texts should contain memory tags
+            //    or any of the needles. (The actor was asked to reply
             //    'Welcome, traveller.', period.)
             const messages = events.filter(e => e.kind === 'message');
             expect(messages.length).toBeGreaterThan(0);
             for (const m of messages) {
-                expect(m.text || '').not.toContain('BEGIN MEMORIES');
+                expect(m.text || '').not.toMatch(/<(world_lore|character_memory|director_memory)/);
                 expect(m.text || '').not.toContain('CHARACTER_NEEDLE');
                 expect(m.text || '').not.toContain('DIRECTOR_NEEDLE');
                 expect(m.text || '').not.toContain('NARRATOR_NEEDLE');

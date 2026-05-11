@@ -470,6 +470,14 @@ async function openaiStructured({ baseUrl, apiKey, profile, messages, schema, sc
         if (onUsage) onUsage(normaliseUsage(json, 'openai'));
         return parsed;
     } catch (parseErr) {
+        if (extractOpenaiFinishReason(json) === 'length') {
+            const repaired = repairTruncatedJson(raw);
+            if (repaired) {
+                console.warn(`[llm] repaired truncated ${schemaName} JSON (finish_reason=length)`);
+                if (onUsage) onUsage(normaliseUsage(json, 'openai'));
+                return repaired;
+            }
+        }
         // Provider accepted `response_format` but produced unparseable output —
         // re-ask once in text-mode JSON before surfacing the error.
         try {
@@ -504,6 +512,14 @@ async function openaiStructuredFallback({ baseUrl, apiKey, profile, messages, sc
             if (onUsage) onUsage(normaliseUsage(lastJson, 'openai'));
             return parsed;
         } catch (err) {
+            if (extractOpenaiFinishReason(lastJson) === 'length') {
+                const repaired = repairTruncatedJson(raw);
+                if (repaired) {
+                    console.warn(`[llm] repaired truncated ${schemaName} JSON (finish_reason=length)`);
+                    if (onUsage) onUsage(normaliseUsage(lastJson, 'openai'));
+                    return repaired;
+                }
+            }
             lastErr = err;
         }
     }
@@ -599,6 +615,11 @@ function extractOpenaiText(json) {
     return '';
 }
 
+/** @param {any} json @returns {string | undefined} */
+function extractOpenaiFinishReason(json) {
+    return json?.choices?.[0]?.finish_reason;
+}
+
 /* -------- Claude transport -------- */
 
 /**
@@ -634,7 +655,18 @@ async function claudeStructured({ baseUrl, apiKey, profile, messages, schema, sc
             return anyTool.input;
         }
         const text = extractClaudeText(json);
-        return parseJsonOrThrow(text, schemaName);
+        try {
+            return parseJsonOrThrow(text, schemaName);
+        } catch (parseErr) {
+            if (json?.stop_reason === 'max_tokens') {
+                const repaired = repairTruncatedJson(text);
+                if (repaired) {
+                    console.warn(`[llm] repaired truncated claude ${schemaName} JSON (stop_reason=max_tokens)`);
+                    return repaired;
+                }
+            }
+            throw parseErr;
+        }
     }
     if (block.input && typeof block.input === 'object') return block.input;
     throw new LlmError('bad_response', 'claude tool_use block missing input object', true);
@@ -837,4 +869,64 @@ function extractFirstJsonObject(s) {
         }
     }
     return null;
+}
+
+/**
+ * Best-effort repair of truncated JSON produced when a model hits its
+ * generation limit mid-object. Walks the string tracking JSON state, then
+ * closes any dangling string literals, arrays, and objects.
+ *
+ * Only attempts repair when the string starts with `{` (i.e. it looks like
+ * it was meant to be a JSON object). Returns `null` if the input doesn't
+ * look repairable or repair produces invalid JSON.
+ *
+ * @param {string} raw
+ * @returns {object | null}
+ */
+function repairTruncatedJson(raw) {
+    if (typeof raw !== 'string') return null;
+    let s = raw.trim();
+    if (s.startsWith('```')) {
+        s = s.replace(/^```[a-zA-Z0-9]*\n?/, '').replace(/```$/, '').trim();
+    }
+    const start = s.indexOf('{');
+    if (start === -1) return null;
+    s = s.slice(start);
+
+    let inString = false;
+    let escape = false;
+    const stack = [];
+    for (let i = 0; i < s.length; i++) {
+        const ch = s[i];
+        if (escape) { escape = false; continue; }
+        if (inString) {
+            if (ch === '\\') escape = true;
+            else if (ch === '"') inString = false;
+            continue;
+        }
+        if (ch === '"') { inString = true; continue; }
+        if (ch === '{') stack.push('}');
+        else if (ch === '[') stack.push(']');
+        else if (ch === '}' || ch === ']') stack.pop();
+    }
+
+    if (stack.length === 0 && !inString) return null;
+
+    let suffix = '';
+    if (inString) suffix += '"';
+    while (stack.length) suffix += stack.pop();
+
+    try {
+        return JSON.parse(s + suffix);
+    } catch (_) {
+        // The closed-off string value might contain trailing junk (e.g. a
+        // half-written escape). Try trimming the last few chars before the
+        // closing quote.
+        for (let trim = 1; trim <= 5; trim++) {
+            try {
+                return JSON.parse(s.slice(0, -trim) + suffix);
+            } catch (_) { /* keep trying */ }
+        }
+        return null;
+    }
 }

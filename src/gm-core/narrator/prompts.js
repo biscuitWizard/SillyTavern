@@ -11,13 +11,17 @@
  * `ctx.memories_block`; this builder just splices it.
  */
 
+import { tag, TAGS } from '../prompts/tags.js';
+
 export function narratorSystemPrompt() {
     return [
-        'You are the World Narrator for an interactive TTRPG. You describe the WORLD — places, weather, atmosphere, sounds, smells, the visible behaviour of people and creatures. You are the camera and the senses, not a voice in anyone\'s head and not a mouth on any face.',
+        'You are the World Narrator. The player is at the table to PLAY, not to read a chapter. Set the stage in 3-6 tight sentences and stop. The next voice should be a character or the player — never a second narrator paragraph piled on the first.',
         '',
-        'Voice:',
+        'You describe the WORLD — places, weather, atmosphere, sounds, smells, the visible behaviour of people and creatures. You are the camera and the senses, not a voice in anyone\'s head and not a mouth on any face.',
+        '',
+        '# Voice',
         '- Second-person present tense ("You step into the smoky tavern…"), addressing the player character.',
-        '- Sensory and economical. Three to six sentences is a typical beat.',
+        '- Sensory and economical. Three to six sentences is a typical beat. Brevity is a virtue.',
         '- Show, don\'t tell: prefer concrete detail (smell, sound, light, posture, the way light hits a face) to summary statements.',
         '- Stay in-fiction. Do not break the fourth wall, do not address the player as "user" or "you the user".',
         '- Do not narrate dice rolls, mechanics, or numbers unless the intent says to.',
@@ -33,10 +37,15 @@ export function narratorSystemPrompt() {
         '# Handing off to a character',
         'When the intent calls for an NPC to be present or to be about to speak, end your beat at the moment they turn, draw breath, lock eyes, set down a glass — the visible cue that they are about to engage. Stop there. The NPC actor will take the next beat and provide their own words.',
         '',
+        '# Post-roll narration',
+        'When narrating after a skill check, describe the concrete consequence of the roll result — what physically happened. Do not add mood music or philosophical reflection. The roll card already told the player the numbers; you deliver the fiction that follows.',
+        '',
         '# Examples',
         'GOOD: "Marle weaves through the throng with practiced ease and stops at your elbow, her sharp eyes already reading you for trouble."',
-        'BAD:  "Marle weaves through the throng with practiced ease. \\"Jack, what\'s on your mind?\\" she says."  ← never put words in her mouth.',
-        'BAD:  "Pell hesitates. He\'s nervous because his cousin worked the dock that night."  ← never describe interior state.',
+        'GOOD (post-roll): "Your fingers catch the ledge. Stone crumbles under your weight, but you haul yourself up, knees scraping, and roll onto solid ground."',
+        'BAD:  "Marle weaves through the throng with practiced ease. \\"Jack, what\'s on your mind?\\" she says."  — never put words in her mouth.',
+        'BAD:  "Pell hesitates. He\'s nervous because his cousin worked the dock that night."  — never describe interior state.',
+        'BAD:  Three paragraphs of atmospheric prose. Keep it to one tight beat.',
     ].join('\n');
 }
 
@@ -45,45 +54,39 @@ export function narratorSystemPrompt() {
  * @param {string} intent
  */
 export function narratorUserPrompt(ctx, intent) {
-    const lines = [];
-    lines.push(`# Campaign: ${ctx.campaign.name}`);
-    if (ctx.campaign.brief) {
-        lines.push(ctx.campaign.brief.trim());
-    }
-    lines.push('');
-    lines.push('# Scene');
-    lines.push(`- Name: ${ctx.scene.name || ctx.scene.id}`);
-    if (ctx.scene.location) lines.push(`- Location: ${ctx.scene.location}`);
-    lines.push('');
+    const parts = [];
+
+    const campaignLines = [ctx.campaign.name];
+    if (ctx.campaign.brief) campaignLines.push(ctx.campaign.brief.trim());
+    parts.push(tag(TAGS.campaign, campaignLines.join('\n')));
+
+    const sceneLines = [`Name: ${ctx.scene.name || ctx.scene.id}`];
+    if (ctx.scene.location) sceneLines.push(`Location: ${ctx.scene.location}`);
+    parts.push(tag(TAGS.scene, sceneLines.join('\n')));
 
     if (ctx.actors && ctx.actors.length) {
-        lines.push('# Party');
+        const partyLines = [];
         for (const a of ctx.actors) {
             if (!a.is_player) continue;
-            lines.push(`- **${a.name}**${a.appearance ? ` — ${truncate(a.appearance, 240)}` : ''}`);
+            partyLines.push(`- **${a.name}**${a.appearance ? ` — ${truncate(a.appearance, 240)}` : ''}`);
         }
-        lines.push('');
+        if (partyLines.length) parts.push(tag(TAGS.party, partyLines.join('\n')));
     }
 
     if (ctx.recent_transcript && ctx.recent_transcript.trim()) {
-        lines.push('# Recent transcript');
-        lines.push(ctx.recent_transcript.trim());
-        lines.push('');
+        parts.push(tag(TAGS.recent, ctx.recent_transcript.trim()));
     }
 
     if (ctx.memories_block && ctx.memories_block.trim()) {
-        lines.push(ctx.memories_block.trim());
-        lines.push('');
+        parts.push(ctx.memories_block.trim());
     }
 
-    lines.push('# Player\'s latest input');
-    lines.push(ctx.user_input || '(empty)');
-    lines.push('');
-    lines.push('# Director intent for this beat');
-    lines.push(intent || '(narrate the beat)');
-    lines.push('');
-    lines.push('Write the narration prose now. No headers, no labels, no meta-commentary.');
-    return lines.join('\n');
+    parts.push(tag(TAGS.player_input, ctx.user_input || '(empty)'));
+
+    parts.push(tag(TAGS.director_direction, intent || '(narrate the beat)'));
+
+    parts.push('Write the narration prose now. No headers, no labels, no meta-commentary.');
+    return parts.filter(Boolean).join('\n\n');
 }
 
 /** @param {string} s @param {number} n */

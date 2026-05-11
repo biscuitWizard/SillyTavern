@@ -541,9 +541,7 @@ describe('mutate_sheet dispatch', () => {
         const seenSheetSnapshots = [];
         const actor = {
             chat: jest.fn(async ({ user }) => {
-                // Capture the YAML block from the user prompt to assert the
-                // post-mutation hp is what the actor sees.
-                const m = user.match(/```yaml\n([\s\S]*?)```/);
+                const m = user.match(/<character_sheet[^>]*>\n([\s\S]*?)<\/character_sheet>/);
                 seenSheetSnapshots.push(m ? m[1] : '');
                 return 'I groan and sit up.';
             }),

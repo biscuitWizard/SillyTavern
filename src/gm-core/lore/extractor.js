@@ -12,6 +12,7 @@
  */
 
 import { writeCoreLoreFile } from './store.js';
+import { tag, TAGS } from '../prompts/tags.js';
 
 /**
  * @typedef {import('./schemas.js').LoreEntry} LoreEntry
@@ -74,19 +75,13 @@ const SYSTEM_PROMPT = [
  * @param {{ name: string, brief?: string, addendum?: string }} campaign
  */
 function buildUserPrompt(campaign) {
-    const lines = [`Campaign: ${campaign.name}`, ''];
-    if (campaign.brief?.trim()) {
-        lines.push('Brief:');
-        lines.push(campaign.brief.trim());
-        lines.push('');
-    }
-    if (campaign.addendum?.trim()) {
-        lines.push('Addendum:');
-        lines.push(campaign.addendum.trim());
-        lines.push('');
-    }
-    lines.push('Extract LoreEntry records covering the most important setting facts.');
-    return lines.join('\n');
+    const parts = [];
+    const campaignLines = [campaign.name];
+    if (campaign.brief?.trim()) campaignLines.push(campaign.brief.trim());
+    if (campaign.addendum?.trim()) campaignLines.push(`Addendum: ${campaign.addendum.trim()}`);
+    parts.push(tag(TAGS.campaign, campaignLines.join('\n')));
+    parts.push('Extract LoreEntry records covering the most important setting facts.');
+    return parts.filter(Boolean).join('\n\n');
 }
 
 /**

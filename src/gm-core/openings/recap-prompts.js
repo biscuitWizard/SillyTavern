@@ -12,6 +12,8 @@
  * the Campaign Main panel reads consistently regardless of source.
  */
 
+import { tag, TAGS } from '../prompts/tags.js';
+
 export const SCENE_END_RECAP_SCHEMA = {
     $schema: 'https://json-schema.org/draft/2020-12/schema',
     title: 'SceneEndRecap',
@@ -77,39 +79,38 @@ export const SCENE_END_RECAP_SYSTEM_PROMPT = [
  * }} ctx
  */
 export function buildSceneEndRecapUser(ctx) {
-    const lines = [];
-    lines.push(`Campaign: ${ctx.campaign?.name || 'Untitled'}`);
-    if (ctx.campaign?.brief) lines.push(`Brief: ${truncate(ctx.campaign.brief, 400)}`);
-    if (ctx.playerName) lines.push(`Player character: ${ctx.playerName}`);
-    lines.push('');
+    const parts = [];
+    const campaignLines = [ctx.campaign?.name || 'Untitled'];
+    if (ctx.campaign?.brief) campaignLines.push(`Brief: ${truncate(ctx.campaign.brief, 400)}`);
+    if (ctx.playerName) campaignLines.push(`Player character: ${ctx.playerName}`);
+    parts.push(tag(TAGS.campaign, campaignLines.join('\n')));
 
     if (ctx.previousSituation) {
-        lines.push('Previous "where things stand":');
-        if (ctx.previousSituation.recap) lines.push(`- Recap: ${ctx.previousSituation.recap}`);
-        if (ctx.previousSituation.location) lines.push(`- Location: ${ctx.previousSituation.location}`);
-        if (ctx.previousSituation.time) lines.push(`- Time: ${ctx.previousSituation.time}`);
+        const prevLines = [];
+        if (ctx.previousSituation.recap) prevLines.push(`Recap: ${ctx.previousSituation.recap}`);
+        if (ctx.previousSituation.location) prevLines.push(`Location: ${ctx.previousSituation.location}`);
+        if (ctx.previousSituation.time) prevLines.push(`Time: ${ctx.previousSituation.time}`);
         if (ctx.previousSituation.nearby_characters?.length) {
-            lines.push(`- Nearby: ${ctx.previousSituation.nearby_characters.join(', ')}`);
+            prevLines.push(`Nearby: ${ctx.previousSituation.nearby_characters.join(', ')}`);
         }
-        lines.push('');
+        parts.push(tag(TAGS.previous_situation, prevLines.join('\n') || '(none)'));
     } else {
-        lines.push('(No previous situation on record — this is the first scene of the campaign.)');
-        lines.push('');
+        parts.push(tag(TAGS.previous_situation, '(No previous situation on record — this is the first scene of the campaign.)'));
     }
 
-    lines.push('Scene that just ended:');
-    if (ctx.sceneSummary?.headline) lines.push(`- Headline: ${ctx.sceneSummary.headline}`);
-    if (ctx.sceneSummary?.summary) lines.push(`- Summary: ${ctx.sceneSummary.summary}`);
+    const summaryLines = [];
+    if (ctx.sceneSummary?.headline) summaryLines.push(`Headline: ${ctx.sceneSummary.headline}`);
+    if (ctx.sceneSummary?.summary) summaryLines.push(`Summary: ${ctx.sceneSummary.summary}`);
     if (ctx.sceneSummary?.location_changes?.length) {
-        lines.push(`- Location changes: ${ctx.sceneSummary.location_changes.join('; ')}`);
+        summaryLines.push(`Location changes: ${ctx.sceneSummary.location_changes.join('; ')}`);
     }
     if (ctx.sceneSummary?.participant_changes?.length) {
-        lines.push(`- Participant changes: ${ctx.sceneSummary.participant_changes.join('; ')}`);
+        summaryLines.push(`Participant changes: ${ctx.sceneSummary.participant_changes.join('; ')}`);
     }
+    parts.push(tag(TAGS.scene_summary, summaryLines.join('\n') || '(no summary)'));
 
-    lines.push('');
-    lines.push('Produce the SceneEndRecap JSON for the moment immediately after the scene closed.');
-    return lines.join('\n');
+    parts.push('Produce the SceneEndRecap JSON for the moment immediately after the scene closed.');
+    return parts.filter(Boolean).join('\n\n');
 }
 
 /** @param {string} s @param {number} max */

@@ -42,6 +42,7 @@
  */
 
 import { renderSheetYaml } from '../library/yaml.js';
+import { tag, TAGS } from '../prompts/tags.js';
 
 /**
  * @typedef {import('../director/prompts.js').TurnContext} TurnContext
@@ -56,7 +57,7 @@ import { renderSheetYaml } from '../library/yaml.js';
 export function actorSystemPrompt(_ctx, character) {
     const name = character.name || 'Unknown';
     const lines = [
-        `You are ${name}, a character in an interactive TTRPG scene.`,
+        `You are ${name}. You are not the GM, not the narrator, and not a literary device. The player is in the room with YOU. Reply briefly, in your voice, in present tense — and let the rest of the world keep its own voices.`,
         '',
         '# Voice rules',
         '- Speak and act in first person as your character.',
@@ -66,6 +67,11 @@ export function actorSystemPrompt(_ctx, character) {
         '- Do not invent skill checks, dice rolls, or numeric outcomes — those are decided by the system.',
         '- Keep replies short by default: one to four sentences plus optional brief action beats in *italics*.',
         '- Only your own sheet is visible to you. Other characters\' sheets are not.',
+        '',
+        '# Direction handling',
+        'You will receive a stage direction telling you WHAT beat to deliver. It is a cue, not a script. Translate it into your own voice and gestures — never quote it back or copy its phrasing.',
+        'GOOD: direction says "greet warmly and reassure" — you say it in your own words with your own personality.',
+        'BAD: direction says "greet Miriana warmly" — you repeat "greet Miriana warmly" or paste the direction as dialogue.',
         '',
         '# Identity',
     ];
@@ -87,51 +93,39 @@ export function actorSystemPrompt(_ctx, character) {
  * @returns {string}
  */
 export function actorUserPrompt(ctx, character, intent) {
-    const lines = [];
-    lines.push(`# Campaign: ${ctx.campaign?.name || ''}`);
-    if (ctx.campaign?.brief) {
-        lines.push(String(ctx.campaign.brief).trim());
-    }
-    lines.push('');
+    const parts = [];
+
+    const campaignLines = [ctx.campaign?.name || ''];
+    if (ctx.campaign?.brief) campaignLines.push(String(ctx.campaign.brief).trim());
+    parts.push(tag(TAGS.campaign, campaignLines.join('\n')));
 
     if (ctx.scene) {
-        lines.push('# Scene');
-        const sceneName = ctx.scene.name || ctx.scene.id;
-        lines.push(`- Name: ${sceneName}`);
-        if (ctx.scene.location) lines.push(`- Location: ${ctx.scene.location}`);
-        lines.push('');
+        const sceneLines = [`Name: ${ctx.scene.name || ctx.scene.id}`];
+        if (ctx.scene.location) sceneLines.push(`Location: ${ctx.scene.location}`);
+        parts.push(tag(TAGS.scene, sceneLines.join('\n')));
     }
 
     if (ctx.recent_transcript && String(ctx.recent_transcript).trim()) {
-        lines.push('# Recent transcript');
-        lines.push(String(ctx.recent_transcript).trim());
-        lines.push('');
+        parts.push(tag(TAGS.recent, String(ctx.recent_transcript).trim()));
     }
 
     if (ctx.user_input && String(ctx.user_input).trim()) {
-        lines.push('# Player just said / did');
-        lines.push(String(ctx.user_input).trim());
-        lines.push('');
+        parts.push(tag(TAGS.player_input, String(ctx.user_input).trim()));
     }
 
     if (ctx.memories_block && ctx.memories_block.trim()) {
-        lines.push(ctx.memories_block.trim());
-        lines.push('');
+        parts.push(ctx.memories_block.trim());
     }
 
     const sheetYaml = renderSheetYaml(character.sheet, ctx.sheet_layout);
     if (sheetYaml.trim()) {
-        lines.push('# Your character sheet');
-        lines.push('```yaml');
-        lines.push(sheetYaml);
-        lines.push('```');
-        lines.push('');
+        parts.push(tag(TAGS.sheet, sheetYaml, { format: 'yaml' }));
     }
 
-    lines.push(`# Director instruction for ${character.name}`);
-    lines.push(intent && intent.trim() ? intent.trim() : '(react in character to the latest beat)');
-    lines.push('');
-    lines.push(`Speak as ${character.name} now. Stay in character.`);
-    return lines.join('\n');
+    const directionBody = intent && intent.trim() ? intent.trim() : '(react in character to the latest beat)';
+    parts.push(tag(TAGS.director_direction, directionBody));
+
+    parts.push(`Speak as ${character.name} now. Stay in character.`);
+    return parts.filter(Boolean).join('\n\n');
 }
 

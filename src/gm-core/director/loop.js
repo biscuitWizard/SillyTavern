@@ -78,6 +78,7 @@ import { makeDebugEvent, emitDebugEvent } from '../debug/bus.js';
 import { directorSystemPrompt, directorUserPrompt } from './prompts.js';
 import { narratorSystemPrompt, narratorUserPrompt } from '../narrator/prompts.js';
 import { actorSystemPrompt, actorUserPrompt } from '../actors/prompts.js';
+import { buildActorMessages, buildNarratorMessages } from '../prompts/messages.js';
 import { directorDecisionJsonSchema, validateDirectorDecision, SUPPORTED_ACTIONS } from './schemas.js';
 import { LlmError } from '../llm/errors.js';
 import * as skillEngine from '../skillcheck/engine.js';
@@ -749,9 +750,11 @@ async function dispatchSpeak({
         }
         let prose;
         try {
+            const messages = buildNarratorMessages(ctx, decision.intent || '');
             prose = await actorClient.chat({
-                system: narratorSystemPrompt(),
-                user: narratorUserPrompt(ctx, decision.intent || ''),
+                system: messages[0].content,
+                user: messages[messages.length - 1].content,
+                messages,
                 signal,
                 role: 'narrator',
             });
@@ -876,9 +879,11 @@ async function dispatchSpeak({
 
     let prose;
     try {
+        const messages = buildActorMessages(ctx, character, decision.intent || '');
         prose = await actorClient.chat({
-            system: actorSystemPrompt(ctx, character),
-            user: actorUserPrompt(ctx, character, decision.intent || ''),
+            system: messages[0].content,
+            user: messages[messages.length - 1].content,
+            messages,
             signal,
             role: 'actor',
         });
@@ -2033,7 +2038,17 @@ async function emitError(emit, err, stage) {
 function appendToTail(ctx, who, text) {
     const tail = ctx.recent_transcript || '';
     const next = `${tail}${tail ? '\n' : ''}${who}: ${text}`;
-    // Cap tail length to ~8000 chars (loose bound; the HTTP wrapper trims more
-    // aggressively before passing the next director step).
     ctx.recent_transcript = next.length > 8000 ? next.slice(-8000) : next;
+
+    if (Array.isArray(ctx.transcript_lines)) {
+        const isPlayer = who === (ctx.actors?.find(a => a.is_player)?.name);
+        ctx.transcript_lines.push({
+            name: who,
+            mes: text,
+            is_user: !!isPlayer,
+            is_system: false,
+            send_date: new Date().toISOString(),
+            extra: { role: who === 'Narrator' ? 'narrator' : 'actor' },
+        });
+    }
 }

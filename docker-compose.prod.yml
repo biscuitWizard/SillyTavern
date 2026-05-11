@@ -23,8 +23,10 @@
 #   MODELS_DIR               Host path to GGUF models   (default: /tank/data/Models)
 #   CHAT_MODEL_FILE           Chat model filename        (default: EVA-Qwen2.5-32B-v0.2-Q5_K_M.gguf)
 #   DIRECTOR_MODEL_FILE       Director model filename    (default: Qwen2.5-14B-Instruct-Q5_K_M.gguf)
-#   LLAMA_CTX                 Chat context size          (default: 32768)
-#   LLAMA_DIRECTOR_CTX        Director context size      (default: 32768)
+#   LLAMA_CTX                 Chat context size          (default: 131072)
+#   LLAMA_PARALLEL            Chat model parallel slots  (default: 1)
+#   LLAMA_DIRECTOR_CTX        Director context size      (default: 131072)
+#   LLAMA_DIRECTOR_PARALLEL   Director parallel slots    (default: 1)
 #   LLAMA_SERVER_PORT         Chat model host port       (default: 8180)
 #   LLAMA_DIRECTOR_PORT       Director model host port   (default: 8182)
 #   OLLAMA_PORT               Ollama host port           (default: 11434)
@@ -79,6 +81,9 @@ services:
       - ttrpgtavern-prod
 
   # Actor / Narrator model — EVA-Qwen2.5-32B (RP-tuned prose)
+  # Parallel is set to 1 because all GM requests are serialised, and
+  # fewer slots means the full 128k context fits in VRAM without
+  # multiplying the KV cache. Override with LLAMA_PARALLEL if needed.
   llama-server:
     image: ghcr.io/ggml-org/llama.cpp:server-cuda
     container_name: ttrpgtavern-prod-llama-server
@@ -87,7 +92,9 @@ services:
       - --model
       - /models/${CHAT_MODEL_FILE:-EVA-Qwen2.5-32B-v0.2-Q5_K_M.gguf}
       - -c
-      - "${LLAMA_CTX:-32768}"
+      - "${LLAMA_CTX:-131072}"
+      - --parallel
+      - "${LLAMA_PARALLEL:-1}"
       - --cache-type-k
       - "${LLAMA_CACHE_TYPE_K:-q8_0}"
       - --cache-type-v
@@ -129,7 +136,9 @@ services:
       - --model
       - /models/${DIRECTOR_MODEL_FILE:-Qwen2.5-14B-Instruct-Q5_K_M.gguf}
       - -c
-      - "${LLAMA_DIRECTOR_CTX:-32768}"
+      - "${LLAMA_DIRECTOR_CTX:-131072}"
+      - --parallel
+      - "${LLAMA_DIRECTOR_PARALLEL:-1}"
       - --cache-type-k
       - "${LLAMA_DIRECTOR_CACHE_TYPE_K:-q8_0}"
       - --cache-type-v

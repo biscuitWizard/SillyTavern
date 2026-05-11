@@ -1846,6 +1846,7 @@ async function runStreamingTurn(args) {
             appearance: c.appearance,
         })),
         recent_transcript: recentTranscript,
+        transcript_lines: recentLines,
         user_input: userInput,
     };
 

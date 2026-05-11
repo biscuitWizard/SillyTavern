@@ -14,6 +14,8 @@
  * regression keywords in lockstep.
  */
 
+import { tag, TAGS } from '../prompts/tags.js';
+
 export const SCENE_SUMMARY_SCHEMA = {
     $schema: 'https://json-schema.org/draft/2020-12/schema',
     title: 'SceneSummary',
@@ -100,29 +102,25 @@ export const SCENE_SUMMARY_SYSTEM_PROMPT = [
  * }} ctx
  */
 export function buildSummaryUser(ctx) {
-    const lines = [];
-    lines.push(`Campaign: ${ctx.campaign?.name || 'Untitled'}`);
-    if (ctx.campaign?.brief) {
-        lines.push(`Brief: ${truncate(ctx.campaign.brief, 600)}`);
-    }
-    lines.push('');
-    lines.push(`Scene: ${ctx.scene?.name || ctx.scene?.id || 'Untitled scene'}`);
-    if (ctx.scene?.location) lines.push(`Starting location: ${ctx.scene.location}`);
-    if (ctx.scene?.started_at) lines.push(`Started: ${ctx.scene.started_at}`);
+    const parts = [];
 
+    const campaignLines = [ctx.campaign?.name || 'Untitled'];
+    if (ctx.campaign?.brief) campaignLines.push(`Brief: ${truncate(ctx.campaign.brief, 600)}`);
+    parts.push(tag(TAGS.campaign, campaignLines.join('\n')));
+
+    const sceneLines = [ctx.scene?.name || ctx.scene?.id || 'Untitled scene'];
+    if (ctx.scene?.location) sceneLines.push(`Starting location: ${ctx.scene.location}`);
+    if (ctx.scene?.started_at) sceneLines.push(`Started: ${ctx.scene.started_at}`);
     const roster = (ctx.participants || [])
         .map(p => p.is_player ? `${p.name} (PC)` : p.name)
         .filter(Boolean);
-    if (roster.length > 0) {
-        lines.push(`Starting roster: ${roster.join(', ')}`);
-    }
+    if (roster.length > 0) sceneLines.push(`Starting roster: ${roster.join(', ')}`);
+    parts.push(tag(TAGS.scene, sceneLines.join('\n')));
 
-    lines.push('');
-    lines.push('Transcript:');
-    lines.push((ctx.transcriptTail || '').trim() || '(empty transcript)');
-    lines.push('');
-    lines.push('Produce the SceneSummary JSON. Stay strictly inside the transcript.');
-    return lines.join('\n');
+    parts.push(tag(TAGS.transcript, (ctx.transcriptTail || '').trim() || '(empty transcript)'));
+
+    parts.push('Produce the SceneSummary JSON. Stay strictly inside the transcript.');
+    return parts.filter(Boolean).join('\n\n');
 }
 
 /** @param {string} s @param {number} max */

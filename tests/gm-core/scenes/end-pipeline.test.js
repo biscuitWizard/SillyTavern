@@ -109,11 +109,11 @@ function makeFakeClient(capture, overrides = {}) {
             if (schemaName === 'SceneEndMemoryExtraction') {
                 if (overrides.extractionByName) {
                     for (const [name, payload] of Object.entries(overrides.extractionByName)) {
-                        if (user.includes(`Character: ${name}`)) return payload;
+                        if (user.includes(`What does ${name} carry forward`)) return payload;
                     }
                 }
                 for (const [name, payload] of Object.entries(EXTRACTION_BY_NAME)) {
-                    if (user.includes(`Character: ${name}`)) return payload;
+                    if (user.includes(`What does ${name} carry forward`)) return payload;
                 }
                 return { is_significant: false, memories: [] };
             }
@@ -294,8 +294,8 @@ describe('scene-end pipeline — orchestration', () => {
             });
             const extractionCalls = capture.calls.filter(c => c.schemaName === 'SceneEndMemoryExtraction');
             expect(extractionCalls).toHaveLength(2);
-            const jackCall = extractionCalls.find(c => c.user.startsWith('Character: Jack'));
-            const ameliaCall = extractionCalls.find(c => c.user.startsWith('Character: Amelia'));
+            const jackCall = extractionCalls.find(c => c.user.includes('What does Jack carry forward'));
+            const ameliaCall = extractionCalls.find(c => c.user.includes('What does Amelia carry forward'));
             expect(jackCall).toBeTruthy();
             expect(ameliaCall).toBeTruthy();
             // Jack's prompt body must not mention Amelia's personality string.
@@ -431,7 +431,7 @@ describe('scene-end pipeline — orchestration', () => {
                     capture.calls.push({ system, user, schema, schemaName });
                     if (schemaName === 'SceneSummary') return SUMMARY_PAYLOAD;
                     if (schemaName === 'SceneEndMemoryExtraction') {
-                        if (user.includes('Character: Amelia')) {
+                        if (user.includes('What does Amelia carry forward')) {
                             throw new Error('upstream 500');
                         }
                         return EXTRACTION_BY_NAME.Jack;

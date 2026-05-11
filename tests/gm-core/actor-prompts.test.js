@@ -227,11 +227,11 @@ describe('M3: layout-aware sheet YAML in actor prompts', () => {
         const ctxWithLayout = {
             ...ctx,
             sheet_layout: layout,
-            memories_block: '--- BEGIN MEMORIES (character_memory: jack) ---\n- a memory.\n--- END MEMORIES ---',
+            memories_block: '<character_memory id="jack">\n- a memory.\n</character_memory>',
         };
         const user = actorUserPrompt(ctxWithLayout, jackWithRel, 'react');
-        const memoriesIdx = user.indexOf('--- BEGIN MEMORIES');
-        const sheetIdx = user.indexOf('# Your character sheet');
+        const memoriesIdx = user.indexOf('<character_memory');
+        const sheetIdx = user.indexOf('<character_sheet');
         expect(memoriesIdx).toBeGreaterThanOrEqual(0);
         expect(sheetIdx).toBeGreaterThanOrEqual(0);
         expect(memoriesIdx).toBeLessThan(sheetIdx);
@@ -260,8 +260,8 @@ describe('M3: layout-aware sheet YAML in actor prompts', () => {
     });
 });
 
-/** Pull the contents of the first ```yaml ... ``` block out of a prompt. */
+/** Pull the contents of the `<character_sheet format="yaml">` block out of a prompt. */
 function extractYamlFence(prompt) {
-    const m = /```yaml\n([\s\S]*?)\n```/m.exec(prompt);
+    const m = /<character_sheet[^>]*>\n([\s\S]*?)\n<\/character_sheet>/m.exec(prompt);
     return m ? m[1] : '';
 }

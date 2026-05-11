@@ -12,6 +12,8 @@
  * scene-end pipeline, so both sources land in the same UI slot.
  */
 
+import { tag, TAGS } from '../prompts/tags.js';
+
 export const OPENING_SITUATION_SCHEMA = {
     $schema: 'https://json-schema.org/draft/2020-12/schema',
     title: 'OpeningSituation',
@@ -79,27 +81,20 @@ export const OPENING_SITUATION_SYSTEM_PROMPT = [
  * }} ctx
  */
 export function buildOpeningUser(ctx) {
-    const lines = [];
-    const campaignName = ctx.campaign?.name || 'Untitled campaign';
-    lines.push(`Campaign: ${campaignName}`);
-    if (ctx.campaign?.ruleset_id) lines.push(`Ruleset: ${ctx.campaign.ruleset_id}`);
-    if (ctx.campaign?.brief) {
-        lines.push(`Brief: ${truncate(ctx.campaign.brief, 600)}`);
-    }
-    lines.push('');
-    lines.push(`Player character: ${ctx.playerCharacter?.name || 'The PC'}`);
-    if (ctx.playerCharacter?.background) {
-        lines.push(`Background: ${truncate(ctx.playerCharacter.background, 400)}`);
-    }
-    if (ctx.playerCharacter?.personality) {
-        lines.push(`Personality: ${truncate(ctx.playerCharacter.personality, 240)}`);
-    }
-    if (ctx.playerCharacter?.appearance) {
-        lines.push(`Appearance: ${truncate(ctx.playerCharacter.appearance, 240)}`);
-    }
-    lines.push('');
-    lines.push('Produce the OpeningSituation JSON. The PC has not yet acted; this is the still moment before play begins.');
-    return lines.join('\n');
+    const parts = [];
+    const campaignLines = [ctx.campaign?.name || 'Untitled campaign'];
+    if (ctx.campaign?.ruleset_id) campaignLines.push(`Ruleset: ${ctx.campaign.ruleset_id}`);
+    if (ctx.campaign?.brief) campaignLines.push(`Brief: ${truncate(ctx.campaign.brief, 600)}`);
+    parts.push(tag(TAGS.campaign, campaignLines.join('\n')));
+
+    const pcLines = [ctx.playerCharacter?.name || 'The PC'];
+    if (ctx.playerCharacter?.background) pcLines.push(`Background: ${truncate(ctx.playerCharacter.background, 400)}`);
+    if (ctx.playerCharacter?.personality) pcLines.push(`Personality: ${truncate(ctx.playerCharacter.personality, 240)}`);
+    if (ctx.playerCharacter?.appearance) pcLines.push(`Appearance: ${truncate(ctx.playerCharacter.appearance, 240)}`);
+    parts.push(tag(TAGS.player_character, pcLines.join('\n')));
+
+    parts.push('Produce the OpeningSituation JSON. The PC has not yet acted; this is the still moment before play begins.');
+    return parts.filter(Boolean).join('\n\n');
 }
 
 /** @param {string} s @param {number} max */
