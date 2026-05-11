@@ -120,6 +120,7 @@
     "scripts": {
         "init": "node src/server-init.js",
         "start": "node server.js",
+        "dev": "bash dev.sh",
         "debug": "node --inspect server.js",
         "start:global": "node server.js --global",
         "start:electron": "cd ./src/electron && npm run start",
