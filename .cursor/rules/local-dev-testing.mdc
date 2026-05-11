@@ -12,17 +12,25 @@ alwaysApply: true
    docker compose up qdrant -d
    ```
 
-2. **App on host** (recommended for dev):
+2. **App in container** (recommended for dev):
+   ```
+   TTRPG_HOST_PORT=8003 docker compose --profile app up -d
+   ```
+   The app listens on `http://localhost:8003`. The container internally uses
+   port 8000; the host mapping avoids collisions with Portainer (which holds
+   port 8000). Source code is baked into the image at build time, so after
+   editing code you must **rebuild**:
+   ```
+   TTRPG_HOST_PORT=8003 docker compose --profile app build && \
+   TTRPG_HOST_PORT=8003 docker compose --profile app up -d
+   ```
+   Add `--no-cache` to the build if you need a clean rebuild.
+
+3. **App on host** (alternative — only if Portainer is stopped):
    ```
    npm start
    ```
-   The app listens on `http://localhost:8000`.
-
-3. **App in container** (alternative):
-   ```
-   docker compose --profile app up
-   ```
-   The app listens on `http://localhost:8001`.
+   Listens on `http://localhost:8000`. Will fail if Portainer is running.
 
 ## LLM services
 
@@ -69,7 +77,7 @@ Use the `cursor-ide-browser` MCP tools to verify UI changes without leaving the 
 
 1. **Navigate** to the running dev instance:
    ```
-   browser_navigate → http://localhost:8000
+   browser_navigate → http://localhost:8003
    ```
 
 2. **Snapshot** to inspect page structure and get element refs:
@@ -94,17 +102,17 @@ Always `browser_navigate` first (a tab must exist before you can lock), then `br
 
 ### Checking API endpoints
 
-Use `browser_navigate` to hit API routes directly (e.g., `http://localhost:8000/api/gm/rag/reconcile`) or use the Shell tool with `curl` for non-browser API testing.
+Use `browser_navigate` to hit API routes directly (e.g., `http://localhost:8003/api/gm/rag/reconcile`) or use the Shell tool with `curl` for non-browser API testing.
 
 ## Port reference
 
-| Port  | Owner            | Notes                        |
-|-------|------------------|------------------------------|
-| 8000  | Dev app (host)   | `npm start`                  |
-| 8001  | Dev app (docker) | `--profile app`              |
-| 6333  | Dev Qdrant REST  | Always running               |
-| 6334  | Dev Qdrant gRPC  | Always running               |
-| 8080  | Prod app         | Portainer stack              |
-| 8180  | Prod llama-server| Shared with dev              |
-| 8182  | Prod llama-director | Shared with dev           |
-| 11434 | Prod Ollama      | Shared with dev              |
+| Port  | Owner              | Notes                            |
+|-------|--------------------|----------------------------------|
+| 8000  | Portainer          | Always running — do NOT reuse    |
+| 8003  | Dev app (docker)   | `--profile app` with TTRPG_HOST_PORT=8003 |
+| 6333  | Dev Qdrant REST    | Always running                   |
+| 6334  | Dev Qdrant gRPC    | Always running                   |
+| 8080  | Prod app           | Portainer stack                  |
+| 8180  | Prod llama-server  | Shared with dev                  |
+| 8182  | Prod llama-director| Shared with dev                  |
+| 11434 | Prod Ollama        | Shared with dev                  |

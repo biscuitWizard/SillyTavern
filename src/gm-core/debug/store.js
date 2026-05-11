@@ -100,29 +100,38 @@ export function appendEvent(directories, campaignId, sceneId, event) {
  * @returns {DebugEvent[]}
  */
 export function readEvents(directories, campaignId, sceneId, { since, limit = 500 } = {}) {
-    const file = debugEventsFile(directories, campaignId, sceneId);
-    if (!fs.existsSync(file)) return [];
-    const raw = fs.readFileSync(file, 'utf8');
-    const lines = raw.split('\n');
+    const files = [];
+    if (sceneId) {
+        files.push(debugEventsFile(directories, campaignId, sceneId));
+        files.push(debugEventsFile(directories, campaignId, null));
+    } else {
+        files.push(debugEventsFile(directories, campaignId, null));
+    }
+
+    /** @type {DebugEvent[]} */
+    const merged = [];
+    for (const file of files) {
+        if (!fs.existsSync(file)) continue;
+        const raw = fs.readFileSync(file, 'utf8');
+        for (const text of raw.split('\n')) {
+            if (!text) continue;
+            try {
+                merged.push(JSON.parse(text));
+            } catch { continue; }
+        }
+    }
+
+    merged.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
 
     /** @type {DebugEvent[]} */
     const out = [];
     let pastSince = !since;
-
-    for (const text of lines) {
-        if (!text) continue;
-        /** @type {DebugEvent} */
-        let parsed;
-        try {
-            parsed = JSON.parse(text);
-        } catch {
-            continue;
-        }
+    for (const ev of merged) {
         if (!pastSince) {
-            if (parsed.id === since) pastSince = true;
+            if (ev.id === since) pastSince = true;
             continue;
         }
-        out.push(parsed);
+        out.push(ev);
         if (out.length >= limit) break;
     }
     return out;
